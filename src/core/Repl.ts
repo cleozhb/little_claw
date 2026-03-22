@@ -1,6 +1,8 @@
 import * as readline from "node:readline/promises";
-import type { QianfanClient } from "../llm/QianfanClient.ts";
+import type { AgentLoop } from "./AgentLoop.ts";
 import type { Conversation } from "./Conversation.ts";
+import type { QianfanClient } from "../llm/QianfanClient.ts";
+import type { ToolRegistry } from "../tools/ToolRegistry.ts";
 
 // ANSI colors
 const CYAN = "\x1b[36m";
@@ -8,34 +10,84 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
+const GREEN = "\x1b[32m";
 
-const HELP = `Available commands:
+const MAX_RESULT_PREVIEW = 200;
+
+const COMMANDS = ["/help", "/clear", "/model ", "/tools", "/quit", "/exit"];
+
+export class Repl {
+  private agent: AgentLoop;
+  private client: QianfanClient;
+  private conversation: Conversation;
+  private toolRegistry: ToolRegistry;
+
+  constructor(
+    agent: AgentLoop,
+    client: QianfanClient,
+    conversation: Conversation,
+    toolRegistry: ToolRegistry,
+  ) {
+    this.agent = agent;
+    this.client = client;
+    this.conversation = conversation;
+    this.toolRegistry = toolRegistry;
+  }
+
+  private get help(): string {
+    return `Available commands:
   /help          Show this help message
   /clear         Clear conversation history
   /model <name>  Switch model (e.g. /model ernie-4.5-8k)
+  /tools         List registered tools
   /quit          Exit the chat
   /exit          Exit the chat
 
 Multi-line input:
   Type ${CYAN}"""${RESET} to start, type ${CYAN}"""${RESET} again to send.
 `;
-
-export class Repl {
-  private client: QianfanClient;
-  private conversation: Conversation;
-
-  constructor(client: QianfanClient, conversation: Conversation) {
-    this.client = client;
-    this.conversation = conversation;
   }
 
   private printWelcome(): void {
+    const tools = this.toolRegistry.getAll();
+    const toolNames = tools.map((t) => t.name).join(", ");
     console.log(`
-${CYAN}Welcome to Little Claw Chat!${RESET}
+${CYAN}Welcome to Little Claw!${RESET}
 Model: ${YELLOW}${this.client.getModel()}${RESET}
+Tools: ${DIM}${toolNames}${RESET}
 Type your message and press Enter to chat.
 Type ${CYAN}/help${RESET} for available commands.
 `);
+  }
+
+  private printTools(): void {
+    const tools = this.toolRegistry.getAll();
+    if (tools.length === 0) {
+      console.log("No tools registered.\n");
+      return;
+    }
+    console.log("Registered tools:");
+    for (const tool of tools) {
+      console.log(`  ${YELLOW}${tool.name}${RESET} - ${DIM}${tool.description}${RESET}`);
+    }
+    console.log();
+  }
+
+  private formatParams(params: Record<string, unknown>): string {
+    const entries = Object.entries(params);
+    if (entries.length === 0) return "{}";
+    const parts = entries.map(([k, v]) => {
+      const val = typeof v === "string"
+        ? v.length > 60 ? `"${v.slice(0, 57)}..."` : `"${v}"`
+        : JSON.stringify(v);
+      return `${k}: ${val}`;
+    });
+    return `{ ${parts.join(", ")} }`;
+  }
+
+  private truncate(text: string): string {
+    if (text.length <= MAX_RESULT_PREVIEW) return text;
+    return text.slice(0, MAX_RESULT_PREVIEW) + "...";
   }
 
   private async readMultiline(rl: readline.Interface): Promise<string> {
@@ -58,6 +110,13 @@ Type ${CYAN}/help${RESET} for available commands.
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
+      completer: (line: string): [string[], string] => {
+        if (line.startsWith("/")) {
+          const hits = COMMANDS.filter((c) => c.startsWith(line));
+          return [hits.length ? hits : COMMANDS, line];
+        }
+        return [[], line];
+      },
     });
 
     this.printWelcome();
@@ -108,7 +167,12 @@ Type ${CYAN}/help${RESET} for available commands.
         }
 
         if (input === "/help") {
-          console.log(HELP);
+          console.log(this.help);
+          continue;
+        }
+
+        if (input === "/tools") {
+          this.printTools();
           continue;
         }
 
@@ -123,60 +187,68 @@ Type ${CYAN}/help${RESET} for available commands.
           continue;
         }
 
-        // Normal chat
-        this.conversation.addUser(input);
-
+        // Agent loop
         process.stdout.write(`${DIM}Thinking...${RESET}`);
         let firstToken = true;
-        let fullResponse = "";
 
-        try {
-          const gen = this.client.chat(
-            this.conversation.getMessages(),
-            this.conversation.getSystemPrompt(),
-          );
+        for await (const event of this.agent.run(input)) {
+          switch (event.type) {
+            case "text_delta":
+              if (firstToken) {
+                process.stdout.write("\r            \r");
+                process.stdout.write(CYAN);
+                firstToken = false;
+              }
+              process.stdout.write(event.text);
+              break;
 
-          let result = await gen.next();
-          while (!result.done) {
-            if (firstToken) {
-              process.stdout.write("\r            \r");
-              process.stdout.write(CYAN);
-              firstToken = false;
+            case "tool_call":
+              if (!firstToken) {
+                // End any ongoing text output
+                process.stdout.write(RESET + "\n");
+              } else {
+                process.stdout.write("\r            \r");
+              }
+              firstToken = true; // reset for next text block
+              console.log(
+                `${YELLOW}> ${event.name}(${this.formatParams(event.params)})${RESET}`,
+              );
+              break;
+
+            case "tool_result": {
+              const status = event.result.success
+                ? `${GREEN}ok${RESET}`
+                : `${RED}error${RESET}`;
+              const output = event.result.success
+                ? event.result.output
+                : event.result.error ?? "Unknown error";
+              console.log(
+                `${DIM}  [${status}${DIM}] ${this.truncate(output)}${RESET}`,
+              );
+              console.log();
+              process.stdout.write(`${DIM}Thinking...${RESET}`);
+              break;
             }
-            process.stdout.write(result.value);
-            fullResponse += result.value;
-            result = await gen.next();
+
+            case "done":
+              if (!firstToken) {
+                process.stdout.write(RESET);
+              } else {
+                process.stdout.write("\r            \r");
+              }
+              console.log(
+                `\n${DIM}[tokens: ${event.usage.totalInputTokens} in / ${event.usage.totalOutputTokens} out]${RESET}\n`,
+              );
+              break;
+
+            case "error":
+              if (firstToken) {
+                process.stdout.write("\r            \r");
+              }
+              process.stdout.write(RESET);
+              console.error(`\n${RED}Error: ${event.message}${RESET}\n`);
+              break;
           }
-
-          process.stdout.write(RESET);
-
-          // result.value is the ChatResult returned from the generator
-          const usage = result.value;
-          if (usage && (usage.inputTokens || usage.outputTokens)) {
-            console.log(`\n${DIM}[tokens: ${usage.inputTokens} in / ${usage.outputTokens} out]${RESET}\n`);
-          } else {
-            console.log("\n");
-          }
-
-          this.conversation.addAssistant(fullResponse);
-        } catch (err: unknown) {
-          if (firstToken) {
-            process.stdout.write("\r            \r");
-          }
-          process.stdout.write(RESET);
-
-          // Remove the failed user message from conversation
-          this.conversation.popLast();
-
-          if (isRateLimitError(err)) {
-            console.error(`\n${RED}Rate limited (429). Please wait a moment and try again.${RESET}\n`);
-          } else if (isTimeoutError(err)) {
-            console.error(`\n${RED}Request timed out (30s). Please try again.${RESET}\n`);
-          } else {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error(`\n${RED}Error: ${msg}${RESET}\n`);
-          }
-          continue;
         }
       }
     } finally {
@@ -184,18 +256,4 @@ Type ${CYAN}/help${RESET} for available commands.
       rl.close();
     }
   }
-}
-
-function isRateLimitError(err: unknown): boolean {
-  if (err && typeof err === "object" && "status" in err) {
-    return (err as { status: number }).status === 429;
-  }
-  return false;
-}
-
-function isTimeoutError(err: unknown): boolean {
-  if (err instanceof Error) {
-    return err.name === "APIConnectionTimeoutError" || err.message.includes("timed out");
-  }
-  return false;
 }

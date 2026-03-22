@@ -1,7 +1,7 @@
-import type { Message } from "../types/message.ts";
+import type { Message, TextBlock, ToolUseBlock, ToolResultBlock } from "../types/message.ts";
 
 const DEFAULT_SYSTEM_PROMPT =
-  "You are a helpful AI assistant. You can help users with coding, analysis, and general questions. Respond concisely and clearly.";
+  "You are a helpful AI assistant with access to tools. You can read and write files, and execute shell commands. When the user asks you to perform tasks that require interacting with the filesystem or running commands, use the available tools. Always explain what you're about to do before using a tool.";
 
 export class Conversation {
   private messages: Message[] = [];
@@ -16,7 +16,18 @@ export class Conversation {
   }
 
   addAssistant(content: string): void {
-    this.messages.push({ role: "assistant", content });
+    this.messages.push({
+      role: "assistant",
+      content: [{ type: "text", text: content }],
+    });
+  }
+
+  addAssistantBlocks(blocks: Array<TextBlock | ToolUseBlock>): void {
+    this.messages.push({ role: "assistant", content: blocks });
+  }
+
+  addToolResults(results: ToolResultBlock[]): void {
+    this.messages.push({ role: "user", content: results });
   }
 
   getMessages(): Message[] {
