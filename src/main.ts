@@ -1,10 +1,11 @@
 import { loadConfig } from "./config/index.ts";
 import { QianfanClient } from "./llm/QianfanClient.ts";
-import { Conversation } from "./core/Conversation.ts";
 import { ToolRegistry } from "./tools/ToolRegistry.ts";
 import { createBuiltinTools } from "./tools/builtin/index.ts";
-import { AgentLoop } from "./core/AgentLoop.ts";
 import { Repl } from "./core/Repl.ts";
+import { Database } from "./db/Database.ts";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 const config = loadConfig();
 const client = new QianfanClient(
@@ -18,8 +19,9 @@ for (const tool of createBuiltinTools()) {
   toolRegistry.register(tool);
 }
 
-const conversation = new Conversation();
-const agent = new AgentLoop(client, toolRegistry, conversation);
-const repl = new Repl(agent, client, conversation, toolRegistry);
+const dataDir = join(import.meta.dir, "..", "data");
+mkdirSync(dataDir, { recursive: true });
+const db = new Database(join(dataDir, "little_claw.db"));
+const repl = new Repl(db, client, toolRegistry);
 
 await repl.start();

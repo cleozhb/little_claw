@@ -31,7 +31,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .idea
 
 # database
-*.db
+data/
 
 # Finder (MacOS) folder config
 .DS_Store

@@ -5,8 +5,8 @@ import type {
   AgentEvent,
   TextBlock,
   ToolUseBlock,
-  ToolResultBlock,
 } from "../types/message.ts";
+import { generateTitle } from "./TitleGenerator.ts";
 
 const MAX_ITERATIONS = 20;
 
@@ -29,6 +29,7 @@ export class AgentLoop {
   }
 
   async *run(userMessage: string): AsyncGenerator<AgentEvent> {
+    const isFirstRound = this.conversation.getMessages().length === 0;
     this.conversation.addUser(userMessage);
 
     let totalInputTokens = 0;
@@ -111,6 +112,12 @@ export class AgentLoop {
       // --- No tool calls: end turn ---
       if (stopReason === "end_turn" || toolUseBlocks.length === 0) {
         this.conversation.addAssistant(textContent);
+
+        // Auto-generate session title after first round (fire-and-forget)
+        if (isFirstRound) {
+          this.maybeGenerateTitle(userMessage, textContent);
+        }
+
         yield {
           type: "done",
           usage: { totalInputTokens, totalOutputTokens },
@@ -124,9 +131,15 @@ export class AgentLoop {
         assistantBlocks.push({ type: "text", text: textContent });
       }
       assistantBlocks.push(...toolUseBlocks);
-      this.conversation.addAssistantBlocks(assistantBlocks);
+      const messageId = this.conversation.addToolUse(assistantBlocks);
 
-      const toolResults: ToolResultBlock[] = [];
+      const toolResultParams: Array<{
+        toolUseId: string;
+        toolName: string;
+        input: unknown;
+        output: string;
+        isError: boolean;
+      }> = [];
 
       for (const block of toolUseBlocks) {
         yield { type: "tool_call", name: block.name, params: block.input };
@@ -139,11 +152,12 @@ export class AgentLoop {
             error: `Unknown tool: ${block.name}`,
           };
           yield { type: "tool_result", name: block.name, result };
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: `Unknown tool: ${block.name}`,
-            is_error: true,
+          toolResultParams.push({
+            toolUseId: block.id,
+            toolName: block.name,
+            input: block.input,
+            output: `Unknown tool: ${block.name}`,
+            isError: true,
           });
           continue;
         }
@@ -151,28 +165,30 @@ export class AgentLoop {
         try {
           const result = await tool.execute(block.input);
           yield { type: "tool_result", name: block.name, result };
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: result.success
+          toolResultParams.push({
+            toolUseId: block.id,
+            toolName: block.name,
+            input: block.input,
+            output: result.success
               ? result.output
               : result.error ?? "Unknown error",
-            is_error: !result.success,
+            isError: !result.success,
           });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           const result = { success: false, output: "", error: errMsg };
           yield { type: "tool_result", name: block.name, result };
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: errMsg,
-            is_error: true,
+          toolResultParams.push({
+            toolUseId: block.id,
+            toolName: block.name,
+            input: block.input,
+            output: errMsg,
+            isError: true,
           });
         }
       }
 
-      this.conversation.addToolResults(toolResults);
+      this.conversation.addToolResults(messageId, toolResultParams);
       // continue loop — LLM will see tool results and respond
     }
 
@@ -185,5 +201,17 @@ export class AgentLoop {
       type: "done",
       usage: { totalInputTokens, totalOutputTokens },
     };
+  }
+
+  private maybeGenerateTitle(userMessage: string, assistantReply: string): void {
+    generateTitle(this.client, userMessage, assistantReply)
+      .then((title) => {
+        if (title) {
+          this.conversation.updateSessionTitle(title);
+        }
+      })
+      .catch(() => {
+        // Title generation is best-effort; silently ignore errors
+      });
   }
 }
