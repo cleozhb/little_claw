@@ -1,15 +1,25 @@
 {
-  "name": "little_claw",
-  "module": "index.ts",
-  "type": "module",
-  "private": true,
+  "name": "async-generator-examples",
+  "version": "1.0.0",
+  "description": "TypeScript AsyncGenerator 用法示例",
+  "main": "index.js",
+  "scripts": {
+    "start": "ts-node async-generator-simple.ts",
+    "start:detailed": "ts-node async-generator-example.ts",
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "typescript",
+    "async",
+    "generator",
+    "async-generator"
+  ],
+  "author": "",
+  "license": "MIT",
   "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
-  "dependencies": {
-    "openai": "^6.32.0"
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0"
   }
 }

@@ -1,9 +1,9 @@
 import * as readline from "node:readline/promises";
 import { AgentLoop } from "./AgentLoop.ts";
 import { Conversation } from "./Conversation.ts";
-import type { QianfanClient } from "../llm/QianfanClient.ts";
+import type { LLMProvider } from "../llm/types.ts";
 import type { ToolRegistry } from "../tools/ToolRegistry.ts";
-import type { Database } from "../db/Database.ts";
+import type { Database, Session } from "../db/Database.ts";
 import type { Message } from "../types/message.ts";
 
 // ANSI colors
@@ -34,14 +34,14 @@ const COMMANDS = [
 
 export class Repl {
   private agent!: AgentLoop;
-  private client: QianfanClient;
+  private client: LLMProvider;
   private conversation!: Conversation;
   private toolRegistry: ToolRegistry;
   private db: Database;
 
   constructor(
     db: Database,
-    client: QianfanClient,
+    client: LLMProvider,
     toolRegistry: ToolRegistry,
   ) {
     this.db = db;
@@ -69,7 +69,7 @@ export class Repl {
   // --- Session picker at startup ---
 
   private async pickSession(rl: readline.Interface): Promise<void> {
-    const sessions = this.db.listSessions(5);
+    const sessions = this.listVisibleSessions(5);
 
     if (sessions.length === 0) {
       // No existing sessions — create a fresh one
@@ -162,7 +162,7 @@ Type ${CYAN}/help${RESET} for available commands.
   // --- Session commands ---
 
   private handleSessions(): void {
-    const sessions = this.db.listSessions(50);
+    const sessions = this.listVisibleSessions(50);
     if (sessions.length === 0) {
       console.log("No sessions.\n");
       return;
@@ -182,7 +182,7 @@ Type ${CYAN}/help${RESET} for available commands.
   }
 
   private handleSwitch(arg: string): void {
-    const sessions = this.db.listSessions(50);
+    const sessions = this.listVisibleSessions(50);
     const target = this.resolveSession(arg, sessions);
     if (!target) {
       console.log(`${RED}Session not found: ${arg}${RESET}\n`);
@@ -207,7 +207,7 @@ Type ${CYAN}/help${RESET} for available commands.
   }
 
   private async handleDelete(arg: string, rl: readline.Interface): Promise<void> {
-    const sessions = this.db.listSessions(50);
+    const sessions = this.listVisibleSessions(50);
     const target = this.resolveSession(arg, sessions);
     if (!target) {
       console.log(`${RED}Session not found: ${arg}${RESET}\n`);
@@ -263,6 +263,12 @@ Type ${CYAN}/help${RESET} for available commands.
   }
 
   // --- Helpers ---
+
+  /** List sessions, filtering out empty ones (no title and no messages). */
+  private listVisibleSessions(limit: number): Session[] {
+    return this.db.listSessions(limit)
+      .filter((s) => s.title !== null || this.db.getMessageCount(s.id) > 0);
+  }
 
   private resolveSession(
     arg: string,
@@ -348,13 +354,15 @@ Type ${CYAN}/help${RESET} for available commands.
       closed = true;
     });
 
-    const handleSigint = () => {
+    const handleSigint = async () => {
       console.log(`\n${RESET}Bye!`);
+      await this.agent.waitForTitle(3000);
       rl.close();
       this.db.close();
       process.exit(0);
     };
-    process.on("SIGINT", handleSigint);
+    const sigintWrapper = () => { handleSigint(); };
+    process.on("SIGINT", sigintWrapper);
 
     try {
       while (!closed) {
@@ -516,7 +524,8 @@ Type ${CYAN}/help${RESET} for available commands.
         }
       }
     } finally {
-      process.removeListener("SIGINT", handleSigint);
+      process.removeListener("SIGINT", sigintWrapper);
+      await this.agent.waitForTitle(3000);
       rl.close();
       this.db.close();
     }

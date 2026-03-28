@@ -43,8 +43,8 @@ test("addUser persists to database", () => {
   // Verify in DB
   const dbMessages = db.getMessages(conv.getSessionId());
   expect(dbMessages.length).toBe(1);
-  expect(dbMessages[0].role).toBe("user");
-  expect(dbMessages[0].content).toBe("Hello!");
+  expect(dbMessages[0]!.role).toBe("user");
+  expect(dbMessages[0]!.content).toBe("Hello!");
 });
 
 test("addAssistant persists to database", () => {
@@ -60,7 +60,7 @@ test("addAssistant persists to database", () => {
 
   const dbMessages = db.getMessages(conv.getSessionId());
   expect(dbMessages.length).toBe(1);
-  expect(dbMessages[0].role).toBe("assistant");
+  expect(dbMessages[0]!.role).toBe("assistant");
 });
 
 test("addToolUse persists and returns messageId", () => {
@@ -80,7 +80,7 @@ test("addToolUse persists and returns messageId", () => {
 
   const messages = conv.getMessages();
   expect(messages.length).toBe(1);
-  expect(messages[0].role).toBe("assistant");
+  expect(messages[0]!.role).toBe("assistant");
 });
 
 test("addToolResults persists and builds correct in-memory message", () => {
@@ -109,8 +109,8 @@ test("addToolResults persists and builds correct in-memory message", () => {
   const messages = conv.getMessages();
   expect(messages.length).toBe(3);
   // user -> assistant(tool_use) -> user(tool_result)
-  expect(messages[0].role).toBe("user");
-  expect(messages[1].role).toBe("assistant");
+  expect(messages[0]!.role).toBe("user");
+  expect(messages[1]!.role).toBe("assistant");
   expect(messages[2]).toEqual({
     role: "user",
     content: [
@@ -126,7 +126,7 @@ test("addToolResults persists and builds correct in-memory message", () => {
   // Verify tool results in DB
   const dbResults = db.getToolResults(messageId);
   expect(dbResults.length).toBe(1);
-  expect(dbResults[0].tool_name).toBe("bash");
+  expect(dbResults[0]!.tool_name).toBe("bash");
 });
 
 test("loadExisting restores plain text conversation", () => {
@@ -257,11 +257,11 @@ test("loadExisting restores error tool results", () => {
 
   const restored = Conversation.loadExisting(db, sessionId);
   const msgs = restored.getMessages();
-  const toolResultMsg = msgs[2];
+  const toolResultMsg = msgs[2]!;
   expect(toolResultMsg.role).toBe("user");
   expect(Array.isArray(toolResultMsg.content)).toBe(true);
   const blocks = toolResultMsg.content as Array<{ type: string; is_error?: boolean }>;
-  expect(blocks[0].is_error).toBe(true);
+  expect(blocks[0]!.is_error).toBe(true);
 });
 
 test("loadExisting throws for non-existent session", () => {

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import type { LLMProvider, ChatOptions, ToolDefinition } from "./types.ts";
 import type {
   Message,
   StreamEvent,
@@ -7,23 +8,18 @@ import type {
   ToolResultBlock,
 } from "../types/message.ts";
 
-const DEFAULT_BASE_URL = "https://qianfan.baidubce.com/v2";
 const TIMEOUT_MS = 30_000;
+const STREAM_CHUNK_TIMEOUT_MS = 30_000;
 
-export interface ChatOptions {
-  tools?: OpenAI.ChatCompletionTool[];
-  system?: string;
-}
-
-export class QianfanClient {
+export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
   private model: string;
 
-  constructor(apiKey: string, model: string, baseUrl?: string) {
+  constructor(apiKey: string, model: string, baseURL?: string) {
     this.model = model;
     this.client = new OpenAI({
       apiKey,
-      baseURL: baseUrl || DEFAULT_BASE_URL,
+      baseURL,
       timeout: TIMEOUT_MS,
     });
   }
@@ -36,6 +32,10 @@ export class QianfanClient {
     this.model = model;
   }
 
+  /**
+   * 流式调用 OpenAI Chat Completions API，将 SDK 返回的 SSE 事件
+   * 解析并转换为统一的 StreamEvent 格式（text_delta / tool_use_* / message_end）。
+   */
   async *chat(
     messages: Message[],
     options?: ChatOptions,
@@ -50,7 +50,7 @@ export class QianfanClient {
     };
 
     if (options?.tools?.length) {
-      params.tools = options.tools;
+      params.tools = this.toOpenAITools(options.tools);
     }
 
     const stream = await this.client.chat.completions.create(params);
@@ -60,13 +60,28 @@ export class QianfanClient {
     let stopReason = "end_turn";
 
     // Track active tool calls being streamed (keyed by index)
+    // 按索引跟踪正在流式传输的工具调用（OpenAI 用 index 区分并行工具调用）
     const activeToolCalls = new Map<
       number,
       { id: string; name: string; started: boolean }
     >();
 
-    for await (const chunk of stream) {
+    // 逐块读取 SSE 流，每个 chunk 带超时保护（30s 无数据则报错）
+    const iterator = stream[Symbol.asyncIterator]();
+    while (true) {
+      const result = await Promise.race([
+        iterator.next(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Stream timeout: no data received for 30s")), STREAM_CHUNK_TIMEOUT_MS)
+        ),
+      ]);
+      if (result.done) break;
+      const chunk = result.value;
+      if (process.env.DEBUG) {
+        console.error(`[debug] raw chunk: ${JSON.stringify(chunk)}`);
+      }
       // Usage info (arrives in the final chunk)
+      // 用量信息在最后一个 chunk 中到达（prompt_tokens / completion_tokens）
       if (chunk.usage) {
         inputTokens = chunk.usage.prompt_tokens ?? 0;
         outputTokens = chunk.usage.completion_tokens ?? 0;
@@ -76,7 +91,6 @@ export class QianfanClient {
       if (!choice) continue;
 
       if (choice.finish_reason) {
-        // Map OpenAI finish reasons to our stop reasons
         stopReason =
           choice.finish_reason === "tool_calls" ? "tool_use" : "end_turn";
       }
@@ -85,16 +99,19 @@ export class QianfanClient {
       if (!delta) continue;
 
       // Text content
+      // 文本增量：LLM 生成的文本内容片段
       if (delta.content) {
         yield { type: "text_delta", text: delta.content };
       }
 
       // Tool calls
+      // 工具调用增量：OpenAI 以 delta.tool_calls 数组分块传输工具调用的 id、名称和参数
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           const idx = tc.index;
 
           // First chunk for this tool call — has id and function.name
+          // 该工具调用的第一个 chunk —— 携带 id 和 function.name
           if (tc.id) {
             activeToolCalls.set(idx, {
               id: tc.id,
@@ -106,12 +123,12 @@ export class QianfanClient {
           const tracked = activeToolCalls.get(idx);
           if (!tracked) continue;
 
-          // Update name if provided (may come in first chunk)
           if (tc.function?.name) {
             tracked.name = tc.function.name;
           }
 
           // Emit start event once we have both id and name
+          // 当 id 和 name 都齐备后，发出 tool_use_start 事件
           if (!tracked.started && tracked.id && tracked.name) {
             tracked.started = true;
             yield {
@@ -122,6 +139,7 @@ export class QianfanClient {
           }
 
           // Argument deltas
+          // 参数增量：将 JSON 参数片段透传为 tool_use_delta 事件
           if (tc.function?.arguments) {
             yield {
               type: "tool_use_delta",
@@ -133,6 +151,7 @@ export class QianfanClient {
     }
 
     // Emit tool_use_end for each tracked tool call
+    // 流结束后，为每个已开始的工具调用发出 tool_use_end 事件
     for (const tracked of activeToolCalls.values()) {
       if (tracked.started) {
         yield { type: "tool_use_end" };
@@ -144,6 +163,19 @@ export class QianfanClient {
       stop_reason: stopReason,
       usage: { input_tokens: inputTokens, output_tokens: outputTokens },
     };
+  }
+
+  // --- Format conversions ---
+
+  private toOpenAITools(tools: ToolDefinition[]): OpenAI.ChatCompletionTool[] {
+    return tools.map((t) => ({
+      type: "function" as const,
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
   }
 
   private toOpenAIMessages(
@@ -171,7 +203,6 @@ export class QianfanClient {
       // Tool result message (array of ToolResultBlock)
       if (msg.role === "user" && Array.isArray(msg.content)) {
         const toolResults = msg.content as ToolResultBlock[];
-        // Each tool result becomes a separate tool message in OpenAI format
         for (const tr of toolResults) {
           result.push({
             role: "tool" as const,

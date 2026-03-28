@@ -50,8 +50,8 @@ test("listSessions returns sessions ordered by updated_at desc", () => {
   const list = db.listSessions();
   expect(list.length).toBe(3);
   // Most recently created should be first
-  expect(list[0].id).toBe(s3.id);
-  expect(list[2].id).toBe(s1.id);
+  expect(list[0]!.id).toBe(s3.id);
+  expect(list[2]!.id).toBe(s1.id);
 });
 
 test("listSessions respects limit", () => {
@@ -100,10 +100,10 @@ test("addMessage and getMessages", () => {
 
   const messages = db.getMessages(session.id);
   expect(messages.length).toBe(2);
-  expect(messages[0].role).toBe("user");
-  expect(messages[0].content).toBe("Hello!");
-  expect(messages[1].role).toBe("assistant");
-  expect(JSON.parse(messages[1].content)).toEqual([
+  expect(messages[0]!.role).toBe("user");
+  expect(messages[0]!.content).toBe("Hello!");
+  expect(messages[1]!.role).toBe("assistant");
+  expect(JSON.parse(messages[1]!.content)).toEqual([
     { type: "text", text: "Hi there!" },
   ]);
 });
@@ -137,11 +137,11 @@ test("addToolResult and getToolResults", () => {
 
   const results = db.getToolResults(msg.id);
   expect(results.length).toBe(1);
-  expect(results[0].tool_name).toBe("bash");
-  expect(results[0].tool_use_id).toBe("tu_abc");
-  expect(JSON.parse(results[0].tool_input)).toEqual({ command: "ls" });
-  expect(results[0].tool_output).toBe("file1.txt\nfile2.txt");
-  expect(results[0].is_error).toBe(0);
+  expect(results[0]!.tool_name).toBe("bash");
+  expect(results[0]!.tool_use_id).toBe("tu_abc");
+  expect(JSON.parse(results[0]!.tool_input)).toEqual({ command: "ls" });
+  expect(results[0]!.tool_output).toBe("file1.txt\nfile2.txt");
+  expect(results[0]!.is_error).toBe(0);
 });
 
 test("addToolResult with isError", () => {
@@ -159,5 +159,5 @@ test("addToolResult with isError", () => {
   });
 
   const results = db.getToolResults(msg.id);
-  expect(results[0].is_error).toBe(1);
+  expect(results[0]!.is_error).toBe(1);
 });

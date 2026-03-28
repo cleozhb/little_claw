@@ -33,6 +33,9 @@ export class Conversation {
     return new Conversation(db, session.id);
   }
 
+  /**
+   * 从数据库加载已有会话，恢复完整的对话历史。
+   */
   static loadExisting(db: Database, sessionId: string): Conversation {
     const conv = new Conversation(db, sessionId);
     conv.rebuildFromDB();
@@ -40,8 +43,15 @@ export class Conversation {
   }
 
   // --- Rebuild messages from database ---
+  // --- 从数据库重建消息历史 ---
 
+  /**
+   * 从数据库读取当前 session 的所有消息记录，重建内存中的 messages 数组。
+   * 关键逻辑：还原 assistant → tool_use / user → tool_result 的交替消息结构，
+   * 这是 LLM API 要求的对话格式。
+   */
   private rebuildFromDB(): void {
+    // 从 DB 按时间顺序获取所有消息记录
     const records = this.db.getMessages(this.sessionId);
     this.messages = [];
 
@@ -50,13 +60,16 @@ export class Conversation {
 
       if (role === "user") {
         // User messages: could be plain text or tool_result blocks
+        // 用户消息：可能是纯文本，也可能是工具执行结果（tool_result 块）
         const content = this.deserializeContent(record.content);
 
         if (Array.isArray(content) && content.length > 0 && content[0]?.type === "tool_result") {
           // This is a tool_result message
+          // 这是一条工具结果消息，直接作为 ToolResultBlock[] 还原
           this.messages.push({ role: "user", content: content as ToolResultBlock[] });
         } else {
           // Plain text user message
+          // 纯文本用户消息
           this.messages.push({ role: "user", content: typeof content === "string" ? content : String(content) });
         }
       } else if (role === "assistant") {
@@ -64,12 +77,14 @@ export class Conversation {
 
         if (typeof content === "string") {
           // Plain text assistant message (stored as string)
+          // 纯文本助手消息（DB 中存储为字符串），包装为 TextBlock
           this.messages.push({
             role: "assistant",
             content: [{ type: "text", text: content }],
           });
         } else if (Array.isArray(content)) {
           // Blocks (text + tool_use)
+          // 结构化助手消息（text + tool_use 混合块）
           this.messages.push({
             role: "assistant",
             content: content as Array<TextBlock | ToolUseBlock>,
@@ -77,6 +92,8 @@ export class Conversation {
 
           // If this assistant message contains tool_use blocks,
           // load corresponding tool_results and insert the user tool_result message
+          // 如果助手消息包含 tool_use 块，需要从 tool_results 表加载对应的
+          // 工具执行结果，并插入一条 user/tool_result 消息，还原完整的对话链路
           const hasToolUse = content.some(
             (b: { type: string }) => b.type === "tool_use"
           );
@@ -100,6 +117,7 @@ export class Conversation {
 
   private deserializeContent(raw: string): unknown {
     // Try to parse as JSON; if it fails, treat as plain text
+    // 尝试将 DB 中的原始字符串解析为 JSON；解析失败则视为纯文本
     try {
       return JSON.parse(raw);
     } catch {

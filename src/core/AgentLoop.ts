@@ -1,4 +1,4 @@
-import type { QianfanClient } from "../llm/QianfanClient.ts";
+import type { LLMProvider } from "../llm/types.ts";
 import type { ToolRegistry } from "../tools/ToolRegistry.ts";
 import type { Conversation } from "./Conversation.ts";
 import type {
@@ -11,13 +11,14 @@ import { generateTitle } from "./TitleGenerator.ts";
 const MAX_ITERATIONS = 20;
 
 export class AgentLoop {
-  private client: QianfanClient;
+  private client: LLMProvider;
   private toolRegistry: ToolRegistry;
   private conversation: Conversation;
   private maxIterations: number;
+  private pendingTitleGeneration: Promise<void> | null = null;
 
   constructor(
-    client: QianfanClient,
+    client: LLMProvider,
     toolRegistry: ToolRegistry,
     conversation: Conversation,
     maxIterations = MAX_ITERATIONS,
@@ -28,6 +29,10 @@ export class AgentLoop {
     this.maxIterations = maxIterations;
   }
 
+  /**
+   * ReAct (Reason + Act) 循环：LLM 先推理（生成文本/工具调用），再执行工具，
+   * 将工具结果反馈给 LLM 进行下一轮推理，如此反复直到 LLM 给出最终回复。
+   */
   async *run(userMessage: string): AsyncGenerator<AgentEvent> {
     const isFirstRound = this.conversation.getMessages().length === 0;
     this.conversation.addUser(userMessage);
@@ -35,24 +40,32 @@ export class AgentLoop {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
 
+    // ReAct 主循环：最多迭代 maxIterations 次，防止无限循环
     for (let i = 0; i < this.maxIterations; i++) {
+      // === Reason 阶段：调用 LLM，流式接收推理结果 ===
       // --- Call LLM ---
       let textContent = "";
       const toolUseBlocks: ToolUseBlock[] = [];
       let stopReason = "end_turn";
 
       // Track tool calls being streamed: index -> accumulated args JSON
+      // 跟踪流式传输中的工具调用：按索引累积参数 JSON 片段
       const pendingToolArgs = new Map<number, string>();
       const pendingToolMeta = new Map<number, { id: string; name: string }>();
 
       try {
-        for await (const event of this.client.chat(
+        const chatStream = this.client.chat(
           this.conversation.getMessages(),
           {
             system: this.conversation.getSystemPrompt(),
-            tools: this.toolRegistry.toOpenAIFormat(),
+            tools: this.toolRegistry.toToolDefinitions(),
           },
-        )) {
+        );
+        for await (const event of chatStream) {
+          // 处理流式事件：文本增量、工具调用开始/增量/结束、消息结束
+          if (process.env.DEBUG) {
+            console.error(`[debug] stream event: ${event.type}`, JSON.stringify(event).slice(0, 200));
+          }
           switch (event.type) {
             case "text_delta":
               textContent += event.text;
@@ -93,6 +106,7 @@ export class AgentLoop {
       }
 
       // --- Build tool use blocks from accumulated streaming data ---
+      // 将流式累积的工具调用片段组装为完整的 ToolUseBlock（解析 JSON 参数）
       for (const [idx, meta] of pendingToolMeta) {
         const argsJson = pendingToolArgs.get(idx) ?? "{}";
         let input: Record<string, unknown> = {};
@@ -110,6 +124,7 @@ export class AgentLoop {
       }
 
       // --- No tool calls: end turn ---
+      // 判断停止条件：LLM 没有请求工具调用，说明推理完成，保存回复并结束循环
       if (stopReason === "end_turn" || toolUseBlocks.length === 0) {
         this.conversation.addAssistant(textContent);
 
@@ -126,6 +141,7 @@ export class AgentLoop {
       }
 
       // --- Has tool calls: execute them ---
+      // === Act 阶段：LLM 请求了工具调用，逐个执行并收集结果 ===
       const assistantBlocks: Array<TextBlock | ToolUseBlock> = [];
       if (textContent) {
         assistantBlocks.push({ type: "text", text: textContent });
@@ -190,9 +206,11 @@ export class AgentLoop {
 
       this.conversation.addToolResults(messageId, toolResultParams);
       // continue loop — LLM will see tool results and respond
+      // 继续循环 — LLM 在下一轮迭代中会看到工具执行结果，并据此继续推理
     }
 
     // Max iterations reached
+    // 安全阀：达到最大迭代次数，强制终止循环并报错
     yield {
       type: "error",
       message: `Agent loop exceeded maximum iterations (${this.maxIterations})`,
@@ -204,14 +222,28 @@ export class AgentLoop {
   }
 
   private maybeGenerateTitle(userMessage: string, assistantReply: string): void {
-    generateTitle(this.client, userMessage, assistantReply)
+    this.pendingTitleGeneration = generateTitle(this.client, userMessage, assistantReply)
       .then((title) => {
         if (title) {
           this.conversation.updateSessionTitle(title);
         }
       })
-      .catch(() => {
-        // Title generation is best-effort; silently ignore errors
+      .catch((err) => {
+        if (process.env.DEBUG) {
+          console.error(`[debug] Title generation failed:`, err);
+        }
       });
+  }
+
+  /**
+   * Wait for any pending title generation to complete (with timeout).
+   * Safe to call even if no title generation is pending.
+   */
+  async waitForTitle(timeoutMs = 5000): Promise<void> {
+    if (!this.pendingTitleGeneration) return;
+    await Promise.race([
+      this.pendingTitleGeneration,
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
   }
 }

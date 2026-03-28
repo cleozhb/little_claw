@@ -1,10 +1,10 @@
-import type { QianfanClient } from "../llm/QianfanClient.ts";
+import type { LLMProvider } from "../llm/types.ts";
 
 const TITLE_SYSTEM_PROMPT =
   "Generate a concise title (max 6 words) for this conversation. Return only the title, nothing else.";
 
 export async function generateTitle(
-  llmClient: QianfanClient,
+  llmClient: LLMProvider,
   userMessage: string,
   assistantReply: string,
 ): Promise<string> {

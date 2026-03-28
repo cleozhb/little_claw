@@ -1,5 +1,5 @@
 import { loadConfig } from "./config/index.ts";
-import { QianfanClient } from "./llm/QianfanClient.ts";
+import { createProvider } from "./llm/index.ts";
 import { ToolRegistry } from "./tools/ToolRegistry.ts";
 import { createBuiltinTools } from "./tools/builtin/index.ts";
 import { Repl } from "./core/Repl.ts";
@@ -8,11 +8,20 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const config = loadConfig();
-const client = new QianfanClient(
-  config.qianfanApiKey,
-  config.qianfanBaseModel,
-  config.qianfanBaseUrl || undefined,
-);
+
+if (!config.llmApiKey) {
+  console.error("Error: LLM_API_KEY is not set in .env");
+  process.exit(1);
+}
+
+console.log(`Provider: ${config.llmProvider}, Model: ${config.llmModel}, BaseURL: ${config.llmBaseUrl ?? "(default)"}`);
+
+const client = createProvider({
+  provider: config.llmProvider,
+  apiKey: config.llmApiKey,
+  model: config.llmModel,
+  baseURL: config.llmBaseUrl,
+});
 
 const toolRegistry = new ToolRegistry();
 for (const tool of createBuiltinTools()) {

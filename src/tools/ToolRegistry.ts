@@ -1,13 +1,5 @@
 import type { Tool } from "./types.ts";
-
-interface OpenAITool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-}
+import type { ToolDefinition } from "../llm/types.ts";
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
@@ -31,14 +23,11 @@ export class ToolRegistry {
     this.tools.delete(name);
   }
 
-  toOpenAIFormat(): OpenAITool[] {
+  toToolDefinitions(): ToolDefinition[] {
     return this.getAll().map((tool) => ({
-      type: "function" as const,
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-      },
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
     }));
   }
 }
