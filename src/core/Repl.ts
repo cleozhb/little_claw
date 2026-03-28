@@ -1,6 +1,6 @@
 import * as readline from "node:readline/promises";
 import { AgentLoop } from "./AgentLoop.ts";
-import { Conversation } from "./Conversation.ts";
+import { Conversation, buildSystemPrompt } from "./Conversation.ts";
 import type { LLMProvider } from "../llm/types.ts";
 import type { ToolRegistry } from "../tools/ToolRegistry.ts";
 import type { Database, Session } from "../db/Database.ts";
@@ -38,15 +38,18 @@ export class Repl {
   private conversation!: Conversation;
   private toolRegistry: ToolRegistry;
   private db: Database;
+  private workspaceRoot: string;
 
   constructor(
     db: Database,
     client: LLMProvider,
     toolRegistry: ToolRegistry,
+    workspaceRoot: string,
   ) {
     this.db = db;
     this.client = client;
     this.toolRegistry = toolRegistry;
+    this.workspaceRoot = workspaceRoot;
   }
 
   // --- Session switching ---
@@ -73,7 +76,7 @@ export class Repl {
 
     if (sessions.length === 0) {
       // No existing sessions — create a fresh one
-      this.switchSession(Conversation.createNew(this.db));
+      this.switchSession(Conversation.createNew(this.db, buildSystemPrompt(this.workspaceRoot)));
       return;
     }
 
@@ -91,13 +94,13 @@ export class Repl {
     try {
       answer = await rl.question("Choose session: ");
     } catch {
-      this.switchSession(Conversation.createNew(this.db));
+      this.switchSession(Conversation.createNew(this.db, buildSystemPrompt(this.workspaceRoot)));
       return;
     }
 
     const trimmed = answer.trim().toLowerCase();
     if (trimmed === "n" || trimmed === "") {
-      this.switchSession(Conversation.createNew(this.db));
+      this.switchSession(Conversation.createNew(this.db, buildSystemPrompt(this.workspaceRoot)));
       return;
     }
 
@@ -108,7 +111,7 @@ export class Repl {
       this.switchSession(conv);
       this.printRecentMessages(3);
     } else {
-      this.switchSession(Conversation.createNew(this.db));
+      this.switchSession(Conversation.createNew(this.db, buildSystemPrompt(this.workspaceRoot)));
     }
   }
 
@@ -201,7 +204,7 @@ Type ${CYAN}/help${RESET} for available commands.
   }
 
   private handleNew(): void {
-    const conv = Conversation.createNew(this.db);
+    const conv = Conversation.createNew(this.db, buildSystemPrompt(this.workspaceRoot));
     this.switchSession(conv);
     console.log("New session created.\n");
   }
@@ -229,7 +232,7 @@ Type ${CYAN}/help${RESET} for available commands.
     console.log(`Deleted: ${title}`);
 
     if (wasCurrent) {
-      const conv = Conversation.createNew(this.db);
+      const conv = Conversation.createNew(this.db, buildSystemPrompt(this.workspaceRoot));
       this.switchSession(conv);
       console.log("Created new session.\n");
     } else {

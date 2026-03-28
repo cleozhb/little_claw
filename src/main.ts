@@ -24,13 +24,16 @@ const client = createProvider({
 });
 
 const toolRegistry = new ToolRegistry();
-for (const tool of createBuiltinTools()) {
+const workspaceRoot = join(process.cwd(), "workspace");
+mkdirSync(workspaceRoot, { recursive: true });
+
+for (const tool of createBuiltinTools(workspaceRoot)) {
   toolRegistry.register(tool);
 }
 
 const dataDir = join(import.meta.dir, "..", "data");
 mkdirSync(dataDir, { recursive: true });
 const db = new Database(join(dataDir, "little_claw.db"));
-const repl = new Repl(db, client, toolRegistry);
+const repl = new Repl(db, client, toolRegistry, workspaceRoot);
 
 await repl.start();
