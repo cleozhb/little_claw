@@ -1,39 +1,22 @@
-import { loadConfig } from "./config/index.ts";
-import { createProvider } from "./llm/index.ts";
-import { ToolRegistry } from "./tools/ToolRegistry.ts";
-import { createBuiltinTools } from "./tools/builtin/index.ts";
-import { Repl } from "./core/Repl.ts";
-import { Database } from "./db/Database.ts";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+/**
+ * src/main.ts — 便捷模式：同时启动 Server 和 CLI（开发时用）
+ *
+ * 先启动 Server（不阻塞），再启动 CLI 连接到本地 Server。
+ * 用法: bun run src/main.ts
+ */
 
-const config = loadConfig();
+import { startServer } from "./server.ts";
+import { startCli } from "./cli/Client.ts";
 
-if (!config.llmApiKey) {
-  console.error("Error: LLM_API_KEY is not set in .env");
-  process.exit(1);
+// 1. 启动 Server（非阻塞）
+const { cleanup } = startServer();
+
+// 给 server 一点时间完成启动
+await Bun.sleep(100);
+
+// 2. 启动 CLI 连接到本地 Server
+try {
+  await startCli();
+} finally {
+  cleanup();
 }
-
-console.log(`Provider: ${config.llmProvider}, Model: ${config.llmModel}, BaseURL: ${config.llmBaseUrl ?? "(default)"}`);
-
-const client = createProvider({
-  provider: config.llmProvider,
-  apiKey: config.llmApiKey,
-  model: config.llmModel,
-  baseURL: config.llmBaseUrl,
-});
-
-const toolRegistry = new ToolRegistry();
-const workspaceRoot = join(process.cwd(), "workspace");
-mkdirSync(workspaceRoot, { recursive: true });
-
-for (const tool of createBuiltinTools(workspaceRoot)) {
-  toolRegistry.register(tool);
-}
-
-const dataDir = join(import.meta.dir, "..", "data");
-mkdirSync(dataDir, { recursive: true });
-const db = new Database(join(dataDir, "little_claw.db"));
-const repl = new Repl(db, client, toolRegistry, workspaceRoot);
-
-await repl.start();

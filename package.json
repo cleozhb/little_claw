@@ -1,25 +1,24 @@
 {
-  "name": "async-generator-examples",
+  "name": "little-claw",
   "version": "1.0.0",
-  "description": "TypeScript AsyncGenerator 用法示例",
-  "main": "index.js",
+  "description": "LLM Agent with Gateway Server and CLI Client",
+  "main": "src/main.ts",
   "scripts": {
-    "start": "ts-node async-generator-simple.ts",
-    "start:detailed": "ts-node async-generator-example.ts",
+    "server": "bun run src/server.ts",
+    "cli": "bun run src/cli.ts",
+    "dev": "bun run src/main.ts",
     "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "bun test"
   },
   "keywords": [
-    "typescript",
-    "async",
-    "generator",
-    "async-generator"
+    "llm",
+    "agent",
+    "cli"
   ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.0.0",
-    "ts-node": "^10.9.0",
     "@types/node": "^20.0.0"
   }
 }
