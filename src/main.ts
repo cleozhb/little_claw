@@ -8,8 +8,8 @@
 import { startServer } from "./server.ts";
 import { startCli } from "./cli/Client.ts";
 
-// 1. 启动 Server（非阻塞）
-const { cleanup } = startServer();
+// 1. 启动 Server（含 Skill 加载，需要 await）
+const { cleanup } = await startServer();
 
 // 给 server 一点时间完成启动
 await Bun.sleep(100);

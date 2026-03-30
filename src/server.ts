@@ -1,7 +1,7 @@
 /**
  * src/server.ts — Gateway Server 入口
  *
- * 启动 Database、ToolRegistry、SessionRouter、GatewayServer。
+ * 启动 Database、ToolRegistry、SkillManager、SessionRouter、GatewayServer。
  * 用法: bun run src/server.ts
  */
 
@@ -12,10 +12,13 @@ import { createBuiltinTools } from "./tools/builtin/index.ts";
 import { Database } from "./db/Database.ts";
 import { SessionRouter } from "./gateway/SessionRouter.ts";
 import { GatewayServer } from "./gateway/GatewayServer.ts";
+import { SkillManager } from "./skills/SkillManager.ts";
+import { SkillLoader } from "./skills/SkillLoader.ts";
+import { SkillConfigFile } from "./skills/SkillConfigFile.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-export function startServer(): { gateway: GatewayServer; cleanup: () => void } {
+export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: () => void }> {
   const config = loadConfig();
 
   if (!config.llmApiKey) {
@@ -40,7 +43,8 @@ export function startServer(): { gateway: GatewayServer; cleanup: () => void } {
   const toolRegistry = new ToolRegistry();
   const workspaceRoot = join(process.cwd(), "workspace");
   mkdirSync(workspaceRoot, { recursive: true });
-  for (const tool of createBuiltinTools(workspaceRoot)) {
+  const builtinTools = createBuiltinTools(workspaceRoot);
+  for (const tool of builtinTools.all) {
     toolRegistry.register(tool);
   }
 
@@ -48,7 +52,38 @@ export function startServer(): { gateway: GatewayServer; cleanup: () => void } {
   mkdirSync(dataDir, { recursive: true });
   const db = new Database(join(dataDir, "little_claw.db"));
 
-  const sessionRouter = new SessionRouter({ db, llmProvider, toolRegistry });
+  // --- Skill 系统初始化 ---
+  const skillConfig = new SkillConfigFile();
+  await skillConfig.load();
+
+  const skillLoader = new SkillLoader();
+  const skillManager = new SkillManager(skillLoader, skillConfig);
+  await skillManager.initializeAll();
+
+  // 打印 Skill 加载摘要
+  const summary = skillManager.getSummary();
+  if (summary.total > 0) {
+    const parts = [`Loaded ${summary.loaded} skills`];
+    if (summary.unavailable > 0) parts.push(`${summary.unavailable} unavailable`);
+    if (summary.disabled > 0) parts.push(`${summary.disabled} disabled`);
+    if (summary.error > 0) parts.push(`${summary.error} error`);
+    console.log(`[Skills] ${parts.join(", ")}`);
+
+    // 打印每个 unavailable Skill 缺少什么
+    for (const detail of skillManager.getUnavailableDetails()) {
+      console.log(`  ${detail.name}: ${detail.missing}`);
+    }
+  } else {
+    console.log("[Skills] No skills found");
+  }
+
+  const sessionRouter = new SessionRouter({
+    db,
+    llmProvider,
+    toolRegistry,
+    skillManager,
+    shellTool: builtinTools.shellTool,
+  });
 
   const gateway = new GatewayServer({
     port,
@@ -56,6 +91,7 @@ export function startServer(): { gateway: GatewayServer; cleanup: () => void } {
     db,
     toolRegistry,
     llmProvider,
+    skillManager,
     onChat: (connectionId, sessionId, content) => {
       sessionRouter
         .handleChat(sessionId, content, (event) => {

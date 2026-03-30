@@ -22,6 +22,18 @@ export interface ToolInfo {
   parameters: Record<string, unknown>;
 }
 
+/** Skill 描述信息 */
+export interface SkillInfo {
+  name: string;
+  version: string;
+  emoji?: string;
+  description: string;
+  status: "loaded" | "unavailable" | "disabled" | "error";
+  missingDeps?: string;
+  /** 指令数（按 markdown 章节计算） */
+  instructionCount?: number;
+}
+
 // ============================================================
 // Client → Server Messages
 // ============================================================
@@ -73,6 +85,14 @@ export interface HealthCheckMessage {
   type: "health_check";
 }
 
+export interface ListSkillsMessage {
+  type: "list_skills";
+}
+
+export interface ReloadSkillsMessage {
+  type: "reload_skills";
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -82,6 +102,8 @@ export type ClientMessage =
   | RenameSessionMessage
   | GetStatusMessage
   | ListToolsMessage
+  | ListSkillsMessage
+  | ReloadSkillsMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -142,6 +164,11 @@ export interface ToolsListMessage {
   tools: ToolInfo[];
 }
 
+export interface SkillsListMessage {
+  type: "skills_list";
+  skills: SkillInfo[];
+}
+
 export interface SessionRenamedMessage {
   type: "session_renamed";
   session: SessionInfo;
@@ -197,6 +224,7 @@ export type ServerMessage =
   | TitleUpdatedMessage
   | StatusInfoMessage
   | ToolsListMessage
+  | SkillsListMessage
   | PongMessage
   | HealthStatusMessage
   | HealthAlertMessage;
@@ -214,6 +242,8 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "rename_session",
   "get_status",
   "list_tools",
+  "list_skills",
+  "reload_skills",
   "ping",
   "health_check",
 ]);
@@ -275,6 +305,10 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "get_status":
       break;
     case "list_tools":
+      break;
+    case "list_skills":
+      break;
+    case "reload_skills":
       break;
     case "ping":
       break;

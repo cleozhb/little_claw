@@ -10,11 +10,13 @@ import {
   type SessionInfo,
   type MessageSummary,
   type HealthTargetInfo,
+  type SkillInfo,
 } from "./protocol";
 import { HealthChecker, type HealthStatus } from "./HealthChecker.ts";
 import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
 import { WebSocketHealthTarget } from "./health/WebSocketHealthTarget.ts";
 import { ClientConnectionHealthTarget } from "./health/ClientConnectionHealthTarget.ts";
+import type { SkillManager } from "../skills/SkillManager.ts";
 
 // ============================================================
 // Types
@@ -27,6 +29,8 @@ export interface GatewayOptions {
   toolRegistry: ToolRegistry;
   /** LLM Provider，用于健康检查 */
   llmProvider: LLMProvider;
+  /** SkillManager，用于 list_skills */
+  skillManager?: SkillManager;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
   onChat?: (connectionId: string, sessionId: string, content: string) => void;
   /** 获取活跃 session 数的回调 */
@@ -48,6 +52,7 @@ export class GatewayServer {
   private toolRegistry: ToolRegistry;
   private onChat?: GatewayOptions["onChat"];
   private getActiveSessionCount?: GatewayOptions["getActiveSessionCount"];
+  private skillManager?: SkillManager;
   private port: number;
   private hostname: string;
 
@@ -64,6 +69,7 @@ export class GatewayServer {
     this.toolRegistry = options.toolRegistry;
     this.onChat = options.onChat;
     this.getActiveSessionCount = options.getActiveSessionCount;
+    this.skillManager = options.skillManager;
 
     // 初始化健康检查
     this.healthChecker = new HealthChecker();
@@ -261,6 +267,10 @@ export class GatewayServer {
         return this.handleGetStatus(connectionId);
       case "list_tools":
         return this.handleListTools(connectionId);
+      case "list_skills":
+        return this.handleListSkills(connectionId);
+      case "reload_skills":
+        return this.handleReloadSkills(connectionId);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -396,6 +406,69 @@ export class GatewayServer {
       parameters: t.parameters,
     }));
     this.sendToConnection(connectionId, { type: "tools_list", tools });
+  }
+
+  private handleListSkills(connectionId: string): void {
+    if (!this.skillManager) {
+      this.sendToConnection(connectionId, { type: "skills_list", skills: [] });
+      return;
+    }
+
+    const skills: SkillInfo[] = this.skillManager.getAllSkills().map((s) => {
+      const info: SkillInfo = {
+        name: s.parsed.name,
+        version: s.parsed.version,
+        emoji: s.parsed.emoji,
+        description: s.parsed.description,
+        status: s.status,
+      };
+
+      // 统计指令数（按 markdown ## 章节计）
+      const headings = s.parsed.instructions.match(/^#{1,3}\s+/gm);
+      if (headings) {
+        info.instructionCount = headings.length;
+      }
+
+      // unavailable 时附带缺失依赖信息
+      if (s.status === "unavailable" && s.gating) {
+        const parts: string[] = [];
+        if (s.gating.missingEnv.length > 0) {
+          parts.push(s.gating.missingEnv.join(", "));
+        }
+        if (s.gating.missingBins.length > 0) {
+          parts.push(s.gating.missingBins.join(", "));
+        }
+        if (s.gating.missingConfig.length > 0) {
+          parts.push(s.gating.missingConfig.join(", "));
+        }
+        if (parts.length > 0) {
+          info.missingDeps = parts.join("; ");
+        }
+      }
+
+      return info;
+    });
+
+    this.sendToConnection(connectionId, { type: "skills_list", skills });
+  }
+
+  private handleReloadSkills(connectionId: string): void {
+    if (!this.skillManager) {
+      this.sendToConnection(connectionId, { type: "skills_list", skills: [] });
+      return;
+    }
+
+    this.skillManager
+      .reload()
+      .then(() => {
+        this.handleListSkills(connectionId);
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Failed to reload skills: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
   }
 
   private handleRenameSession(connectionId: string, sessionId: string, title: string): void {

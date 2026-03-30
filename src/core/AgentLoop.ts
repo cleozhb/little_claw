@@ -6,6 +6,9 @@ import type {
   TextBlock,
   ToolUseBlock,
 } from "../types/message.ts";
+import type { SkillManager } from "../skills/SkillManager.ts";
+import type { ShellTool } from "../tools/types.ts";
+import { SkillPromptBuilder } from "../skills/SkillPromptBuilder.ts";
 import { generateTitle } from "./TitleGenerator.ts";
 
 const MAX_ITERATIONS = 20;
@@ -16,17 +19,25 @@ export class AgentLoop {
   private conversation: Conversation;
   private maxIterations: number;
   private pendingTitleGeneration: Promise<void> | null = null;
+  private skillManager?: SkillManager;
+  private shellTool?: ShellTool;
 
   constructor(
     client: LLMProvider,
     toolRegistry: ToolRegistry,
     conversation: Conversation,
-    maxIterations = MAX_ITERATIONS,
+    options?: {
+      maxIterations?: number;
+      skillManager?: SkillManager;
+      shellTool?: ShellTool;
+    },
   ) {
     this.client = client;
     this.toolRegistry = toolRegistry;
     this.conversation = conversation;
-    this.maxIterations = maxIterations;
+    this.maxIterations = options?.maxIterations ?? MAX_ITERATIONS;
+    this.skillManager = options?.skillManager;
+    this.shellTool = options?.shellTool;
   }
 
   /**
@@ -57,7 +68,7 @@ export class AgentLoop {
         const chatStream = this.client.chat(
           this.conversation.getMessages(),
           {
-            system: this.conversation.getSystemPrompt(),
+            system: this.getEffectiveSystemPrompt(),
             tools: this.toolRegistry.toToolDefinitions(),
           },
         );
@@ -178,6 +189,11 @@ export class AgentLoop {
           continue;
         }
 
+        // 执行 shell 工具前，注入所有已加载 Skill 的环境变量
+        if (block.name === "shell" && this.shellTool && this.skillManager) {
+          this.shellTool.setExtraEnv(this.collectSkillEnv());
+        }
+
         try {
           const result = await tool.execute(block.input);
           yield { type: "tool_result", name: block.name, result };
@@ -236,9 +252,50 @@ export class AgentLoop {
   }
 
   /**
-   * Wait for any pending title generation to complete (with timeout).
-   * Safe to call even if no title generation is pending.
+   * 构建有效的 system prompt：基础 prompt + skill 指令。
+   * 没有 skillManager 或没有已加载的 skill 时，回退到原始 system prompt。
    */
+  private getEffectiveSystemPrompt(): string {
+    const basePrompt = this.conversation.getSystemPrompt();
+
+    if (!this.skillManager) return basePrompt;
+
+    const loadedSkills = this.skillManager.getLoadedSkills();
+    if (loadedSkills.length === 0) return basePrompt;
+
+    const builder = new SkillPromptBuilder();
+    const skillPrompt = builder.buildSkillPrompt(
+      loadedSkills,
+      undefined,
+      this.skillManager.getRecentlyUsed(),
+    );
+
+    if (!skillPrompt) return basePrompt;
+
+    return `${basePrompt}\n\nYou have access to skills that extend your capabilities. When a user's request matches a skill's description, follow the skill's instructions. Skills may require you to use shell commands or other tools to complete tasks.\n\n${skillPrompt}`;
+  }
+
+  /**
+   * 收集所有已加载 Skill 的环境变量，合并为一个 Record。
+   * 项目级 Skill 的值覆盖全局级（由 SkillLoader 的加载顺序保证）。
+   */
+  private collectSkillEnv(): Record<string, string> {
+    if (!this.skillManager) return {};
+
+    const merged: Record<string, string> = {};
+    const loadedSkills = this.skillManager.getLoadedSkills();
+
+    // 反向遍历：先填入低优先级，后填入高优先级覆盖
+    // SkillManager.getLoadedSkills() 按加载顺序返回（项目级在前），
+    // 所以反向遍历后项目级的值会覆盖全局级
+    for (let i = loadedSkills.length - 1; i >= 0; i--) {
+      const env = this.skillManager.getSkillEnv(loadedSkills[i]!.name);
+      Object.assign(merged, env);
+    }
+
+    return merged;
+  }
+
   async waitForTitle(timeoutMs = 5000): Promise<void> {
     if (!this.pendingTitleGeneration) return;
     await Promise.race([

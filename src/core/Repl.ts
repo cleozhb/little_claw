@@ -5,6 +5,8 @@ import type { LLMProvider } from "../llm/types.ts";
 import type { ToolRegistry } from "../tools/ToolRegistry.ts";
 import type { Database, Session } from "../db/Database.ts";
 import type { Message } from "../types/message.ts";
+import type { SkillManager } from "../skills/SkillManager.ts";
+import type { ShellTool } from "../tools/types.ts";
 
 // ANSI colors
 const CYAN = "\x1b[36m";
@@ -39,24 +41,35 @@ export class Repl {
   private toolRegistry: ToolRegistry;
   private db: Database;
   private workspaceRoot: string;
+  private skillManager?: SkillManager;
+  private shellTool?: ShellTool;
 
   constructor(
     db: Database,
     client: LLMProvider,
     toolRegistry: ToolRegistry,
     workspaceRoot: string,
+    options?: {
+      skillManager?: SkillManager;
+      shellTool?: ShellTool;
+    },
   ) {
     this.db = db;
     this.client = client;
     this.toolRegistry = toolRegistry;
     this.workspaceRoot = workspaceRoot;
+    this.skillManager = options?.skillManager;
+    this.shellTool = options?.shellTool;
   }
 
   // --- Session switching ---
 
   private switchSession(conversation: Conversation): void {
     this.conversation = conversation;
-    this.agent = new AgentLoop(this.client, this.toolRegistry, conversation);
+    this.agent = new AgentLoop(this.client, this.toolRegistry, conversation, {
+      skillManager: this.skillManager,
+      shellTool: this.shellTool,
+    });
   }
 
   private getSessionLabel(): string {

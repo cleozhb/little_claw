@@ -1,9 +1,11 @@
 import type { LLMProvider } from "../llm/types";
 import type { Database } from "../db/Database";
 import type { ToolRegistry } from "../tools/ToolRegistry";
+import type { ShellTool } from "../tools/types";
 import type { ServerMessage } from "./protocol";
 import { AgentLoop } from "../core/AgentLoop";
 import { Conversation } from "../core/Conversation";
+import type { SkillManager } from "../skills/SkillManager";
 
 // ============================================================
 // Types
@@ -13,6 +15,8 @@ export interface SessionRouterOptions {
   db: Database;
   llmProvider: LLMProvider;
   toolRegistry: ToolRegistry;
+  skillManager?: SkillManager;
+  shellTool?: ShellTool;
   /** session 空闲超时（ms），默认 30 分钟 */
   idleTimeoutMs?: number;
   /** 清理扫描间隔（ms），默认 5 分钟 */
@@ -35,6 +39,8 @@ export class SessionRouter {
   private db: Database;
   private llmProvider: LLMProvider;
   private toolRegistry: ToolRegistry;
+  private skillManager?: SkillManager;
+  private shellTool?: ShellTool;
   private sessions = new Map<string, SessionEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimeoutMs: number;
@@ -43,6 +49,8 @@ export class SessionRouter {
     this.db = options.db;
     this.llmProvider = options.llmProvider;
     this.toolRegistry = options.toolRegistry;
+    this.skillManager = options.skillManager;
+    this.shellTool = options.shellTool;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60 * 1000;
 
     const cleanupIntervalMs = options.cleanupIntervalMs ?? 5 * 60 * 1000;
@@ -102,7 +110,10 @@ export class SessionRouter {
 
     // 从 DB 加载 session + 恢复对话历史
     const conversation = Conversation.loadExisting(this.db, sessionId);
-    const agentLoop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation);
+    const agentLoop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
+      skillManager: this.skillManager,
+      shellTool: this.shellTool,
+    });
 
     const entry: SessionEntry = {
       agentLoop,

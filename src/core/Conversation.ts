@@ -9,15 +9,25 @@ import type { Database } from "../db/Database.ts";
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful AI assistant with access to tools. You can read and write files, and execute shell commands. When the user asks you to perform tasks that require interacting with the filesystem or running commands, use the available tools. Always explain what you're about to do before using a tool.";
 
-export function buildSystemPrompt(workspaceRoot: string, base?: string): string {
+export function buildSystemPrompt(
+  workspaceRoot: string,
+  base?: string,
+  skillPrompt?: string,
+): string {
   const basePrompt = base ?? DEFAULT_SYSTEM_PROMPT;
-  return `${basePrompt}
+  let prompt = `${basePrompt}
 
 ## Workspace
 All file operations (read_file, write_file) and shell commands are sandboxed to the workspace directory: ${workspaceRoot}
 - File paths are relative to this workspace root. For example, use "hello.ts" instead of "workspace/hello.ts".
 - Shell commands run with this workspace as the current working directory.
 - You cannot access files outside this directory.`;
+
+  if (skillPrompt) {
+    prompt += `\n\nYou have access to skills that extend your capabilities. When a user's request matches a skill's description, follow the skill's instructions. Skills may require you to use shell commands or other tools to complete tasks.\n\n${skillPrompt}`;
+  }
+
+  return prompt;
 }
 
 export class Conversation {

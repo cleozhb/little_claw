@@ -6,6 +6,7 @@ import type {
   MessageSummary,
   ToolInfo,
   HealthTargetInfo,
+  SkillInfo,
 } from "../gateway/protocol";
 
 // ============================================================
@@ -36,6 +37,11 @@ const COMMANDS = [
   "/rename ",
   "/history",
   "/tools",
+  "/skills",
+  "/skills info ",
+  "/skills install ",
+  "/skills remove ",
+  "/skills reload",
   "/status",
   "/quit",
   "/exit",
@@ -394,6 +400,16 @@ export class GatewayClient {
     return (resp as { tools: ToolInfo[] }).tools;
   }
 
+  async listSkills(): Promise<SkillInfo[]> {
+    const resp = await this.request({ type: "list_skills" }, "skills_list");
+    return (resp as { skills: SkillInfo[] }).skills;
+  }
+
+  async reloadSkills(): Promise<SkillInfo[]> {
+    const resp = await this.request({ type: "reload_skills" }, "skills_list");
+    return (resp as { skills: SkillInfo[] }).skills;
+  }
+
   async getStatus(): Promise<{ activeSessions: number; connections: number }> {
     const resp = await this.request({ type: "get_status" }, "status_info");
     const data = resp as { activeSessions: number; connections: number };
@@ -506,17 +522,22 @@ export class ClientRepl {
 
   private get help(): string {
     return `Available commands:
-  /help             Show this help message
-  /sessions         List all sessions
-  /switch <n|id>    Switch to another session
-  /new              Create a new session
-  /delete <n|id>    Delete a session
-  /rename <title>   Rename current session
-  /history          Show recent messages from loaded session
-  /tools            List registered tools
-  /status           Show server status
-  /quit             Exit the chat
-  /exit             Exit the chat
+  /help                  Show this help message
+  /sessions              List all sessions
+  /switch <n|id>         Switch to another session
+  /new                   Create a new session
+  /delete <n|id>         Delete a session
+  /rename <title>        Rename current session
+  /history               Show recent messages from loaded session
+  /tools                 List registered tools
+  /skills                List all skills and their status
+  /skills info <name>    Show detailed info for a skill
+  /skills install <path> Install a skill from a directory
+  /skills remove <name>  Remove an installed skill
+  /skills reload         Reload all skills
+  /status                Show server status
+  /quit                  Exit the chat
+  /exit                  Exit the chat
 
 Multi-line input:
   Type ${CYAN}"""${RESET} to start, type ${CYAN}"""${RESET} again to send.
@@ -646,6 +667,201 @@ Type ${CYAN}/help${RESET} for available commands.
       console.log(`  ${YELLOW}${tool.name}${RESET} - ${DIM}${tool.description}${RESET}`);
     }
     console.log();
+  }
+
+  // --- Skills commands ---
+
+  private async handleSkills(): Promise<void> {
+    const skills = await this.client.listSkills();
+    if (skills.length === 0) {
+      console.log("No skills found.\n");
+      return;
+    }
+
+    console.log(`${BOLD}Skills:${RESET}`);
+
+    // 计算最长名称+版本用于对齐
+    const nameVersions = skills.map(
+      (s) => `${s.emoji ?? "📦"} ${s.name} v${s.version}`,
+    );
+    const maxLen = Math.max(...nameVersions.map((nv) => nv.length));
+
+    for (let i = 0; i < skills.length; i++) {
+      const s = skills[i]!;
+      const nv = nameVersions[i]!;
+      const pad = " ".repeat(Math.max(1, maxLen - nv.length + 2));
+
+      let statusIcon: string;
+      let statusColor: string;
+      let extra = "";
+
+      switch (s.status) {
+        case "loaded":
+          statusIcon = "✅";
+          statusColor = GREEN;
+          if (s.instructionCount) {
+            extra = ` (${s.instructionCount} instructions)`;
+          }
+          break;
+        case "unavailable":
+          statusIcon = "⚠️ ";
+          statusColor = YELLOW;
+          if (s.missingDeps) {
+            extra = ` (missing: ${s.missingDeps})`;
+          }
+          break;
+        case "disabled":
+          statusIcon = "⛔";
+          statusColor = RED;
+          extra = " disabled by config";
+          break;
+        case "error":
+          statusIcon = "❌";
+          statusColor = RED;
+          extra = " error";
+          break;
+        default:
+          statusIcon = "?";
+          statusColor = DIM;
+      }
+
+      console.log(
+        `${statusIcon} ${statusColor}${nv}${RESET}${pad}— ${DIM}${s.description}${RESET}${extra ? ` ${DIM}${extra}${RESET}` : ""}`,
+      );
+    }
+    console.log();
+  }
+
+  private async handleSkillInfo(name: string): Promise<void> {
+    if (!name) {
+      console.log("Usage: /skills info <name>\n");
+      return;
+    }
+
+    const skills = await this.client.listSkills();
+    const skill = skills.find((s) => s.name === name);
+
+    if (!skill) {
+      console.log(`${RED}Skill not found: ${name}${RESET}\n`);
+      return;
+    }
+
+    console.log(`${BOLD}${skill.emoji ?? "📦"} ${skill.name}${RESET} v${skill.version}`);
+    console.log(`  Description: ${skill.description}`);
+    console.log(`  Status:      ${this.formatSkillStatus(skill)}`);
+    if (skill.missingDeps) {
+      console.log(`  Missing:     ${YELLOW}${skill.missingDeps}${RESET}`);
+    }
+    if (skill.instructionCount) {
+      console.log(`  Instructions: ${skill.instructionCount} sections`);
+    }
+    console.log();
+  }
+
+  private async handleSkillInstall(
+    pathArg: string,
+    rl: readline.Interface,
+  ): Promise<void> {
+    if (!pathArg) {
+      console.log("Usage: /skills install <path>\n");
+      return;
+    }
+
+    const { resolve, basename, join } = await import("node:path");
+    const { homedir } = await import("node:os");
+    const { cpSync, existsSync } = await import("node:fs");
+
+    const sourcePath = resolve(pathArg);
+
+    // 验证源目录存在 SKILL.md
+    const skillMdPath = join(sourcePath, "SKILL.md");
+    if (!existsSync(skillMdPath)) {
+      console.log(`${RED}No SKILL.md found in ${sourcePath}${RESET}\n`);
+      return;
+    }
+
+    const skillName = basename(sourcePath);
+    const targetDir = join(homedir(), ".little_claw", "skills", skillName);
+
+    if (existsSync(targetDir)) {
+      let confirm: string;
+      try {
+        confirm = await rl.question(
+          `Skill "${skillName}" already exists. Overwrite? (y/N) `,
+        );
+      } catch {
+        return;
+      }
+      if (confirm.trim().toLowerCase() !== "y") {
+        console.log("Cancelled.\n");
+        return;
+      }
+    }
+
+    try {
+      cpSync(sourcePath, targetDir, { recursive: true });
+      console.log(`${GREEN}Installed ${skillName} to ${targetDir}${RESET}`);
+      console.log(`${DIM}Run /skills reload to activate.${RESET}\n`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`${RED}Failed to install: ${msg}${RESET}\n`);
+    }
+  }
+
+  private async handleSkillRemove(
+    name: string,
+    rl: readline.Interface,
+  ): Promise<void> {
+    if (!name) {
+      console.log("Usage: /skills remove <name>\n");
+      return;
+    }
+
+    const { join } = await import("node:path");
+    const { homedir } = await import("node:os");
+    const { existsSync, rmSync } = await import("node:fs");
+
+    const targetDir = join(homedir(), ".little_claw", "skills", name);
+
+    if (!existsSync(targetDir)) {
+      console.log(`${RED}Skill not found: ${targetDir}${RESET}\n`);
+      return;
+    }
+
+    let confirm: string;
+    try {
+      confirm = await rl.question(`Remove skill "${name}"? (y/N) `);
+    } catch {
+      return;
+    }
+    if (confirm.trim().toLowerCase() !== "y") {
+      console.log("Cancelled.\n");
+      return;
+    }
+
+    try {
+      rmSync(targetDir, { recursive: true });
+      console.log(`${GREEN}Removed ${name}${RESET}`);
+      console.log(`${DIM}Run /skills reload to update.${RESET}\n`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`${RED}Failed to remove: ${msg}${RESET}\n`);
+    }
+  }
+
+  private formatSkillStatus(skill: SkillInfo): string {
+    switch (skill.status) {
+      case "loaded":
+        return `${GREEN}loaded${RESET}`;
+      case "unavailable":
+        return `${YELLOW}unavailable${RESET}`;
+      case "disabled":
+        return `${RED}disabled${RESET}`;
+      case "error":
+        return `${RED}error${RESET}`;
+      default:
+        return skill.status;
+    }
   }
 
   private async handleStatus(): Promise<void> {
@@ -839,6 +1055,39 @@ Type ${CYAN}/help${RESET} for available commands.
 
         if (input === "/tools") {
           await this.handleTools();
+          continue;
+        }
+
+        if (input === "/skills" || input === "/skills list") {
+          await this.handleSkills();
+          continue;
+        }
+
+        if (input.startsWith("/skills info")) {
+          await this.handleSkillInfo(input.slice(12).trim());
+          continue;
+        }
+
+        if (input.startsWith("/skills install")) {
+          await this.handleSkillInstall(input.slice(15).trim(), rl);
+          continue;
+        }
+
+        if (input.startsWith("/skills remove")) {
+          await this.handleSkillRemove(input.slice(14).trim(), rl);
+          continue;
+        }
+
+        if (input === "/skills reload") {
+          console.log(`${DIM}Reloading skills...${RESET}`);
+          try {
+            const skills = await this.client.reloadSkills();
+            const loaded = skills.filter((s) => s.status === "loaded").length;
+            console.log(`${GREEN}Reloaded: ${loaded}/${skills.length} skills available.${RESET}`);
+          } catch (err) {
+            console.log(`${RED}Reload failed: ${err instanceof Error ? err.message : String(err)}${RESET}`);
+          }
+          await this.handleSkills();
           continue;
         }
 

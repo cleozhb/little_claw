@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "../types.ts";
+import type { ShellTool, ToolResult } from "../types.ts";
 
 const DEFAULT_TIMEOUT = 30_000;
 const MAX_OUTPUT_LEN = 10_000;
@@ -11,7 +11,9 @@ function truncate(text: string): string {
   );
 }
 
-export function createShellTool(workspaceRoot: string): Tool {
+export function createShellTool(workspaceRoot: string): ShellTool {
+  let extraEnv: Record<string, string> = {};
+
   return {
     name: "shell",
     description:
@@ -28,6 +30,10 @@ export function createShellTool(workspaceRoot: string): Tool {
       required: ["command"],
     },
 
+    setExtraEnv(env: Record<string, string>): void {
+      extraEnv = env;
+    },
+
     async execute(params: Record<string, unknown>): Promise<ToolResult> {
       const command = params.command as string;
       const timeout = (params.timeout_ms as number) || DEFAULT_TIMEOUT;
@@ -35,6 +41,7 @@ export function createShellTool(workspaceRoot: string): Tool {
       try {
         const proc = Bun.spawn(["sh", "-c", command], {
           cwd: workspaceRoot,
+          env: { ...process.env, ...extraEnv },
           stdout: "pipe",
           stderr: "pipe",
         });
