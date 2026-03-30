@@ -7,6 +7,7 @@ import type {
   ToolInfo,
   HealthTargetInfo,
   SkillInfo,
+  McpServerInfo,
 } from "../gateway/protocol";
 
 // ============================================================
@@ -42,6 +43,8 @@ const COMMANDS = [
   "/skills install ",
   "/skills remove ",
   "/skills reload",
+  "/mcp",
+  "/mcp reconnect ",
   "/status",
   "/quit",
   "/exit",
@@ -410,6 +413,21 @@ export class GatewayClient {
     return (resp as { skills: SkillInfo[] }).skills;
   }
 
+  async listMcpServers(): Promise<McpServerInfo[]> {
+    const resp = await this.request({ type: "list_mcp_servers" }, "mcp_servers_list");
+    return (resp as { servers: McpServerInfo[] }).servers;
+  }
+
+  async reconnectMcp(name: string): Promise<{ success: boolean; error?: string }> {
+    const resp = await this.request(
+      { type: "reconnect_mcp", name } as ClientMessage,
+      "mcp_reconnected",
+      30_000,
+    );
+    const data = resp as { name: string; success: boolean; error?: string };
+    return { success: data.success, error: data.error };
+  }
+
   async getStatus(): Promise<{ activeSessions: number; connections: number }> {
     const resp = await this.request({ type: "get_status" }, "status_info");
     const data = resp as { activeSessions: number; connections: number };
@@ -535,6 +553,8 @@ export class ClientRepl {
   /skills install <path> Install a skill from a directory
   /skills remove <name>  Remove an installed skill
   /skills reload         Reload all skills
+  /mcp                   List MCP server status
+  /mcp reconnect <name>  Reconnect a MCP server
   /status                Show server status
   /quit                  Exit the chat
   /exit                  Exit the chat
@@ -662,10 +682,46 @@ Type ${CYAN}/help${RESET} for available commands.
       console.log("No tools registered.\n");
       return;
     }
-    console.log("Registered tools:");
+
+    // 分组
+    const builtin: ToolInfo[] = [];
+    const skill: ToolInfo[] = [];
+    const mcp: ToolInfo[] = [];
+
     for (const tool of tools) {
-      console.log(`  ${YELLOW}${tool.name}${RESET} - ${DIM}${tool.description}${RESET}`);
+      if (tool.name.startsWith("mcp.")) {
+        mcp.push(tool);
+      } else if (tool.name.startsWith("skill.")) {
+        skill.push(tool);
+      } else {
+        builtin.push(tool);
+      }
     }
+
+    if (builtin.length > 0) {
+      console.log(`${BOLD}Built-in:${RESET}`);
+      for (const t of builtin) {
+        console.log(`  ${YELLOW}${t.name}${RESET} - ${DIM}${t.description}${RESET}`);
+      }
+    }
+
+    if (skill.length > 0) {
+      console.log(`${BOLD}Skills:${RESET}`);
+      for (const t of skill) {
+        console.log(`  ${YELLOW}${t.name}${RESET} - ${DIM}${t.description}${RESET}`);
+      }
+    }
+
+    if (mcp.length > 0) {
+      console.log(`${BOLD}MCP:${RESET}`);
+      for (const t of mcp) {
+        // 提取 server 名：mcp.{server}.{tool}
+        const parts = t.name.split(".");
+        const server = parts.length >= 3 ? parts[1] : "unknown";
+        console.log(`  ${YELLOW}${t.name}${RESET} ${DIM}[${server}]${RESET} - ${DIM}${t.description}${RESET}`);
+      }
+    }
+
     console.log();
   }
 
@@ -846,6 +902,64 @@ Type ${CYAN}/help${RESET} for available commands.
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`${RED}Failed to remove: ${msg}${RESET}\n`);
+    }
+  }
+
+  // --- MCP commands ---
+
+  private async handleMcp(): Promise<void> {
+    const servers = await this.client.listMcpServers();
+    if (servers.length === 0) {
+      console.log("No MCP servers configured.\n");
+      return;
+    }
+
+    console.log(`${BOLD}MCP Servers:${RESET}`);
+    for (const s of servers) {
+      let statusColor: string;
+      let statusIcon: string;
+      switch (s.status) {
+        case "connected":
+          statusColor = GREEN;
+          statusIcon = "●";
+          break;
+        case "disconnected":
+          statusColor = DIM;
+          statusIcon = "○";
+          break;
+        case "error":
+          statusColor = RED;
+          statusIcon = "✕";
+          break;
+        default:
+          statusColor = DIM;
+          statusIcon = "?";
+      }
+      const toolInfo = s.status === "connected" ? ` (${s.toolCount} tools)` : "";
+      const errorInfo = s.error ? ` — ${s.error}` : "";
+      console.log(
+        `  ${statusColor}${statusIcon}${RESET} ${YELLOW}${s.name}${RESET}: ${statusColor}${s.status}${RESET}${toolInfo}${DIM}${errorInfo}${RESET}`,
+      );
+    }
+    console.log();
+  }
+
+  private async handleMcpReconnect(name: string): Promise<void> {
+    if (!name) {
+      console.log("Usage: /mcp reconnect <name>\n");
+      return;
+    }
+
+    console.log(`${DIM}Reconnecting to "${name}"...${RESET}`);
+    try {
+      const result = await this.client.reconnectMcp(name);
+      if (result.success) {
+        console.log(`${GREEN}Reconnected to "${name}".${RESET}\n`);
+      } else {
+        console.log(`${RED}Failed to reconnect: ${result.error ?? "unknown error"}${RESET}\n`);
+      }
+    } catch (err) {
+      console.log(`${RED}Error: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
     }
   }
 
@@ -1088,6 +1202,16 @@ Type ${CYAN}/help${RESET} for available commands.
             console.log(`${RED}Reload failed: ${err instanceof Error ? err.message : String(err)}${RESET}`);
           }
           await this.handleSkills();
+          continue;
+        }
+
+        if (input.startsWith("/mcp reconnect")) {
+          await this.handleMcpReconnect(input.slice(14).trim());
+          continue;
+        }
+
+        if (input === "/mcp") {
+          await this.handleMcp();
           continue;
         }
 

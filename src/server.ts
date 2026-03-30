@@ -15,10 +15,11 @@ import { GatewayServer } from "./gateway/GatewayServer.ts";
 import { SkillManager } from "./skills/SkillManager.ts";
 import { SkillLoader } from "./skills/SkillLoader.ts";
 import { SkillConfigFile } from "./skills/SkillConfigFile.ts";
+import { McpManager } from "./mcp/McpManager.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: () => void }> {
+export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: () => Promise<void> }> {
   const config = loadConfig();
 
   if (!config.llmApiKey) {
@@ -61,21 +62,47 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   await skillManager.initializeAll();
 
   // 打印 Skill 加载摘要
-  const summary = skillManager.getSummary();
-  if (summary.total > 0) {
-    const parts = [`Loaded ${summary.loaded} skills`];
-    if (summary.unavailable > 0) parts.push(`${summary.unavailable} unavailable`);
-    if (summary.disabled > 0) parts.push(`${summary.disabled} disabled`);
-    if (summary.error > 0) parts.push(`${summary.error} error`);
-    console.log(`[Skills] ${parts.join(", ")}`);
+  const skillSummary = skillManager.getSummary();
 
-    // 打印每个 unavailable Skill 缺少什么
+  // --- MCP 系统初始化 ---
+  const mcpManager = new McpManager(toolRegistry);
+  await mcpManager.connectAll();
+
+  // --- 启动摘要 ---
+  const builtinCount = builtinTools.all.length;
+  const allTools = toolRegistry.getAll();
+  const mcpToolCount = allTools.filter((t) => t.name.startsWith("mcp.")).length;
+  const skillToolCount = allTools.length - builtinCount - mcpToolCount;
+
+  const mcpStatus = mcpManager.getStatus();
+  const mcpConnected = mcpStatus.filter((s) => s.status === "connected");
+
+  const toolLine = [
+    `${builtinCount} built-in`,
+    skillToolCount > 0 ? `${skillToolCount} from skills` : null,
+    mcpToolCount > 0 ? `${mcpToolCount} from MCP (${mcpConnected.length} server${mcpConnected.length !== 1 ? "s" : ""})` : null,
+  ].filter(Boolean).join(", ");
+
+  if (skillSummary.total > 0) {
+    const parts = [`${skillSummary.loaded} loaded`];
+    if (skillSummary.unavailable > 0) parts.push(`${skillSummary.unavailable} unavailable`);
+    if (skillSummary.disabled > 0) parts.push(`${skillSummary.disabled} disabled`);
+    if (skillSummary.error > 0) parts.push(`${skillSummary.error} error`);
+    console.log(`Skills: ${parts.join(", ")}`);
+
     for (const detail of skillManager.getUnavailableDetails()) {
       console.log(`  ${detail.name}: ${detail.missing}`);
     }
-  } else {
-    console.log("[Skills] No skills found");
   }
+
+  if (mcpConnected.length > 0) {
+    const serverDetails = mcpConnected
+      .map((s) => `${s.name} (${s.toolCount} tools)`)
+      .join(", ");
+    console.log(`MCP: ${serverDetails}`);
+  }
+
+  console.log(`Tools: ${toolLine}`);
 
   const sessionRouter = new SessionRouter({
     db,
@@ -92,6 +119,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     toolRegistry,
     llmProvider,
     skillManager,
+    mcpManager,
     onChat: (connectionId, sessionId, content) => {
       sessionRouter
         .handleChat(sessionId, content, (event) => {
@@ -110,21 +138,25 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
 
   gateway.start();
 
-  console.log(`my-agent server running on ws://${host}:${port}`);
+  // 将 HealthChecker 注入 McpManager，使 MCP server 加入健康监控
+  mcpManager.setHealthChecker(gateway.getHealthChecker());
 
-  const cleanup = () => {
+  console.log(`little_claw server running on ws://${host}:${port}`);
+
+  const cleanup = async () => {
+    await mcpManager.disconnectAll();
     sessionRouter.dispose();
     gateway.stop();
   };
 
-  process.on("SIGINT", () => {
+  process.on("SIGINT", async () => {
     console.log("\nShutting down...");
-    cleanup();
+    await cleanup();
     process.exit(0);
   });
 
-  process.on("SIGTERM", () => {
-    cleanup();
+  process.on("SIGTERM", async () => {
+    await cleanup();
     process.exit(0);
   });
 

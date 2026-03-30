@@ -93,6 +93,15 @@ export interface ReloadSkillsMessage {
   type: "reload_skills";
 }
 
+export interface ListMcpServersMessage {
+  type: "list_mcp_servers";
+}
+
+export interface ReconnectMcpMessage {
+  type: "reconnect_mcp";
+  name: string;
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -104,6 +113,8 @@ export type ClientMessage =
   | ListToolsMessage
   | ListSkillsMessage
   | ReloadSkillsMessage
+  | ListMcpServersMessage
+  | ReconnectMcpMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -211,6 +222,25 @@ export interface HealthAlertMessage {
   message: string;
 }
 
+export interface McpServerInfo {
+  name: string;
+  status: "connected" | "disconnected" | "error";
+  toolCount: number;
+  error?: string;
+}
+
+export interface McpServersListMessage {
+  type: "mcp_servers_list";
+  servers: McpServerInfo[];
+}
+
+export interface McpReconnectedMessage {
+  type: "mcp_reconnected";
+  name: string;
+  success: boolean;
+  error?: string;
+}
+
 export type ServerMessage =
   | TextDeltaMessage
   | ToolCallMessage
@@ -227,7 +257,9 @@ export type ServerMessage =
   | SkillsListMessage
   | PongMessage
   | HealthStatusMessage
-  | HealthAlertMessage;
+  | HealthAlertMessage
+  | McpServersListMessage
+  | McpReconnectedMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -244,6 +276,8 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "list_tools",
   "list_skills",
   "reload_skills",
+  "list_mcp_servers",
+  "reconnect_mcp",
   "ping",
   "health_check",
 ]);
@@ -309,6 +343,11 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "list_skills":
       break;
     case "reload_skills":
+      break;
+    case "list_mcp_servers":
+      break;
+    case "reconnect_mcp":
+      requireString(msg, "name");
       break;
     case "ping":
       break;

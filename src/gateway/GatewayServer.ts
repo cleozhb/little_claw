@@ -17,6 +17,7 @@ import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
 import { WebSocketHealthTarget } from "./health/WebSocketHealthTarget.ts";
 import { ClientConnectionHealthTarget } from "./health/ClientConnectionHealthTarget.ts";
 import type { SkillManager } from "../skills/SkillManager.ts";
+import type { McpManager } from "../mcp/McpManager.ts";
 
 // ============================================================
 // Types
@@ -31,6 +32,8 @@ export interface GatewayOptions {
   llmProvider: LLMProvider;
   /** SkillManager，用于 list_skills */
   skillManager?: SkillManager;
+  /** McpManager，用于 MCP server 管理 */
+  mcpManager?: McpManager;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
   onChat?: (connectionId: string, sessionId: string, content: string) => void;
   /** 获取活跃 session 数的回调 */
@@ -53,6 +56,7 @@ export class GatewayServer {
   private onChat?: GatewayOptions["onChat"];
   private getActiveSessionCount?: GatewayOptions["getActiveSessionCount"];
   private skillManager?: SkillManager;
+  private mcpManager?: McpManager;
   private port: number;
   private hostname: string;
 
@@ -70,6 +74,7 @@ export class GatewayServer {
     this.onChat = options.onChat;
     this.getActiveSessionCount = options.getActiveSessionCount;
     this.skillManager = options.skillManager;
+    this.mcpManager = options.mcpManager;
 
     // 初始化健康检查
     this.healthChecker = new HealthChecker();
@@ -271,6 +276,10 @@ export class GatewayServer {
         return this.handleListSkills(connectionId);
       case "reload_skills":
         return this.handleReloadSkills(connectionId);
+      case "list_mcp_servers":
+        return this.handleListMcpServers(connectionId);
+      case "reconnect_mcp":
+        return this.handleReconnectMcp(connectionId, msg.name);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -467,6 +476,47 @@ export class GatewayServer {
         this.sendToConnection(connectionId, {
           type: "error",
           message: `Failed to reload skills: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleListMcpServers(connectionId: string): void {
+    if (!this.mcpManager) {
+      this.sendToConnection(connectionId, { type: "mcp_servers_list", servers: [] });
+      return;
+    }
+    this.sendToConnection(connectionId, {
+      type: "mcp_servers_list",
+      servers: this.mcpManager.getStatus(),
+    });
+  }
+
+  private handleReconnectMcp(connectionId: string, name: string): void {
+    if (!this.mcpManager) {
+      this.sendToConnection(connectionId, {
+        type: "mcp_reconnected",
+        name,
+        success: false,
+        error: "MCP not configured",
+      });
+      return;
+    }
+
+    this.mcpManager
+      .reconnect(name)
+      .then(() => {
+        this.sendToConnection(connectionId, {
+          type: "mcp_reconnected",
+          name,
+          success: true,
+        });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "mcp_reconnected",
+          name,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
         });
       });
   }
