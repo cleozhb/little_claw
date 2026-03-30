@@ -55,6 +55,7 @@ export function startServer(): { gateway: GatewayServer; cleanup: () => void } {
     hostname: host,
     db,
     toolRegistry,
+    llmProvider,
     onChat: (connectionId, sessionId, content) => {
       sessionRouter
         .handleChat(sessionId, content, (event) => {

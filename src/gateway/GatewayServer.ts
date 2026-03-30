@@ -1,6 +1,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import { Database } from "../db/Database";
 import { ToolRegistry } from "../tools/ToolRegistry";
+import type { LLMProvider } from "../llm/types.ts";
 import {
   parseClientMessage,
   serializeServerMessage,
@@ -8,7 +9,12 @@ import {
   type ServerMessage,
   type SessionInfo,
   type MessageSummary,
+  type HealthTargetInfo,
 } from "./protocol";
+import { HealthChecker, type HealthStatus } from "./HealthChecker.ts";
+import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
+import { WebSocketHealthTarget } from "./health/WebSocketHealthTarget.ts";
+import { ClientConnectionHealthTarget } from "./health/ClientConnectionHealthTarget.ts";
 
 // ============================================================
 // Types
@@ -19,6 +25,8 @@ export interface GatewayOptions {
   hostname?: string;
   db: Database;
   toolRegistry: ToolRegistry;
+  /** LLM Provider，用于健康检查 */
+  llmProvider: LLMProvider;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
   onChat?: (connectionId: string, sessionId: string, content: string) => void;
   /** 获取活跃 session 数的回调 */
@@ -43,6 +51,12 @@ export class GatewayServer {
   private port: number;
   private hostname: string;
 
+  // 健康监控
+  private healthChecker: HealthChecker;
+  private wsHealthTarget: WebSocketHealthTarget;
+  private clientTargets = new Map<string, ClientConnectionHealthTarget>();
+  private startedAt = Date.now();
+
   constructor(options: GatewayOptions) {
     this.port = options.port ?? 4000;
     this.hostname = options.hostname ?? "localhost";
@@ -50,6 +64,30 @@ export class GatewayServer {
     this.toolRegistry = options.toolRegistry;
     this.onChat = options.onChat;
     this.getActiveSessionCount = options.getActiveSessionCount;
+
+    // 初始化健康检查
+    this.healthChecker = new HealthChecker();
+
+    this.healthChecker.registerTarget(new LLMHealthTarget(options.llmProvider));
+
+    this.wsHealthTarget = new WebSocketHealthTarget({
+      getConnectionCount: () => this.connections.size,
+      isServerRunning: () => this.server !== null,
+    });
+    this.healthChecker.registerTarget(this.wsHealthTarget);
+
+    // 状态变化时：打日志 + 广播 health_alert
+    this.healthChecker.onStatusChange((name, oldStatus, newStatus) => {
+      console.log(
+        `[HEALTH] ${name}: ${oldStatus.status} → ${newStatus.status}` +
+          (newStatus.message ? ` (${newStatus.message})` : ""),
+      );
+
+      // 状态恶化时向所有客户端推送告警
+      if (newStatus.status === "down" || newStatus.status === "degraded") {
+        this.broadcastHealthAlert(name, oldStatus, newStatus);
+      }
+    });
   }
 
   // ----------------------------------------------------------
@@ -57,22 +95,27 @@ export class GatewayServer {
   // ----------------------------------------------------------
 
   start(): void {
+    const self = this;
+
     this.server = Bun.serve<ConnectionData>({
       port: this.port,
       hostname: this.hostname,
 
-      routes: {
-        "/health": new Response("ok"),
-      },
-
       websocket: {
-        open: (ws) => this.handleOpen(ws),
-        message: (ws, raw) => this.handleMessage(ws, raw),
-        close: (ws) => this.handleClose(ws),
+        open: (ws) => self.handleOpen(ws),
+        message: (ws, raw) => self.handleMessage(ws, raw),
+        close: (ws) => self.handleClose(ws),
+        pong: (ws) => self.handlePong(ws),
       },
 
       fetch(req, server) {
         const url = new URL(req.url);
+
+        // GET /health — JSON 健康检查端点（给外部监控工具用）
+        if (url.pathname === "/health" && req.method === "GET") {
+          return self.handleHealthEndpoint();
+        }
+
         if (url.pathname === "/ws") {
           const connectionId = crypto.randomUUID();
           const upgraded = server.upgrade(req, { data: { connectionId } });
@@ -85,10 +128,15 @@ export class GatewayServer {
       },
     });
 
+    this.startedAt = Date.now();
+    this.healthChecker.start();
     console.log(`[Gateway] listening on ws://localhost:${this.server.port}/ws`);
   }
 
   async stop(): Promise<void> {
+    // 停止健康检查
+    this.healthChecker.stop();
+
     // 关闭所有 WebSocket 连接
     for (const [id, ws] of this.connections) {
       try {
@@ -98,6 +146,7 @@ export class GatewayServer {
       }
     }
     this.connections.clear();
+    this.clientTargets.clear();
 
     // 关闭 HTTP 服务器
     if (this.server) {
@@ -126,6 +175,11 @@ export class GatewayServer {
     }
   }
 
+  /** 获取 HealthChecker 实例，外部可注册 onStatusChange 回调 */
+  getHealthChecker(): HealthChecker {
+    return this.healthChecker;
+  }
+
   // ----------------------------------------------------------
   // WebSocket 事件处理
   // ----------------------------------------------------------
@@ -133,13 +187,38 @@ export class GatewayServer {
   private handleOpen(ws: ServerWebSocket<ConnectionData>): void {
     const { connectionId } = ws.data;
     this.connections.set(connectionId, ws);
+
+    // 注册该连接的健康检查
+    const target = new ClientConnectionHealthTarget({
+      ws,
+      connectionId,
+      onClose: (id) => {
+        this.connections.delete(id);
+        this.healthChecker.unregisterTarget(`WebSocket:${id}`);
+        this.clientTargets.delete(id);
+      },
+    });
+    this.clientTargets.set(connectionId, target);
+    this.healthChecker.registerTarget(target);
+
     console.log(`[Gateway] connection opened: ${connectionId}`);
   }
 
   private handleClose(ws: ServerWebSocket<ConnectionData>): void {
     const { connectionId } = ws.data;
     this.connections.delete(connectionId);
+
+    // 注销该连接的健康检查
+    this.healthChecker.unregisterTarget(`WebSocket:${connectionId}`);
+    this.clientTargets.delete(connectionId);
+
     console.log(`[Gateway] connection closed: ${connectionId}`);
+  }
+
+  private handlePong(ws: ServerWebSocket<ConnectionData>): void {
+    const { connectionId } = ws.data;
+    const target = this.clientTargets.get(connectionId);
+    target?.handlePong();
   }
 
   private handleMessage(ws: ServerWebSocket<ConnectionData>, raw: string | Buffer): void {
@@ -184,6 +263,8 @@ export class GatewayServer {
         return this.handleListTools(connectionId);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
+      case "health_check":
+        return this.handleHealthCheck(connectionId);
     }
   }
 
@@ -267,7 +348,8 @@ export class GatewayServer {
 
   private handleListSessions(connectionId: string): void {
     try {
-      const sessions = this.db.listSessions();
+      const sessions = this.db.listSessions()
+        .filter((s) => s.title !== null || this.db.getMessageCount(s.id) > 0);
       const list: SessionInfo[] = sessions.map((s) => ({
         id: s.id,
         title: s.title,
@@ -354,5 +436,80 @@ export class GatewayServer {
       activeSessions: this.getActiveSessionCount?.() ?? 0,
       connections: this.connections.size,
     });
+  }
+
+  // ----------------------------------------------------------
+  // 健康检查相关
+  // ----------------------------------------------------------
+
+  /** 响应客户端的 health_check 请求 */
+  private handleHealthCheck(connectionId: string): void {
+    const targets = this.buildHealthTargets();
+    this.sendToConnection(connectionId, { type: "health_status", targets });
+  }
+
+  /** HTTP GET /health — JSON 健康检查端点，给外部监控工具用 */
+  private handleHealthEndpoint(): Response {
+    const targets = this.buildHealthTargets();
+
+    // 计算总体状态
+    let overall: "ok" | "degraded" | "down" = "ok";
+    for (const t of targets) {
+      if (t.status === "down") {
+        overall = "down";
+        break;
+      }
+      if (t.status === "degraded") {
+        overall = "degraded";
+      }
+    }
+
+    const body = JSON.stringify({
+      status: overall,
+      targets,
+      uptime: Math.floor((Date.now() - this.startedAt) / 1000),
+    });
+
+    const httpStatus = overall === "down" ? 503 : 200;
+
+    return new Response(body, {
+      status: httpStatus,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  /** 向所有已连接的客户端广播 health_alert */
+  private broadcastHealthAlert(
+    name: string,
+    oldStatus: HealthStatus,
+    newStatus: HealthStatus,
+  ): void {
+    const msg: ServerMessage = {
+      type: "health_alert",
+      target: name,
+      oldStatus: oldStatus.status,
+      newStatus: newStatus.status,
+      message: newStatus.message ?? "",
+    };
+    for (const [connectionId] of this.connections) {
+      this.sendToConnection(connectionId, msg);
+    }
+  }
+
+  /** 从 HealthChecker 缓存构建 HealthTargetInfo 数组（过滤掉单连接级别的 target） */
+  private buildHealthTargets(): HealthTargetInfo[] {
+    const targets: HealthTargetInfo[] = [];
+    for (const [name, status] of this.healthChecker.getStatus()) {
+      // 跳过单连接级别的心跳 target（WebSocket:conn_xxx），只暴露系统级目标
+      if (name.startsWith("WebSocket:")) continue;
+      targets.push({
+        name,
+        status: status.status,
+        latencyMs: status.latencyMs,
+        message: status.message,
+        lastCheckedAt: status.lastCheckedAt,
+      });
+    }
+    return targets;
   }
 }

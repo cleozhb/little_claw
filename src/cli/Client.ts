@@ -5,6 +5,7 @@ import type {
   SessionInfo,
   MessageSummary,
   ToolInfo,
+  HealthTargetInfo,
 } from "../gateway/protocol";
 
 // ============================================================
@@ -267,6 +268,17 @@ export class GatewayClient {
       return;
     }
 
+    // health_alert 是服务端主动推送，直接显示告警，不打断对话
+    if (msg.type === "health_alert") {
+      const alert = msg as { target: string; oldStatus: string; newStatus: string; message: string };
+      const statusColor = alert.newStatus === "down" ? RED : YELLOW;
+      const icon = alert.newStatus === "down" ? "⚠" : "⚡";
+      process.stderr.write(
+        `\n${statusColor}${icon} ${alert.target} is ${alert.newStatus}${alert.message ? `: ${alert.message}` : ""}${RESET}\n`,
+      );
+      return;
+    }
+
     // 检查是否有等待此类型的 pending request
     const pending = this.pendingRequests.get(msg.type);
     if (pending) {
@@ -295,6 +307,15 @@ export class GatewayClient {
       }
       // 无主错误，直接打印
       console.error(`\n${RED}Server error: ${msg.message}${RESET}`);
+      return;
+    }
+
+    // title_updated 事件：随时可能到达（在 done 之后），直接更新本地标题
+    if (msg.type === "title_updated") {
+      const { sessionId, title } = msg as { sessionId: string; title: string };
+      if (sessionId === this.sessionId) {
+        this.sessionTitle = title;
+      }
       return;
     }
 
@@ -379,6 +400,11 @@ export class GatewayClient {
     return { activeSessions: data.activeSessions, connections: data.connections };
   }
 
+  async healthCheck(): Promise<HealthTargetInfo[]> {
+    const resp = await this.request({ type: "health_check" }, "health_status");
+    return (resp as { targets: HealthTargetInfo[] }).targets;
+  }
+
   /**
    * 发送 chat 消息并通过回调接收流式事件。
    * 返回一个 Promise，在收到 done 时 resolve。
@@ -434,7 +460,7 @@ export class ClientRepl {
 
   private async pickSession(rl: readline.Interface): Promise<void> {
     const sessions = await this.client.listSessions();
-    // 过滤掉空 session（无标题且无消息）
+    // 服务端已过滤空 session，这里取前 5 个展示
     const visible = sessions.slice(0, 5);
 
     if (visible.length === 0) {
@@ -623,10 +649,27 @@ Type ${CYAN}/help${RESET} for available commands.
   }
 
   private async handleStatus(): Promise<void> {
-    const status = await this.client.getStatus();
+    const [status, targets] = await Promise.all([
+      this.client.getStatus(),
+      this.client.healthCheck(),
+    ]);
+
     console.log(`${BOLD}Server Status:${RESET}`);
     console.log(`  Active sessions: ${YELLOW}${status.activeSessions}${RESET}`);
     console.log(`  Connections:      ${YELLOW}${status.connections}${RESET}`);
+
+    if (targets.length > 0) {
+      console.log();
+      console.log(`${BOLD}Health Targets:${RESET}`);
+      for (const t of targets) {
+        const color =
+          t.status === "healthy" ? GREEN : t.status === "degraded" ? YELLOW : RED;
+        const latency = t.latencyMs !== undefined ? ` ${DIM}(${t.latencyMs}ms)${RESET}` : "";
+        const msg = t.message ? ` — ${DIM}${t.message}${RESET}` : "";
+        const time = t.lastCheckedAt ? ` ${DIM}[${formatTime(t.lastCheckedAt)}]${RESET}` : "";
+        console.log(`  ${color}●${RESET} ${t.name}: ${color}${t.status}${RESET}${latency}${msg}${time}`);
+      }
+    }
     console.log();
   }
 

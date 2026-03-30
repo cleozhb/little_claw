@@ -143,6 +143,13 @@ export class SessionRouter {
             break;
         }
       }
+
+      // 等待标题生成完成，若有新标题则推送给客户端
+      await entry.agentLoop.waitForTitle();
+      const session = this.db.getSession(sessionId);
+      if (session?.title) {
+        onEvent({ type: "title_updated", sessionId, title: session.title });
+      }
     } catch (err) {
       onEvent({
         type: "error",

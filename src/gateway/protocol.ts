@@ -69,6 +69,10 @@ export interface PingMessage {
   type: "ping";
 }
 
+export interface HealthCheckMessage {
+  type: "health_check";
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -78,7 +82,8 @@ export type ClientMessage =
   | RenameSessionMessage
   | GetStatusMessage
   | ListToolsMessage
-  | PingMessage;
+  | PingMessage
+  | HealthCheckMessage;
 
 // ============================================================
 // Server → Client Messages
@@ -152,6 +157,33 @@ export interface PongMessage {
   type: "pong";
 }
 
+export interface HealthTargetInfo {
+  name: string;
+  status: string;
+  latencyMs?: number;
+  message?: string;
+  lastCheckedAt: string;
+}
+
+export interface HealthStatusMessage {
+  type: "health_status";
+  targets: HealthTargetInfo[];
+}
+
+export interface TitleUpdatedMessage {
+  type: "title_updated";
+  sessionId: string;
+  title: string;
+}
+
+export interface HealthAlertMessage {
+  type: "health_alert";
+  target: string;
+  oldStatus: string;
+  newStatus: string;
+  message: string;
+}
+
 export type ServerMessage =
   | TextDeltaMessage
   | ToolCallMessage
@@ -162,9 +194,12 @@ export type ServerMessage =
   | SessionLoadedMessage
   | SessionsListMessage
   | SessionRenamedMessage
+  | TitleUpdatedMessage
   | StatusInfoMessage
   | ToolsListMessage
-  | PongMessage;
+  | PongMessage
+  | HealthStatusMessage
+  | HealthAlertMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -180,6 +215,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "get_status",
   "list_tools",
   "ping",
+  "health_check",
 ]);
 
 // ============================================================
@@ -241,6 +277,8 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "list_tools":
       break;
     case "ping":
+      break;
+    case "health_check":
       break;
   }
 
