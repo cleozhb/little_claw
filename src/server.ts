@@ -16,8 +16,15 @@ import { SkillManager } from "./skills/SkillManager.ts";
 import { SkillLoader } from "./skills/SkillLoader.ts";
 import { SkillConfigFile } from "./skills/SkillConfigFile.ts";
 import { McpManager } from "./mcp/McpManager.ts";
+import { CronScheduler } from "./scheduler/CronScheduler.ts";
+import { EventWatcher } from "./scheduler/EventWatcher.ts";
+import type { SchedulerEvent } from "./scheduler/types.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+/** 用 AsyncLocalStorage 传递当前 sessionId，避免跨 session 并发时共享变量竞态 */
+const sessionIdStorage = new AsyncLocalStorage<string>();
 
 export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: () => Promise<void> }> {
   const config = loadConfig();
@@ -41,17 +48,34 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     baseURL: config.llmBaseUrl,
   });
 
-  const toolRegistry = new ToolRegistry();
-  const workspaceRoot = join(process.cwd(), "workspace");
-  mkdirSync(workspaceRoot, { recursive: true });
-  const builtinTools = createBuiltinTools(workspaceRoot);
-  for (const tool of builtinTools.all) {
-    toolRegistry.register(tool);
-  }
-
   const dataDir = join(import.meta.dir, "..", "data");
   mkdirSync(dataDir, { recursive: true });
   const db = new Database(join(dataDir, "little_claw.db"));
+
+  // --- Scheduler 系统初始化 ---
+  const cronScheduler = new CronScheduler(db);
+  const eventWatcher = new EventWatcher(db);
+
+  const toolRegistry = new ToolRegistry();
+  const workspaceRoot = join(process.cwd(), "workspace");
+  mkdirSync(workspaceRoot, { recursive: true });
+
+  /** 从 AsyncLocalStorage 读取当前 sessionId，跨 session 并发安全 */
+  const getSessionId = () => sessionIdStorage.getStore() ?? "";
+
+  const builtinTools = createBuiltinTools(workspaceRoot, {
+    cronContext: {
+      scheduler: cronScheduler,
+      getSessionId,
+    },
+    watcherContext: {
+      watcher: eventWatcher,
+      getSessionId,
+    },
+  });
+  for (const tool of builtinTools.all) {
+    toolRegistry.register(tool);
+  }
 
   // --- Skill 系统初始化 ---
   const skillConfig = new SkillConfigFile();
@@ -120,23 +144,87 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     llmProvider,
     skillManager,
     mcpManager,
+    cronScheduler,
+    eventWatcher,
     onChat: (connectionId, sessionId, content) => {
-      sessionRouter
-        .handleChat(sessionId, content, (event) => {
-          gateway.sendToConnection(connectionId, event);
-        })
-        .catch((err) => {
-          gateway.sendToConnection(connectionId, {
-            type: "error",
-            sessionId,
-            message: `Agent error: ${err instanceof Error ? err.message : String(err)}`,
+      sessionIdStorage.run(sessionId, () => {
+        sessionRouter
+          .handleChat(sessionId, content, (event) => {
+            gateway.sendToConnection(connectionId, event);
+          })
+          .catch((err) => {
+            gateway.sendToConnection(connectionId, {
+              type: "error",
+              sessionId,
+              message: `Agent error: ${err instanceof Error ? err.message : String(err)}`,
+            });
           });
-        });
+      });
     },
     getActiveSessionCount: () => sessionRouter.getActiveSessionCount(),
   });
 
   gateway.start();
+
+  // --- Scheduler → Agent 触发回调 ---
+  const handleSchedulerTrigger = (event: SchedulerEvent) => {
+    const sessionId =
+      event.type === "cron_trigger" ? event.job.sessionId : event.watcher.sessionId;
+    const name =
+      event.type === "cron_trigger" ? event.job.name : event.watcher.name;
+    const source = event.type === "cron_trigger" ? "cron" as const : "watcher" as const;
+    const prompt =
+      event.type === "cron_trigger"
+        ? event.job.prompt
+        : `${event.watcher.prompt}\n\nCheck output:\n${event.checkOutput}`;
+
+    // 1. 通知该 session 的所有在线客户端
+    gateway.sendToSession(sessionId, {
+      type: "scheduled_run_start",
+      sessionId,
+      source,
+      name,
+    });
+
+    // 2. 通过 SessionRouter 排队执行（复用 per-session 串行机制）
+    sessionIdStorage.run(sessionId, () => {
+      sessionRouter
+        .handleChat(sessionId, prompt, (agentEvent) => {
+        // 给所有 scheduled run 的流式事件打标记，让客户端区分来源
+        const tagged: typeof agentEvent =
+          agentEvent.type === "text_delta" ||
+          agentEvent.type === "tool_call" ||
+          agentEvent.type === "tool_result" ||
+          agentEvent.type === "done" ||
+          agentEvent.type === "error"
+            ? { ...agentEvent, source: "scheduled" as const }
+            : agentEvent;
+        // 将 Agent 响应广播给该 session 的所有在线客户端
+        // sendToSession 返回 0 表示没有在线客户端，但 Agent 仍然执行（后台运行）
+        // 结果已由 Conversation 保存到数据库，用户下次连接时可在历史消息中看到
+        gateway.sendToSession(sessionId, tagged);
+      })
+      .catch((err) => {
+        console.error(
+          `[Scheduler] Agent error for session ${sessionId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        gateway.sendToSession(sessionId, {
+          type: "error",
+          sessionId,
+          source: "scheduled",
+          message: `Scheduled task error: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+    });
+  };
+
+  cronScheduler.onTrigger(handleSchedulerTrigger);
+  eventWatcher.onTrigger(handleSchedulerTrigger);
+
+  // 启动定时调度
+  cronScheduler.start();
+  eventWatcher.start();
 
   // 将 HealthChecker 注入 McpManager，使 MCP server 加入健康监控
   mcpManager.setHealthChecker(gateway.getHealthChecker());
@@ -144,6 +232,8 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   console.log(`little_claw server running on ws://${host}:${port}`);
 
   const cleanup = async () => {
+    cronScheduler.stop();
+    eventWatcher.stop();
     await mcpManager.disconnectAll();
     sessionRouter.dispose();
     gateway.stop();

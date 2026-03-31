@@ -13,6 +13,10 @@ import { generateTitle } from "./TitleGenerator.ts";
 
 const MAX_ITERATIONS = 20;
 
+const SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron tool. When a user asks you to do something periodically or at a specific time, create a cron job. For example, if asked "remind me every morning at 8am about my schedule", create a cron job with expression "0 8 * * *".
+
+You can also create event watchers using the manage_watcher tool. When a user asks you to monitor something and notify them when a condition is met, create a watcher. For example, if asked "let me know when the API is back up", create a watcher with check_command "curl -sf https://api.example.com/health" that checks periodically.`;
+
 export class AgentLoop {
   private client: LLMProvider;
   private toolRegistry: ToolRegistry;
@@ -257,11 +261,12 @@ export class AgentLoop {
    */
   private getEffectiveSystemPrompt(): string {
     const basePrompt = this.conversation.getSystemPrompt();
+    const withScheduler = `${basePrompt}\n\n${SCHEDULER_GUIDANCE}`;
 
-    if (!this.skillManager) return basePrompt;
+    if (!this.skillManager) return withScheduler;
 
     const loadedSkills = this.skillManager.getLoadedSkills();
-    if (loadedSkills.length === 0) return basePrompt;
+    if (loadedSkills.length === 0) return withScheduler;
 
     const builder = new SkillPromptBuilder();
     const skillPrompt = builder.buildSkillPrompt(
@@ -270,9 +275,9 @@ export class AgentLoop {
       this.skillManager.getRecentlyUsed(),
     );
 
-    if (!skillPrompt) return basePrompt;
+    if (!skillPrompt) return withScheduler;
 
-    return `${basePrompt}\n\nYou have access to skills that extend your capabilities. When a user's request matches a skill's description, follow the skill's instructions. Skills may require you to use shell commands or other tools to complete tasks.\n\n${skillPrompt}`;
+    return `${withScheduler}\n\nYou have access to skills that extend your capabilities. When a user's request matches a skill's description, follow the skill's instructions. Skills may require you to use shell commands or other tools to complete tasks.\n\n${skillPrompt}`;
   }
 
   /**

@@ -8,6 +8,8 @@ import type {
   HealthTargetInfo,
   SkillInfo,
   McpServerInfo,
+  CronJobInfo,
+  WatcherInfo,
 } from "../gateway/protocol";
 
 // ============================================================
@@ -45,6 +47,8 @@ const COMMANDS = [
   "/skills reload",
   "/mcp",
   "/mcp reconnect ",
+  "/cron",
+  "/watchers",
   "/status",
   "/quit",
   "/exit",
@@ -89,6 +93,9 @@ export class GatewayClient {
   private onStreamEvent: ((msg: ServerMessage) => void) | null = null;
   private chatDoneResolve: (() => void) | null = null;
   private chatDoneReject: ((err: Error) => void) | null = null;
+
+  // 服务端主动推送回调（scheduled_run_start 等）
+  private onServerPush: ((msg: ServerMessage) => void) | null = null;
 
   // 历史消息缓存（来自 session_loaded）
   private recentMessages: MessageSummary[] = [];
@@ -288,6 +295,22 @@ export class GatewayClient {
       return;
     }
 
+    // scheduled_run_start 是服务端主动推送（定时任务开始执行）
+    if (msg.type === "scheduled_run_start") {
+      if (this.onServerPush) {
+        this.onServerPush(msg);
+      }
+      return;
+    }
+
+    // 带 source: "scheduled" 标记的事件来自定时任务，路由到 onServerPush
+    if ("source" in msg && (msg as { source?: string }).source === "scheduled") {
+      if (this.onServerPush) {
+        this.onServerPush(msg);
+      }
+      return;
+    }
+
     // 检查是否有等待此类型的 pending request
     const pending = this.pendingRequests.get(msg.type);
     if (pending) {
@@ -428,6 +451,16 @@ export class GatewayClient {
     return { success: data.success, error: data.error };
   }
 
+  async listCron(): Promise<CronJobInfo[]> {
+    const resp = await this.request({ type: "list_cron" }, "cron_list");
+    return (resp as { jobs: CronJobInfo[] }).jobs;
+  }
+
+  async listWatchers(): Promise<WatcherInfo[]> {
+    const resp = await this.request({ type: "list_watchers" }, "watcher_list");
+    return (resp as { watchers: WatcherInfo[] }).watchers;
+  }
+
   async getStatus(): Promise<{ activeSessions: number; connections: number }> {
     const resp = await this.request({ type: "get_status" }, "status_info");
     const data = resp as { activeSessions: number; connections: number };
@@ -465,6 +498,11 @@ export class GatewayClient {
 
   getRecentMessages(): MessageSummary[] {
     return this.recentMessages;
+  }
+
+  /** 注册服务端主动推送回调（scheduled_run_start 等） */
+  setOnServerPush(callback: (msg: ServerMessage) => void): void {
+    this.onServerPush = callback;
   }
 }
 
@@ -555,6 +593,8 @@ export class ClientRepl {
   /skills reload         Reload all skills
   /mcp                   List MCP server status
   /mcp reconnect <name>  Reconnect a MCP server
+  /cron                  List all cron jobs
+  /watchers              List all event watchers
   /status                Show server status
   /quit                  Exit the chat
   /exit                  Exit the chat
@@ -661,19 +701,30 @@ Type ${CYAN}/help${RESET} for available commands.
     console.log(`Session renamed to: ${YELLOW}${session.title}${RESET}\n`);
   }
 
-  private handleHistory(): void {
-    const messages = this.client.getRecentMessages();
-    if (messages.length === 0) {
-      console.log("No messages loaded for this session.\n");
+  private async handleHistory(): Promise<void> {
+    // 从服务端实时拉取最新消息（而不是用 session 加载时的缓存）
+    const sessionId = this.client.getSessionId();
+    if (!sessionId) {
+      console.log("No active session.\n");
       return;
     }
-    console.log(`${BOLD}Recent messages:${RESET}`);
-    for (const msg of messages) {
-      const role = msg.role === "user" ? `${GREEN}user${RESET}` : `${CYAN}assistant${RESET}`;
-      const text = msg.content.length > 80 ? msg.content.slice(0, 80) + "..." : msg.content;
-      console.log(`  ${role}: ${DIM}${text}${RESET}`);
+
+    try {
+      const { recentMessages } = await this.client.loadSession(sessionId);
+      if (recentMessages.length === 0) {
+        console.log("No messages in this session.\n");
+        return;
+      }
+      console.log(`${BOLD}Recent messages (${recentMessages.length}):${RESET}`);
+      for (const msg of recentMessages) {
+        const role = msg.role === "user" ? `${GREEN}user${RESET}` : `${CYAN}assistant${RESET}`;
+        const text = msg.content.length > 80 ? msg.content.slice(0, 80) + "..." : msg.content;
+        console.log(`  ${role}: ${DIM}${text}${RESET}`);
+      }
+      console.log();
+    } catch (err) {
+      console.log(`${RED}Failed to load history: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
     }
-    console.log();
   }
 
   private async handleTools(): Promise<void> {
@@ -963,6 +1014,53 @@ Type ${CYAN}/help${RESET} for available commands.
     }
   }
 
+  private async handleCron(): Promise<void> {
+    const jobs = await this.client.listCron();
+    if (jobs.length === 0) {
+      console.log("No cron jobs configured.\n");
+      return;
+    }
+
+    console.log(`${BOLD}Cron Jobs:${RESET}`);
+    for (const job of jobs) {
+      const statusColor = job.enabled ? GREEN : DIM;
+      const statusIcon = job.enabled ? "●" : "○";
+      const nextRun = job.nextRunAt ? `next: ${formatTime(job.nextRunAt)}` : "—";
+      const lastRun = job.lastRunAt ? `last: ${formatTime(job.lastRunAt)}` : "never run";
+      console.log(
+        `  ${statusColor}${statusIcon}${RESET} ${YELLOW}${job.name}${RESET} ${DIM}(${job.cronExpr})${RESET}`,
+      );
+      console.log(
+        `    ${DIM}${nextRun} | ${lastRun} | session: ${job.sessionId.slice(0, 8)}...${RESET}`,
+      );
+    }
+    console.log();
+  }
+
+  private async handleWatchers(): Promise<void> {
+    const watchers = await this.client.listWatchers();
+    if (watchers.length === 0) {
+      console.log("No watchers configured.\n");
+      return;
+    }
+
+    console.log(`${BOLD}Event Watchers:${RESET}`);
+    for (const w of watchers) {
+      const statusColor = w.enabled ? GREEN : DIM;
+      const statusIcon = w.enabled ? "●" : "○";
+      const intervalMin = w.intervalMs / 60_000;
+      const lastCheck = w.lastCheckAt ? `last check: ${formatTime(w.lastCheckAt)}` : "never checked";
+      const lastTrigger = w.lastTriggeredAt ? `last trigger: ${formatTime(w.lastTriggeredAt)}` : "never triggered";
+      console.log(
+        `  ${statusColor}${statusIcon}${RESET} ${YELLOW}${w.name}${RESET} ${DIM}(every ${intervalMin}m)${RESET}`,
+      );
+      console.log(
+        `    ${DIM}${lastCheck} | ${lastTrigger} | session: ${w.sessionId.slice(0, 8)}...${RESET}`,
+      );
+    }
+    console.log();
+  }
+
   private formatSkillStatus(skill: SkillInfo): string {
     switch (skill.status) {
       case "loaded":
@@ -1081,6 +1179,56 @@ Type ${CYAN}/help${RESET} for available commands.
 
     this.printWelcome();
     await this.pickSession(rl);
+
+    // 注册服务端主动推送回调：处理定时任务触发的输出
+    let scheduledFirstToken = true;
+    this.client.setOnServerPush((msg) => {
+      switch (msg.type) {
+        case "scheduled_run_start": {
+          const srs = msg as { source: string; name: string };
+          const label = srs.source === "cron" ? "Cron" : "Watcher";
+          process.stdout.write(`\n${YELLOW}⏰ [${label}: ${srs.name}] running...${RESET}\n`);
+          scheduledFirstToken = true;
+          break;
+        }
+        case "text_delta": {
+          if (scheduledFirstToken) {
+            process.stdout.write(CYAN);
+            scheduledFirstToken = false;
+          }
+          process.stdout.write((msg as { text: string }).text);
+          break;
+        }
+        case "tool_call": {
+          if (!scheduledFirstToken) {
+            process.stdout.write(RESET + "\n");
+          }
+          scheduledFirstToken = true;
+          const tc = msg as { name: string; params: Record<string, unknown> };
+          console.log(`${YELLOW}> ${tc.name}(${this.formatParams(tc.params)})${RESET}`);
+          break;
+        }
+        case "tool_result": {
+          const tr = msg as { name: string; result: { success: boolean; output: string; error?: string } };
+          const status = tr.result.success ? `${GREEN}ok${RESET}` : `${RED}error${RESET}`;
+          const output = tr.result.success ? tr.result.output : tr.result.error ?? "Unknown error";
+          console.log(`${DIM}  [${status}${DIM}] ${this.truncate(output)}${RESET}`);
+          break;
+        }
+        case "done": {
+          if (!scheduledFirstToken) {
+            process.stdout.write(RESET);
+          }
+          const d = msg as { usage: Record<string, unknown> };
+          console.log(
+            `${DIM}[tokens: ${d.usage?.totalInputTokens ?? "?"} in / ${d.usage?.totalOutputTokens ?? "?"} out]${RESET}\n`,
+          );
+          // 重新显示提示符
+          process.stdout.write(this.getPrompt());
+          break;
+        }
+      }
+    });
 
     let closed = false;
     rl.on("close", () => {
@@ -1212,6 +1360,16 @@ Type ${CYAN}/help${RESET} for available commands.
 
         if (input === "/mcp") {
           await this.handleMcp();
+          continue;
+        }
+
+        if (input === "/cron") {
+          await this.handleCron();
+          continue;
+        }
+
+        if (input === "/watchers") {
+          await this.handleWatchers();
           continue;
         }
 

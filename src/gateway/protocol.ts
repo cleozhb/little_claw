@@ -102,6 +102,14 @@ export interface ReconnectMcpMessage {
   name: string;
 }
 
+export interface ListCronMessage {
+  type: "list_cron";
+}
+
+export interface ListWatchersMessage {
+  type: "list_watchers";
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -115,6 +123,8 @@ export type ClientMessage =
   | ReloadSkillsMessage
   | ListMcpServersMessage
   | ReconnectMcpMessage
+  | ListCronMessage
+  | ListWatchersMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -126,6 +136,8 @@ export interface TextDeltaMessage {
   type: "text_delta";
   sessionId: string;
   text: string;
+  /** "scheduled" 表示来自定时任务，undefined 表示来自用户 chat */
+  source?: "scheduled";
 }
 
 export interface ToolCallMessage {
@@ -133,6 +145,7 @@ export interface ToolCallMessage {
   sessionId: string;
   name: string;
   params: Record<string, unknown>;
+  source?: "scheduled";
 }
 
 export interface ToolResultMessage {
@@ -140,18 +153,21 @@ export interface ToolResultMessage {
   sessionId: string;
   name: string;
   result: ToolResult;
+  source?: "scheduled";
 }
 
 export interface DoneMessage {
   type: "done";
   sessionId: string;
   usage: Record<string, unknown>;
+  source?: "scheduled";
 }
 
 export interface ErrorMessage {
   type: "error";
   sessionId?: string;
   message: string;
+  source?: "scheduled";
 }
 
 export interface SessionCreatedMessage {
@@ -241,6 +257,50 @@ export interface McpReconnectedMessage {
   error?: string;
 }
 
+/** Server → Client: 定时任务开始执行 */
+export interface ScheduledRunStartMessage {
+  type: "scheduled_run_start";
+  sessionId: string;
+  source: "cron" | "watcher";
+  name: string;
+}
+
+/** Server → Client: cron job 列表 */
+export interface CronListMessage {
+  type: "cron_list";
+  jobs: CronJobInfo[];
+}
+
+export interface CronJobInfo {
+  id: string;
+  name: string;
+  cronExpr: string;
+  prompt: string;
+  sessionId: string;
+  enabled: boolean;
+  nextRunAt?: string;
+  lastRunAt?: string;
+}
+
+/** Server → Client: watcher 列表 */
+export interface WatcherListMessage {
+  type: "watcher_list";
+  watchers: WatcherInfo[];
+}
+
+export interface WatcherInfo {
+  id: string;
+  name: string;
+  checkCommand: string;
+  condition: string;
+  prompt: string;
+  intervalMs: number;
+  sessionId: string;
+  enabled: boolean;
+  lastCheckAt?: string;
+  lastTriggeredAt?: string;
+}
+
 export type ServerMessage =
   | TextDeltaMessage
   | ToolCallMessage
@@ -259,7 +319,10 @@ export type ServerMessage =
   | HealthStatusMessage
   | HealthAlertMessage
   | McpServersListMessage
-  | McpReconnectedMessage;
+  | McpReconnectedMessage
+  | ScheduledRunStartMessage
+  | CronListMessage
+  | WatcherListMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -278,6 +341,8 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "reload_skills",
   "list_mcp_servers",
   "reconnect_mcp",
+  "list_cron",
+  "list_watchers",
   "ping",
   "health_check",
 ]);
@@ -348,6 +413,10 @@ export function parseClientMessage(raw: string): ClientMessage {
       break;
     case "reconnect_mcp":
       requireString(msg, "name");
+      break;
+    case "list_cron":
+      break;
+    case "list_watchers":
       break;
     case "ping":
       break;

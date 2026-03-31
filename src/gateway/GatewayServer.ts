@@ -11,6 +11,8 @@ import {
   type MessageSummary,
   type HealthTargetInfo,
   type SkillInfo,
+  type CronJobInfo,
+  type WatcherInfo,
 } from "./protocol";
 import { HealthChecker, type HealthStatus } from "./HealthChecker.ts";
 import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
@@ -18,6 +20,8 @@ import { WebSocketHealthTarget } from "./health/WebSocketHealthTarget.ts";
 import { ClientConnectionHealthTarget } from "./health/ClientConnectionHealthTarget.ts";
 import type { SkillManager } from "../skills/SkillManager.ts";
 import type { McpManager } from "../mcp/McpManager.ts";
+import type { CronScheduler } from "../scheduler/CronScheduler.ts";
+import type { EventWatcher } from "../scheduler/EventWatcher.ts";
 
 // ============================================================
 // Types
@@ -34,6 +38,9 @@ export interface GatewayOptions {
   skillManager?: SkillManager;
   /** McpManager，用于 MCP server 管理 */
   mcpManager?: McpManager;
+  /** Scheduler 实例，用于 list_cron / list_watchers */
+  cronScheduler?: CronScheduler;
+  eventWatcher?: EventWatcher;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
   onChat?: (connectionId: string, sessionId: string, content: string) => void;
   /** 获取活跃 session 数的回调 */
@@ -57,6 +64,8 @@ export class GatewayServer {
   private getActiveSessionCount?: GatewayOptions["getActiveSessionCount"];
   private skillManager?: SkillManager;
   private mcpManager?: McpManager;
+  private cronScheduler?: CronScheduler;
+  private eventWatcher?: EventWatcher;
   private port: number;
   private hostname: string;
 
@@ -65,6 +74,9 @@ export class GatewayServer {
   private wsHealthTarget: WebSocketHealthTarget;
   private clientTargets = new Map<string, ClientConnectionHealthTarget>();
   private startedAt = Date.now();
+
+  // connection → sessionId 映射，用于按 session 广播
+  private connectionSessions = new Map<string, string>();
 
   constructor(options: GatewayOptions) {
     this.port = options.port ?? 4000;
@@ -75,6 +87,8 @@ export class GatewayServer {
     this.getActiveSessionCount = options.getActiveSessionCount;
     this.skillManager = options.skillManager;
     this.mcpManager = options.mcpManager;
+    this.cronScheduler = options.cronScheduler;
+    this.eventWatcher = options.eventWatcher;
 
     // 初始化健康检查
     this.healthChecker = new HealthChecker();
@@ -157,6 +171,7 @@ export class GatewayServer {
       }
     }
     this.connections.clear();
+    this.connectionSessions.clear();
     this.clientTargets.clear();
 
     // 关闭 HTTP 服务器
@@ -184,6 +199,21 @@ export class GatewayServer {
       // 连接可能已断开
       this.connections.delete(connectionId);
     }
+  }
+
+  /**
+   * 向指定 session 关联的所有客户端连接广播消息。
+   * 返回实际发送的连接数（0 表示没有在线客户端）。
+   */
+  sendToSession(sessionId: string, msg: ServerMessage): number {
+    let sent = 0;
+    for (const [connectionId, sid] of this.connectionSessions) {
+      if (sid === sessionId) {
+        this.sendToConnection(connectionId, msg);
+        sent++;
+      }
+    }
+    return sent;
   }
 
   /** 获取 HealthChecker 实例，外部可注册 onStatusChange 回调 */
@@ -218,6 +248,7 @@ export class GatewayServer {
   private handleClose(ws: ServerWebSocket<ConnectionData>): void {
     const { connectionId } = ws.data;
     this.connections.delete(connectionId);
+    this.connectionSessions.delete(connectionId);
 
     // 注销该连接的健康检查
     this.healthChecker.unregisterTarget(`WebSocket:${connectionId}`);
@@ -280,6 +311,10 @@ export class GatewayServer {
         return this.handleListMcpServers(connectionId);
       case "reconnect_mcp":
         return this.handleReconnectMcp(connectionId, msg.name);
+      case "list_cron":
+        return this.handleListCron(connectionId);
+      case "list_watchers":
+        return this.handleListWatchers(connectionId);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -300,6 +335,8 @@ export class GatewayServer {
       });
       return;
     }
+    // 跟踪 connection → session 映射
+    this.connectionSessions.set(connectionId, sessionId);
     this.onChat(connectionId, sessionId, content);
   }
 
@@ -313,6 +350,8 @@ export class GatewayServer {
         created_at: session.created_at,
         updated_at: session.updated_at,
       };
+      // 跟踪 connection → session 映射
+      this.connectionSessions.set(connectionId, session.id);
       this.sendToConnection(connectionId, { type: "session_created", session: info });
     } catch (err) {
       this.sendToConnection(connectionId, {
@@ -333,6 +372,9 @@ export class GatewayServer {
         });
         return;
       }
+
+      // 跟踪 connection → session 映射
+      this.connectionSessions.set(connectionId, sessionId);
 
       const info: SessionInfo = {
         id: session.id,
@@ -519,6 +561,48 @@ export class GatewayServer {
           error: err instanceof Error ? err.message : String(err),
         });
       });
+  }
+
+  private handleListCron(connectionId: string): void {
+    if (!this.cronScheduler) {
+      this.sendToConnection(connectionId, { type: "cron_list", jobs: [] });
+      return;
+    }
+
+    const jobs: CronJobInfo[] = this.cronScheduler.listJobs().map((j) => ({
+      id: j.id,
+      name: j.name,
+      cronExpr: j.cronExpr,
+      prompt: j.prompt,
+      sessionId: j.sessionId,
+      enabled: j.enabled,
+      nextRunAt: j.nextRunAt,
+      lastRunAt: j.lastRunAt,
+    }));
+
+    this.sendToConnection(connectionId, { type: "cron_list", jobs });
+  }
+
+  private handleListWatchers(connectionId: string): void {
+    if (!this.eventWatcher) {
+      this.sendToConnection(connectionId, { type: "watcher_list", watchers: [] });
+      return;
+    }
+
+    const watchers: WatcherInfo[] = this.eventWatcher.listWatchers().map((w) => ({
+      id: w.id,
+      name: w.name,
+      checkCommand: w.checkCommand,
+      condition: w.condition,
+      prompt: w.prompt,
+      intervalMs: w.intervalMs,
+      sessionId: w.sessionId,
+      enabled: w.enabled,
+      lastCheckAt: w.lastCheckAt,
+      lastTriggeredAt: w.lastTriggeredAt,
+    }));
+
+    this.sendToConnection(connectionId, { type: "watcher_list", watchers });
   }
 
   private handleRenameSession(connectionId: string, sessionId: string, title: string): void {
