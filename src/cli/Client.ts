@@ -10,6 +10,7 @@ import type {
   McpServerInfo,
   CronJobInfo,
   WatcherInfo,
+  AgentInfo,
 } from "../gateway/protocol";
 
 // ============================================================
@@ -23,8 +24,88 @@ const YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
 const BOLD = "\x1b[1m";
+const BLUE = "\x1b[34m";
+/** 浅粉色（256色），用于子 Agent 标识 */
+const PINK = "\x1b[38;5;218m";
 
 const MAX_RESULT_PREVIEW = 200;
+
+// ============================================================
+// Agent 标签前缀（区分主 Agent 和子 Agent 的输出）
+// ============================================================
+
+/** 主 Agent 标签：蓝色粗体 */
+const MAIN_TAG = `${BLUE}${BOLD}[main]${RESET} `;
+/** 子 Agent 左侧竖线 */
+const SUB_AGENT_BAR = `${PINK}│${RESET} `;
+/** 生成子 Agent 标签：浅粉色粗体 [agentName] */
+function subTag(name: string): string {
+  return `${PINK}${BOLD}[${name}]${RESET} `;
+}
+
+/** 是否处于主 agent 文本输出的行首（需要标签前缀） */
+let mainAgentAtLineStart = true;
+/** 连续空行计数器（用于压缩多个连续空行为一个） */
+let mainAgentConsecutiveBlankLines = 0;
+
+/** 输出主 agent 文本，在行首添加 [main] 标签，并压缩连续空行 */
+function writeMainAgentText(text: string): void {
+  let out = "";
+  for (const ch of text) {
+    if (mainAgentAtLineStart && ch === "\n") {
+      // 当前是空行
+      mainAgentConsecutiveBlankLines++;
+      if (mainAgentConsecutiveBlankLines > 1) {
+        // 跳过多余的连续空行，只保留一个
+        continue;
+      }
+      out += MAIN_TAG;
+      out += ch;
+      continue;
+    }
+    if (mainAgentAtLineStart) {
+      out += MAIN_TAG;
+      mainAgentAtLineStart = false;
+      mainAgentConsecutiveBlankLines = 0;
+    }
+    out += ch;
+    if (ch === "\n") {
+      mainAgentAtLineStart = true;
+    }
+  }
+  process.stdout.write(`${CYAN}${out}${RESET}`);
+}
+
+/** 是否处于子 agent 文本输出的行首（需要缩进） */
+let subAgentAtLineStart = true;
+/** 子 agent 连续空行计数器 */
+let subAgentConsecutiveBlankLines = 0;
+
+/** 输出子 agent 文本，在行首添加竖线前缀，并压缩连续空行 */
+function writeSubAgentText(text: string): void {
+  let out = "";
+  for (const ch of text) {
+    if (subAgentAtLineStart && ch === "\n") {
+      subAgentConsecutiveBlankLines++;
+      if (subAgentConsecutiveBlankLines > 1) {
+        continue;
+      }
+      out += SUB_AGENT_BAR;
+      out += ch;
+      continue;
+    }
+    if (subAgentAtLineStart) {
+      out += SUB_AGENT_BAR;
+      subAgentAtLineStart = false;
+      subAgentConsecutiveBlankLines = 0;
+    }
+    out += ch;
+    if (ch === "\n") {
+      subAgentAtLineStart = true;
+    }
+  }
+  process.stdout.write(`${CYAN}${out}${RESET}`);
+}
 
 // ============================================================
 // Commands
@@ -49,6 +130,7 @@ const COMMANDS = [
   "/mcp reconnect ",
   "/cron",
   "/watchers",
+  "/agents",
   "/status",
   "/quit",
   "/exit",
@@ -461,6 +543,11 @@ export class GatewayClient {
     return (resp as { watchers: WatcherInfo[] }).watchers;
   }
 
+  async listAgents(): Promise<AgentInfo[]> {
+    const resp = await this.request({ type: "list_agents" }, "agents_list");
+    return (resp as { agents: AgentInfo[] }).agents;
+  }
+
   async getStatus(): Promise<{ activeSessions: number; connections: number }> {
     const resp = await this.request({ type: "get_status" }, "status_info");
     const data = resp as { activeSessions: number; connections: number };
@@ -595,6 +682,7 @@ export class ClientRepl {
   /mcp reconnect <name>  Reconnect a MCP server
   /cron                  List all cron jobs
   /watchers              List all event watchers
+  /agents                List available agent types
   /status                Show server status
   /quit                  Exit the chat
   /exit                  Exit the chat
@@ -1061,6 +1149,26 @@ Type ${CYAN}/help${RESET} for available commands.
     console.log();
   }
 
+  private async handleAgents(): Promise<void> {
+    const agents = await this.client.listAgents();
+    if (agents.length === 0) {
+      console.log("No agent types configured.\n");
+      return;
+    }
+
+    console.log(`${BOLD}Available Agent Types:${RESET}`);
+    for (const a of agents) {
+      const tools = a.allowedTools.length > 0
+        ? a.allowedTools.join(", ")
+        : "all";
+      const spawn = a.canSpawnSubAgent ? `${GREEN}yes${RESET}` : `${DIM}no${RESET}`;
+      console.log(`  ${YELLOW}${a.name}${RESET} ${DIM}(maxTurns: ${a.maxTurns}, canSpawn: ${spawn}${DIM})${RESET}`);
+      console.log(`    ${DIM}${a.description}${RESET}`);
+      console.log(`    ${DIM}tools: ${tools}${RESET}`);
+    }
+    console.log();
+  }
+
   private formatSkillStatus(skill: SkillInfo): string {
     switch (skill.status) {
       case "loaded":
@@ -1221,10 +1329,62 @@ Type ${CYAN}/help${RESET} for available commands.
           }
           const d = msg as { usage: Record<string, unknown> };
           console.log(
-            `${DIM}[tokens: ${d.usage?.totalInputTokens ?? "?"} in / ${d.usage?.totalOutputTokens ?? "?"} out]${RESET}\n`,
+            `${DIM}[tokens: ${d.usage?.totalInputTokens ?? "?"} in / ${d.usage?.totalOutputTokens ?? "?"} out]${RESET}`,
           );
           // 重新显示提示符
           process.stdout.write(this.getPrompt());
+          break;
+        }
+        case "sub_agent_start": {
+          const sas = msg as { agentName: string; task: string };
+          subAgentAtLineStart = true;
+          console.log(
+            `\n${PINK}┌── 🤖 ${BOLD}[${sas.agentName}]${RESET}${PINK} Task: ${sas.task}${RESET}`
+          );
+          break;
+        }
+        case "sub_agent_progress": {
+          const sap = msg as { agentName: string; innerEvent: ServerMessage };
+          const inner = sap.innerEvent;
+          switch (inner.type) {
+            case "text_delta":
+              writeSubAgentText(inner.text);
+              break;
+            case "tool_call":
+              console.log(
+                `${SUB_AGENT_BAR}${subTag(sap.agentName)}${YELLOW}> ${inner.name}(${this.formatParams(inner.params)})${RESET}`
+              );
+              break;
+            case "tool_result": {
+              const status = inner.result.success ? `${GREEN}ok${RESET}` : `${RED}error${RESET}`;
+              const output = inner.result.success ? inner.result.output : inner.result.error ?? "Unknown error";
+              console.log(
+                `${SUB_AGENT_BAR}${subTag(sap.agentName)}${DIM}[${status}${DIM}] ${this.truncate(output)}${RESET}`
+              );
+              break;
+            }
+            case "error":
+              console.log(
+                `${SUB_AGENT_BAR}${subTag(sap.agentName)}${RED}⚠ ${(inner as { message: string }).message}${RESET}`
+              );
+              break;
+            case "done": {
+              const d = inner as { usage?: Record<string, unknown> };
+              if (d.usage) {
+                console.log(
+                  `${SUB_AGENT_BAR}${DIM}[${sap.agentName} tokens: ${d.usage.totalInputTokens ?? "?"} in / ${d.usage.totalOutputTokens ?? "?"} out]${RESET}`
+                );
+              }
+              break;
+            }
+          }
+          break;
+        }
+        case "sub_agent_done": {
+          const sad = msg as { agentName: string; result: string };
+          console.log(
+            `${PINK}└── ✅ ${BOLD}[${sad.agentName}]${RESET}${PINK} Done: ${this.truncate(sad.result)}${RESET}`
+          );
           break;
         }
       }
@@ -1373,6 +1533,11 @@ Type ${CYAN}/help${RESET} for available commands.
           continue;
         }
 
+        if (input === "/agents") {
+          await this.handleAgents();
+          continue;
+        }
+
         if (input === "/status") {
           await this.handleStatus();
           continue;
@@ -1388,10 +1553,11 @@ Type ${CYAN}/help${RESET} for available commands.
               case "text_delta":
                 if (firstToken) {
                   process.stdout.write("\r            \r");
-                  process.stdout.write(CYAN);
+                  mainAgentAtLineStart = true;
+                  mainAgentConsecutiveBlankLines = 0;
                   firstToken = false;
                 }
-                process.stdout.write((event as { text: string }).text);
+                writeMainAgentText((event as { text: string }).text);
                 break;
 
               case "tool_call": {
@@ -1401,9 +1567,11 @@ Type ${CYAN}/help${RESET} for available commands.
                   process.stdout.write("\r            \r");
                 }
                 firstToken = true;
+                mainAgentAtLineStart = true;
+                mainAgentConsecutiveBlankLines = 0;
                 const tc = event as { name: string; params: Record<string, unknown> };
                 console.log(
-                  `${YELLOW}> ${tc.name}(${this.formatParams(tc.params)})${RESET}`
+                  `${MAIN_TAG}${YELLOW}> ${tc.name}(${this.formatParams(tc.params)})${RESET}`
                 );
                 break;
               }
@@ -1417,9 +1585,8 @@ Type ${CYAN}/help${RESET} for available commands.
                   ? tr.result.output
                   : tr.result.error ?? "Unknown error";
                 console.log(
-                  `${DIM}  [${status}${DIM}] ${this.truncate(output)}${RESET}`
+                  `${MAIN_TAG}${DIM}  [${status}${DIM}] ${this.truncate(output)}${RESET}`
                 );
-                console.log();
                 process.stdout.write(`${DIM}Thinking...${RESET}`);
                 break;
               }
@@ -1433,8 +1600,73 @@ Type ${CYAN}/help${RESET} for available commands.
                 const d = event as { usage: Record<string, unknown> };
                 const usage = d.usage;
                 console.log(
-                  `\n${DIM}[tokens: ${usage.totalInputTokens ?? "?"} in / ${usage.totalOutputTokens ?? "?"} out]${RESET}\n`
+                  `\n${DIM}[main tokens: ${usage.totalInputTokens ?? "?"} in / ${usage.totalOutputTokens ?? "?"} out]${RESET}`
                 );
+                break;
+              }
+
+              case "sub_agent_start": {
+                if (!firstToken) {
+                  process.stdout.write(RESET + "\n");
+                } else {
+                  process.stdout.write("\r            \r");
+                }
+                firstToken = true;
+                subAgentAtLineStart = true;
+                const sas = event as { agentName: string; task: string };
+                console.log(
+                  `\n${PINK}┌── 🤖 ${BOLD}[${sas.agentName}]${RESET}${PINK} Task: ${sas.task}${RESET}`
+                );
+                break;
+              }
+
+              case "sub_agent_progress": {
+                const sap = event as { agentName: string; innerEvent: ServerMessage };
+                const inner = sap.innerEvent;
+                switch (inner.type) {
+                  case "text_delta":
+                    writeSubAgentText(inner.text);
+                    break;
+                  case "tool_call":
+                    console.log(
+                      `${SUB_AGENT_BAR}${subTag(sap.agentName)}${YELLOW}> ${inner.name}(${this.formatParams(inner.params)})${RESET}`
+                    );
+                    break;
+                  case "tool_result": {
+                    const status = inner.result.success ? `${GREEN}ok${RESET}` : `${RED}error${RESET}`;
+                    const output = inner.result.success ? inner.result.output : inner.result.error ?? "Unknown error";
+                    console.log(
+                      `${SUB_AGENT_BAR}${subTag(sap.agentName)}${DIM}[${status}${DIM}] ${this.truncate(output)}${RESET}`
+                    );
+                    break;
+                  }
+                  case "error":
+                    console.log(
+                      `${SUB_AGENT_BAR}${subTag(sap.agentName)}${RED}⚠ ${(inner as { message: string }).message}${RESET}`
+                    );
+                    break;
+                  case "done": {
+                    const d = inner as { usage?: Record<string, unknown> };
+                    if (d.usage) {
+                      console.log(
+                        `${SUB_AGENT_BAR}${DIM}[${sap.agentName} tokens: ${d.usage.totalInputTokens ?? "?"} in / ${d.usage.totalOutputTokens ?? "?"} out]${RESET}`
+                      );
+                    }
+                    break;
+                  }
+                }
+                break;
+              }
+
+              case "sub_agent_done": {
+                const sad = event as { agentName: string; result: string };
+                console.log(
+                  `${PINK}└── ✅ ${BOLD}[${sad.agentName}]${RESET}${PINK} Done: ${this.truncate(sad.result)}${RESET}\n`
+                );
+                mainAgentAtLineStart = true;
+                mainAgentConsecutiveBlankLines = 0;
+                process.stdout.write(`${DIM}Thinking...${RESET}`);
+                firstToken = true;
                 break;
               }
             }

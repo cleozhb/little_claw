@@ -3,6 +3,7 @@ import type { Database } from "../db/Database";
 import type { ToolRegistry } from "../tools/ToolRegistry";
 import type { ShellTool } from "../tools/types";
 import type { ServerMessage } from "./protocol";
+import type { SpawnAgentTool } from "../tools/builtin/SpawnAgentTool";
 import { AgentLoop } from "../core/AgentLoop";
 import { Conversation } from "../core/Conversation";
 import type { SkillManager } from "../skills/SkillManager";
@@ -17,6 +18,7 @@ export interface SessionRouterOptions {
   toolRegistry: ToolRegistry;
   skillManager?: SkillManager;
   shellTool?: ShellTool;
+  spawnAgentTool?: SpawnAgentTool;
   /** session 空闲超时（ms），默认 30 分钟 */
   idleTimeoutMs?: number;
   /** 清理扫描间隔（ms），默认 5 分钟 */
@@ -41,6 +43,7 @@ export class SessionRouter {
   private toolRegistry: ToolRegistry;
   private skillManager?: SkillManager;
   private shellTool?: ShellTool;
+  private spawnAgentTool?: SpawnAgentTool;
   private sessions = new Map<string, SessionEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimeoutMs: number;
@@ -51,6 +54,7 @@ export class SessionRouter {
     this.toolRegistry = options.toolRegistry;
     this.skillManager = options.skillManager;
     this.shellTool = options.shellTool;
+    this.spawnAgentTool = options.spawnAgentTool;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60 * 1000;
 
     const cleanupIntervalMs = options.cleanupIntervalMs ?? 5 * 60 * 1000;
@@ -134,6 +138,61 @@ export class SessionRouter {
     content: string,
     onEvent: (event: ServerMessage) => void,
   ): Promise<void> {
+    // 每次 run 前，为 SpawnAgentTool 设置当前 session 的事件回调
+    if (this.spawnAgentTool) {
+      this.spawnAgentTool.setEventCallback((agentEvent) => {
+        switch (agentEvent.type) {
+          case "sub_agent_start":
+            onEvent({
+              type: "sub_agent_start",
+              sessionId,
+              agentName: agentEvent.agentName,
+              task: agentEvent.task,
+            });
+            break;
+          case "sub_agent_progress": {
+            // 将内部 AgentEvent 转为 ServerMessage
+            const inner = agentEvent.event;
+            let innerMsg: ServerMessage | undefined;
+            switch (inner.type) {
+              case "text_delta":
+                innerMsg = { type: "text_delta", sessionId, text: inner.text };
+                break;
+              case "tool_call":
+                innerMsg = { type: "tool_call", sessionId, name: inner.name, params: inner.params };
+                break;
+              case "tool_result":
+                innerMsg = { type: "tool_result", sessionId, name: inner.name, result: inner.result };
+                break;
+              case "done":
+                innerMsg = { type: "done", sessionId, usage: inner.usage };
+                break;
+              case "error":
+                innerMsg = { type: "error", sessionId, message: inner.message };
+                break;
+            }
+            if (innerMsg) {
+              onEvent({
+                type: "sub_agent_progress",
+                sessionId,
+                agentName: agentEvent.agentName,
+                innerEvent: innerMsg,
+              });
+            }
+            break;
+          }
+          case "sub_agent_done":
+            onEvent({
+              type: "sub_agent_done",
+              sessionId,
+              agentName: agentEvent.agentName,
+              result: agentEvent.result,
+            });
+            break;
+        }
+      });
+    }
+
     try {
       for await (const event of entry.agentLoop.run(content)) {
         switch (event.type) {
@@ -167,6 +226,9 @@ export class SessionRouter {
         sessionId,
         message: `Agent error: ${err instanceof Error ? err.message : String(err)}`,
       });
+    } finally {
+      // 清理回调，防止泄漏
+      this.spawnAgentTool?.setEventCallback(undefined);
     }
   }
 

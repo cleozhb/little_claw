@@ -9,6 +9,8 @@ import { loadConfig } from "./config/index.ts";
 import { createProvider } from "./llm/index.ts";
 import { ToolRegistry } from "./tools/ToolRegistry.ts";
 import { createBuiltinTools } from "./tools/builtin/index.ts";
+import { createSpawnAgentTool } from "./tools/builtin/SpawnAgentTool.ts";
+import type { SpawnAgentTool } from "./tools/builtin/SpawnAgentTool.ts";
 import { Database } from "./db/Database.ts";
 import { SessionRouter } from "./gateway/SessionRouter.ts";
 import { GatewayServer } from "./gateway/GatewayServer.ts";
@@ -77,6 +79,13 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     toolRegistry.register(tool);
   }
 
+  // --- SpawnAgentTool 注册（只有 Main Agent 会在工具列表中看到它） ---
+  const spawnAgentTool = createSpawnAgentTool({
+    llmProvider,
+    toolRegistry,
+  });
+  toolRegistry.register(spawnAgentTool);
+
   // --- Skill 系统初始化 ---
   const skillConfig = new SkillConfigFile();
   await skillConfig.load();
@@ -134,6 +143,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     toolRegistry,
     skillManager,
     shellTool: builtinTools.shellTool,
+    spawnAgentTool,
   });
 
   const gateway = new GatewayServer({

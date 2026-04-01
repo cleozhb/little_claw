@@ -110,6 +110,10 @@ export interface ListWatchersMessage {
   type: "list_watchers";
 }
 
+export interface ListAgentsMessage {
+  type: "list_agents";
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -125,6 +129,7 @@ export type ClientMessage =
   | ReconnectMcpMessage
   | ListCronMessage
   | ListWatchersMessage
+  | ListAgentsMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -288,6 +293,45 @@ export interface WatcherListMessage {
   watchers: WatcherInfo[];
 }
 
+/** Server → Client: Sub-Agent 开始执行 */
+export interface SubAgentStartMessage {
+  type: "sub_agent_start";
+  sessionId: string;
+  agentName: string;
+  task: string;
+}
+
+/** Server → Client: Sub-Agent 中间事件（嵌套一个正常的 ServerMessage） */
+export interface SubAgentProgressMessage {
+  type: "sub_agent_progress";
+  sessionId: string;
+  agentName: string;
+  innerEvent: ServerMessage;
+}
+
+/** Server → Client: Sub-Agent 完成 */
+export interface SubAgentDoneMessage {
+  type: "sub_agent_done";
+  sessionId: string;
+  agentName: string;
+  result: string;
+}
+
+/** Agent 配置描述信息，用于 /agents 命令 */
+export interface AgentInfo {
+  name: string;
+  description: string;
+  allowedTools: string[];
+  maxTurns: number;
+  canSpawnSubAgent: boolean;
+}
+
+/** Server → Client: agent 配置列表 */
+export interface AgentsListMessage {
+  type: "agents_list";
+  agents: AgentInfo[];
+}
+
 export interface WatcherInfo {
   id: string;
   name: string;
@@ -322,7 +366,11 @@ export type ServerMessage =
   | McpReconnectedMessage
   | ScheduledRunStartMessage
   | CronListMessage
-  | WatcherListMessage;
+  | WatcherListMessage
+  | SubAgentStartMessage
+  | SubAgentProgressMessage
+  | SubAgentDoneMessage
+  | AgentsListMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -343,6 +391,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "reconnect_mcp",
   "list_cron",
   "list_watchers",
+  "list_agents",
   "ping",
   "health_check",
 ]);
@@ -417,6 +466,8 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "list_cron":
       break;
     case "list_watchers":
+      break;
+    case "list_agents":
       break;
     case "ping":
       break;

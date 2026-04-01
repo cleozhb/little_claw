@@ -129,6 +129,20 @@ export class Conversation {
                   is_error: tr.is_error === 1,
                 }));
               this.messages.push({ role: "user", content: toolResultBlocks });
+            } else {
+              // tool_use 存在但 tool_result 缺失（中途中断），
+              // 补一条占位 tool_result 以保持消息链路完整，否则 LLM API 会报格式错误
+              const toolUseBlocks = (content as Array<{ type: string; id?: string }>)
+                .filter((b) => b.type === "tool_use" && b.id);
+              if (toolUseBlocks.length > 0) {
+                const placeholders: ToolResultBlock[] = toolUseBlocks.map((b) => ({
+                  type: "tool_result" as const,
+                  tool_use_id: b.id!,
+                  content: "(execution interrupted, no result)",
+                  is_error: true,
+                }));
+                this.messages.push({ role: "user", content: placeholders });
+              }
             }
           }
         }

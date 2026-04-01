@@ -113,9 +113,30 @@ export interface AgentErrorEvent {
   message: string;
 }
 
+export interface SubAgentStartEvent {
+  type: "sub_agent_start";
+  agentName: string;
+  task: string;
+}
+
+export interface SubAgentProgressEvent {
+  type: "sub_agent_progress";
+  agentName: string;
+  event: AgentEvent;
+}
+
+export interface SubAgentDoneEvent {
+  type: "sub_agent_done";
+  agentName: string;
+  result: string;
+}
+
 export type AgentEvent =
   | AgentTextDeltaEvent
   | AgentToolCallEvent
   | AgentToolResultEvent
   | AgentDoneEvent
-  | AgentErrorEvent;
+  | AgentErrorEvent
+  | SubAgentStartEvent
+  | SubAgentProgressEvent
+  | SubAgentDoneEvent;

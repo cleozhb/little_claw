@@ -290,3 +290,43 @@ test("getSessionId returns valid session id", () => {
   const session = db.getSession(conv.getSessionId());
   expect(session).not.toBeNull();
 });
+
+test("loadExisting restores placeholder when tool_result is missing (interrupted execution)", () => {
+  const conv = Conversation.createNew(db);
+  const sessionId = conv.getSessionId();
+
+  conv.addUser("do something");
+
+  // 模拟：assistant 发出了 tool_use，但执行中断，tool_result 没写入
+  conv.addToolUse([
+    {
+      type: "tool_use",
+      id: "tu_interrupted",
+      name: "shell",
+      input: { command: "long-running-cmd" },
+    },
+  ]);
+  // 注意：没有调用 addToolResults
+
+  // 继续对话（模拟下一轮用户输入，实际场景是 session 恢复后用户继续聊天）
+  // 这里不 addUser，只测试 loadExisting 恢复后消息链是否完整
+
+  const restored = Conversation.loadExisting(db, sessionId);
+  const msgs = restored.getMessages();
+
+  // 应该是：user("do something") → assistant(tool_use) → user(tool_result placeholder)
+  expect(msgs.length).toBe(3);
+  expect(msgs[0]!.role).toBe("user");
+  expect(msgs[1]!.role).toBe("assistant");
+  expect(msgs[2]!.role).toBe("user");
+
+  // 第三条应该是占位的 tool_result
+  const toolResultMsg = msgs[2]!;
+  expect(Array.isArray(toolResultMsg.content)).toBe(true);
+  const blocks = toolResultMsg.content as Array<{ type: string; tool_use_id: string; is_error?: boolean; content: string }>;
+  expect(blocks.length).toBe(1);
+  expect(blocks[0]!.type).toBe("tool_result");
+  expect(blocks[0]!.tool_use_id).toBe("tu_interrupted");
+  expect(blocks[0]!.is_error).toBe(true);
+  expect(blocks[0]!.content).toContain("interrupted");
+});

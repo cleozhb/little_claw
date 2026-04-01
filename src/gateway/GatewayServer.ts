@@ -13,6 +13,7 @@ import {
   type SkillInfo,
   type CronJobInfo,
   type WatcherInfo,
+  type AgentInfo,
 } from "./protocol";
 import { HealthChecker, type HealthStatus } from "./HealthChecker.ts";
 import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
@@ -22,6 +23,7 @@ import type { SkillManager } from "../skills/SkillManager.ts";
 import type { McpManager } from "../mcp/McpManager.ts";
 import type { CronScheduler } from "../scheduler/CronScheduler.ts";
 import type { EventWatcher } from "../scheduler/EventWatcher.ts";
+import { getAllAgentConfigs } from "../agents/presets.ts";
 
 // ============================================================
 // Types
@@ -315,6 +317,8 @@ export class GatewayServer {
         return this.handleListCron(connectionId);
       case "list_watchers":
         return this.handleListWatchers(connectionId);
+      case "list_agents":
+        return this.handleListAgents(connectionId);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -603,6 +607,18 @@ export class GatewayServer {
     }));
 
     this.sendToConnection(connectionId, { type: "watcher_list", watchers });
+  }
+
+  private handleListAgents(connectionId: string): void {
+    const configs = getAllAgentConfigs();
+    const agents: AgentInfo[] = configs.map((c) => ({
+      name: c.name,
+      description: c.systemPrompt.slice(0, 120),
+      allowedTools: c.allowedTools,
+      maxTurns: c.maxTurns,
+      canSpawnSubAgent: c.canSpawnSubAgent,
+    }));
+    this.sendToConnection(connectionId, { type: "agents_list", agents });
   }
 
   private handleRenameSession(connectionId: string, sessionId: string, title: string): void {
