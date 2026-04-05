@@ -6,6 +6,7 @@ export interface Session {
   id: string;
   title: string | null;
   system_prompt: string | null;
+  last_summary: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +54,7 @@ export class Database {
   private stmtDeleteSessionMessages;
   private stmtDeleteSessionToolResults;
   private stmtUpdateSessionTitle;
+  private stmtUpdateSessionSummary;
   private stmtUpdateSessionTimestamp;
   private stmtInsertMessage;
   private stmtGetMessages;
@@ -71,8 +73,8 @@ export class Database {
 
     // Prepare all statements
     this.stmtInsertSession = this.db.prepare(
-      `INSERT INTO sessions (id, title, system_prompt, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5)`
+      `INSERT INTO sessions (id, title, system_prompt, last_summary, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
     );
 
     this.stmtGetSession = this.db.prepare(
@@ -97,6 +99,10 @@ export class Database {
 
     this.stmtUpdateSessionTitle = this.db.prepare(
       `UPDATE sessions SET title = ?2, updated_at = ?3 WHERE id = ?1`
+    );
+
+    this.stmtUpdateSessionSummary = this.db.prepare(
+      `UPDATE sessions SET last_summary = ?2, updated_at = ?3 WHERE id = ?1`
     );
 
     this.stmtUpdateSessionTimestamp = this.db.prepare(
@@ -132,10 +138,18 @@ export class Database {
         id           TEXT PRIMARY KEY,
         title        TEXT,
         system_prompt TEXT,
+        last_summary TEXT,
         created_at   TEXT NOT NULL,
         updated_at   TEXT NOT NULL
       )
     `);
+
+    // Migration: add last_summary column for existing databases
+    try {
+      this.db.run(`ALTER TABLE sessions ADD COLUMN last_summary TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS messages (
@@ -178,6 +192,7 @@ export class Database {
       id: crypto.randomUUID(),
       title: null,
       system_prompt: systemPrompt ?? null,
+      last_summary: null,
       created_at: now,
       updated_at: now,
     };
@@ -186,6 +201,7 @@ export class Database {
       session.id,
       session.title,
       session.system_prompt,
+      session.last_summary,
       session.created_at,
       session.updated_at
     );
@@ -211,6 +227,11 @@ export class Database {
   updateSessionTitle(id: string, title: string): void {
     const now = new Date().toISOString();
     this.stmtUpdateSessionTitle.run(id, title, now);
+  }
+
+  updateSessionSummary(id: string, summary: string): void {
+    const now = new Date().toISOString();
+    this.stmtUpdateSessionSummary.run(id, summary, now);
   }
 
   updateSessionTimestamp(id: string): void {

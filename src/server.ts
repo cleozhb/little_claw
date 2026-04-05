@@ -21,6 +21,12 @@ import { McpManager } from "./mcp/McpManager.ts";
 import { CronScheduler } from "./scheduler/CronScheduler.ts";
 import { EventWatcher } from "./scheduler/EventWatcher.ts";
 import type { SchedulerEvent } from "./scheduler/types.ts";
+import { VectorStore } from "./memory/VectorStore.ts";
+import { MemoryManager } from "./memory/MemoryManager.ts";
+import { createEmbeddingProvider } from "./memory/EmbeddingProvider.ts";
+import { FileMemoryManager } from "./memory/FileMemoryManager.ts";
+import { createMemoryWriteTool } from "./tools/builtin/MemoryWriteTool.ts";
+import { createMemoryReadTool } from "./tools/builtin/MemoryReadTool.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -54,6 +60,20 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   mkdirSync(dataDir, { recursive: true });
   const db = new Database(join(dataDir, "little_claw.db"));
 
+  // --- Memory 系统初始化 ---
+  const embeddingProvider = createEmbeddingProvider({
+    apiKey: process.env.EMBEDDING_API_KEY ?? config.llmApiKey,
+    model: process.env.EMBEDDING_MODEL,
+    baseURL: process.env.EMBEDDING_BASE_URL,
+  });
+  const vectorStore = new VectorStore(join(dataDir, "memory.db"), embeddingProvider);
+
+  // 文件记忆层初始化（~/.little_claw/ 下的 SOUL.md, USER.md, memory/）
+  const fileMemory = new FileMemoryManager();
+  await fileMemory.initialize();
+
+  const memoryManager = new MemoryManager(vectorStore, llmProvider, db, fileMemory);
+
   // --- Scheduler 系统初始化 ---
   const cronScheduler = new CronScheduler(db);
   const eventWatcher = new EventWatcher(db);
@@ -78,6 +98,10 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   for (const tool of builtinTools.all) {
     toolRegistry.register(tool);
   }
+
+  // --- 记忆工具注册 ---
+  toolRegistry.register(createMemoryWriteTool(fileMemory, vectorStore));
+  toolRegistry.register(createMemoryReadTool(fileMemory));
 
   // --- SpawnAgentTool 注册（只有 Main Agent 会在工具列表中看到它） ---
   const spawnAgentTool = createSpawnAgentTool({
@@ -137,6 +161,11 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
 
   console.log(`Tools: ${toolLine}`);
 
+  // 打印记忆状态
+  const memoryCount = vectorStore.getCount();
+  const memoryBySession = vectorStore.getCountBySession();
+  console.log(`Memory: ${memoryCount} entries across ${memoryBySession.length} sessions`);
+
   const sessionRouter = new SessionRouter({
     db,
     llmProvider,
@@ -144,6 +173,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     skillManager,
     shellTool: builtinTools.shellTool,
     spawnAgentTool,
+    memoryManager,
   });
 
   const gateway = new GatewayServer({
@@ -156,6 +186,10 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     mcpManager,
     cronScheduler,
     eventWatcher,
+    memoryManager,
+    onSessionSwitch: (oldSessionId) => {
+      sessionRouter.saveMemoryForSession(oldSessionId);
+    },
     onChat: (connectionId, sessionId, content) => {
       sessionIdStorage.run(sessionId, () => {
         sessionRouter
@@ -245,8 +279,11 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     cronScheduler.stop();
     eventWatcher.stop();
     await mcpManager.disconnectAll();
+    // 关闭前保存所有活跃 session 的记忆
+    await sessionRouter.saveAllMemories();
     sessionRouter.dispose();
     gateway.stop();
+    vectorStore.close();
   };
 
   process.on("SIGINT", async () => {

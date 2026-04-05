@@ -24,5 +24,6 @@ export interface ConversationLike {
   ): void;
   getMessages(): Message[];
   getSystemPrompt(): string;
+  getSessionId(): string;
   updateSessionTitle(title: string): void;
 }

@@ -114,6 +114,19 @@ export interface ListAgentsMessage {
   type: "list_agents";
 }
 
+export interface MemorySearchMessage {
+  type: "memory_search";
+  query: string;
+}
+
+export interface MemoryStatsMessage {
+  type: "memory_stats";
+}
+
+export interface MemoryClearMessage {
+  type: "memory_clear";
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -130,6 +143,9 @@ export type ClientMessage =
   | ListCronMessage
   | ListWatchersMessage
   | ListAgentsMessage
+  | MemorySearchMessage
+  | MemoryStatsMessage
+  | MemoryClearMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -332,6 +348,33 @@ export interface AgentsListMessage {
   agents: AgentInfo[];
 }
 
+/** 记忆搜索结果条目 */
+export interface MemoryResultEntry {
+  content: string;
+  sessionId: string;
+  similarity: number;
+  createdAt: string;
+}
+
+/** Server → Client: 记忆搜索结果 */
+export interface MemoryResultsMessage {
+  type: "memory_results";
+  results: MemoryResultEntry[];
+}
+
+/** Server → Client: 记忆统计信息 */
+export interface MemoryStatsResultMessage {
+  type: "memory_stats_result";
+  totalCount: number;
+  bySession: Array<{ sessionId: string; count: number }>;
+}
+
+/** Server → Client: 记忆清空确认 */
+export interface MemoryClearedMessage {
+  type: "memory_cleared";
+  deletedCount: number;
+}
+
 export interface WatcherInfo {
   id: string;
   name: string;
@@ -370,7 +413,10 @@ export type ServerMessage =
   | SubAgentStartMessage
   | SubAgentProgressMessage
   | SubAgentDoneMessage
-  | AgentsListMessage;
+  | AgentsListMessage
+  | MemoryResultsMessage
+  | MemoryStatsResultMessage
+  | MemoryClearedMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -392,6 +438,9 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "list_cron",
   "list_watchers",
   "list_agents",
+  "memory_search",
+  "memory_stats",
+  "memory_clear",
   "ping",
   "health_check",
 ]);
@@ -468,6 +517,13 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "list_watchers":
       break;
     case "list_agents":
+      break;
+    case "memory_search":
+      requireString(msg, "query");
+      break;
+    case "memory_stats":
+      break;
+    case "memory_clear":
       break;
     case "ping":
       break;

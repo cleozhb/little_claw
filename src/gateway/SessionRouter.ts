@@ -4,6 +4,7 @@ import type { ToolRegistry } from "../tools/ToolRegistry";
 import type { ShellTool } from "../tools/types";
 import type { ServerMessage } from "./protocol";
 import type { SpawnAgentTool } from "../tools/builtin/SpawnAgentTool";
+import type { MemoryManager } from "../memory/MemoryManager";
 import { AgentLoop } from "../core/AgentLoop";
 import { Conversation } from "../core/Conversation";
 import type { SkillManager } from "../skills/SkillManager";
@@ -19,6 +20,7 @@ export interface SessionRouterOptions {
   skillManager?: SkillManager;
   shellTool?: ShellTool;
   spawnAgentTool?: SpawnAgentTool;
+  memoryManager?: MemoryManager;
   /** session 空闲超时（ms），默认 30 分钟 */
   idleTimeoutMs?: number;
   /** 清理扫描间隔（ms），默认 5 分钟 */
@@ -44,6 +46,7 @@ export class SessionRouter {
   private skillManager?: SkillManager;
   private shellTool?: ShellTool;
   private spawnAgentTool?: SpawnAgentTool;
+  private memoryManager?: MemoryManager;
   private sessions = new Map<string, SessionEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimeoutMs: number;
@@ -55,6 +58,7 @@ export class SessionRouter {
     this.skillManager = options.skillManager;
     this.shellTool = options.shellTool;
     this.spawnAgentTool = options.spawnAgentTool;
+    this.memoryManager = options.memoryManager;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60 * 1000;
 
     const cleanupIntervalMs = options.cleanupIntervalMs ?? 5 * 60 * 1000;
@@ -117,6 +121,7 @@ export class SessionRouter {
     const agentLoop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
       skillManager: this.skillManager,
       shellTool: this.shellTool,
+      memoryManager: this.memoryManager,
     });
 
     const entry: SessionEntry = {
@@ -234,14 +239,57 @@ export class SessionRouter {
 
   /**
    * 清理空闲超时的 session，释放内存中的 AgentLoop 实例。
+   * 移除前同步触发一次 saveSummary，将对话摘要保存到长期记忆。
    * 不删除数据库数据，下次有消息时会重新从 DB 加载。
    */
   private cleanupIdle(): void {
     const now = Date.now();
     for (const [sessionId, entry] of this.sessions) {
       if (now - entry.lastActiveAt > this.idleTimeoutMs) {
+        // 移除前触发记忆保存（fire-and-forget）
+        this.saveSessionMemory(sessionId, entry);
         this.sessions.delete(sessionId);
       }
     }
+  }
+
+  /**
+   * 对所有活跃 session 触发 saveSummary。
+   * 由 server shutdown 时调用，返回 Promise 等待全部完成。
+   */
+  async saveAllMemories(): Promise<void> {
+    const tasks: Promise<void>[] = [];
+    for (const [sessionId, entry] of this.sessions) {
+      tasks.push(this.saveSessionMemory(sessionId, entry));
+    }
+    await Promise.allSettled(tasks);
+  }
+
+  /** 对单个 session 触发记忆保存 */
+  private async saveSessionMemory(
+    sessionId: string,
+    entry: SessionEntry,
+  ): Promise<void> {
+    if (!this.memoryManager) return;
+    const messages = entry.conversation.getMessages();
+    if (messages.length === 0) return;
+    try {
+      await this.memoryManager.saveSummary(sessionId, messages);
+    } catch (err) {
+      if (process.env.DEBUG) {
+        console.error(`[debug] Memory save for session ${sessionId} failed:`, err);
+      }
+    }
+  }
+
+  /**
+   * 外部调用：对指定 session 触发记忆保存（如 session 切换时）。
+   * 如果该 session 不在内存缓存中则跳过（没有对话数据可保存）。
+   */
+  saveMemoryForSession(sessionId: string): void {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return;
+    // fire-and-forget，不阻塞切换
+    this.saveSessionMemory(sessionId, entry).catch(() => {});
   }
 }

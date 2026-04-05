@@ -9,6 +9,8 @@ import { createWatcherTool } from "./WatcherTool.ts";
 import type { WatcherToolContext } from "./WatcherTool.ts";
 
 export { createReadFileTool, createWriteFileTool, createShellTool, createCronTool, createWatcherTool };
+export { createMemoryWriteTool } from "./MemoryWriteTool.ts";
+export { createMemoryReadTool } from "./MemoryReadTool.ts";
 export type { CronToolContext, WatcherToolContext };
 
 export interface BuiltinTools {

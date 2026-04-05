@@ -9,9 +9,11 @@ import type {
 import type { SkillManager } from "../skills/SkillManager.ts";
 import type { ShellTool } from "../tools/types.ts";
 import type { AgentConfig } from "../agents/AgentConfig.ts";
+import type { MemoryManager } from "../memory/MemoryManager.ts";
 import { MAIN_AGENT } from "../agents/presets.ts";
 import { SkillPromptBuilder } from "../skills/SkillPromptBuilder.ts";
 import { generateTitle } from "./TitleGenerator.ts";
+import { allocateBudget, formatLongTermMemory } from "../memory/TokenBudget.ts";
 
 const SPAWN_AGENT_TOOL_NAME = "spawn_agent";
 const MAX_STREAM_RETRIES = 2;
@@ -21,6 +23,15 @@ const SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron
 
 You can also create event watchers using the manage_watcher tool. When a user asks you to monitor something and notify them when a condition is met, create a watcher. For example, if asked "let me know when the API is back up", create a watcher with check_command "curl -sf https://api.example.com/health" that checks periodically.`;
 
+const MEMORY_GUIDANCE = `You have a persistent memory system. Important information should be saved to memory files using the memory_write tool:
+
+- User preferences → write to USER.md
+- Important decisions, project facts → write to memory/YYYY-MM-DD.md (use today's date)
+- Long-term knowledge consolidation → write to memory/MEMORY.md
+- When you learn something about the user that will be useful in future conversations, save it immediately.
+- You can read past memories using memory_read. At the start of conversations, relevant memories are automatically loaded.
+- SOUL.md is read-only and defines your identity/behavior — follow its guidelines.`;
+
 export class AgentLoop {
   private client: LLMProvider;
   private toolRegistry: ToolRegistry;
@@ -29,6 +40,19 @@ export class AgentLoop {
   private pendingTitleGeneration: Promise<void> | null = null;
   private skillManager?: SkillManager;
   private shellTool?: ShellTool;
+  private memoryManager?: MemoryManager;
+  private cachedMemories: string[] = [];
+  /** 文件记忆层缓存（SOUL.md / USER.md / MEMORY.md），每次 run() 开始时刷新 */
+  private cachedFileMemory: {
+    soul: string | null;
+    user: string | null;
+    memory: string | null;
+  } = { soul: null, user: null, memory: null };
+
+  /** 对话轮次计数器，每完成一次 run() 计数 +1 */
+  private roundCount = 0;
+  /** 多少轮触发一次自动摘要 */
+  private static readonly SUMMARY_INTERVAL = 5;
 
   constructor(
     client: LLMProvider,
@@ -38,6 +62,7 @@ export class AgentLoop {
       config?: AgentConfig;
       skillManager?: SkillManager;
       shellTool?: ShellTool;
+      memoryManager?: MemoryManager;
     },
   ) {
     this.client = client;
@@ -46,6 +71,7 @@ export class AgentLoop {
     this.config = options?.config ?? MAIN_AGENT;
     this.skillManager = options?.skillManager;
     this.shellTool = options?.shellTool;
+    this.memoryManager = options?.memoryManager;
   }
 
   /**
@@ -55,6 +81,26 @@ export class AgentLoop {
   async *run(userMessage: string): AsyncGenerator<AgentEvent> {
     const isFirstRound = this.conversation.getMessages().length === 0;
     this.conversation.addUser(userMessage);
+
+    // 每轮对话开始时，加载文件记忆层 + 从向量数据库检索相关上下文
+    if (this.memoryManager) {
+      try {
+        // 并行加载文件记忆和向量检索
+        const sessionId = this.conversation.getSessionId();
+        const [fileMemoryCtx, memories] = await Promise.all([
+          this.memoryManager.loadFileMemoryContext(),
+          this.memoryManager.recall(userMessage, sessionId),
+        ]);
+        this.cachedFileMemory = fileMemoryCtx;
+        this.cachedMemories = memories;
+      } catch (err) {
+        if (process.env.DEBUG) {
+          console.error(`[debug] Memory recall failed:`, err);
+        }
+        this.cachedMemories = [];
+        this.cachedFileMemory = { soul: null, user: null, memory: null };
+      }
+    }
 
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -193,6 +239,22 @@ export class AgentLoop {
           type: "done",
           usage: { totalInputTokens, totalOutputTokens },
         };
+
+        // 轮次计数 +1，每 N 轮异步触发摘要保存（fire-and-forget，不阻塞对话）
+        this.roundCount++;
+        if (
+          this.memoryManager &&
+          this.roundCount % AgentLoop.SUMMARY_INTERVAL === 0
+        ) {
+          const sid = this.conversation.getSessionId();
+          const msgs = this.conversation.getMessages();
+          this.memoryManager.saveSummary(sid, msgs).catch((err) => {
+            if (process.env.DEBUG) {
+              console.error(`[debug] Auto memory save failed:`, err);
+            }
+          });
+        }
+
         return;
       }
 
@@ -300,29 +362,102 @@ export class AgentLoop {
   }
 
   /**
-   * 构建有效的 system prompt：config.systemPrompt + 会话 system prompt + scheduler + skill 指令。
-   * config.systemPrompt 作为角色定义追加到会话 prompt 之后。
+   * 构建完整的 LLM 输入上下文，按优先级分配 token 预算：
+   *
+   * Context Assembler 加载顺序：
+   *   1. SOUL.md — Agent 身份准则（每次必定加载，如果存在）
+   *   2. USER.md — 用户偏好（每次必定加载，如果存在）
+   *   3. MEMORY.md — 长期知识（每次必定加载，如果存在）
+   *   4. System prompt（角色定义 + workspace + scheduler）
+   *   5. 向量检索结果 — 根据用户新消息检索相关的日志片段
+   *   6. Skill 指令（来自 SkillPromptBuilder）
+   *   7. 对话历史（来自 Conversation）
+   *   8. 用户新消息
+   *
+   * 如果总量超预算，从 Skill 指令和向量检索开始砍。
    */
   private getEffectiveSystemPrompt(): string {
+    // 基础 system prompt = 会话 prompt + 角色定义 + scheduler 指导 + 记忆指引
     const basePrompt = this.conversation.getSystemPrompt();
-    const withRole = `${basePrompt}\n\n${this.config.systemPrompt}`;
-    const withScheduler = `${withRole}\n\n${SCHEDULER_GUIDANCE}`;
+    const coreSystemPrompt = `${basePrompt}\n\n${this.config.systemPrompt}\n\n${SCHEDULER_GUIDANCE}\n\n${MEMORY_GUIDANCE}`;
 
-    if (!this.skillManager) return withScheduler;
+    // 构建 skill prompt
+    let skillPrompt = "";
+    if (this.skillManager) {
+      const loadedSkills = this.skillManager.getLoadedSkills();
+      if (loadedSkills.length > 0) {
+        const builder = new SkillPromptBuilder();
+        const raw = builder.buildSkillPrompt(
+          loadedSkills,
+          undefined,
+          this.skillManager.getRecentlyUsed(),
+        );
+        if (raw) {
+          skillPrompt = `You have access to skills that extend your capabilities. When a user's request matches a skill's description, follow the skill's instructions. Skills may require you to use shell commands or other tools to complete tasks.\n\n${raw}`;
+        }
+      }
+    }
 
-    const loadedSkills = this.skillManager.getLoadedSkills();
-    if (loadedSkills.length === 0) return withScheduler;
+    // 获取当前对话中最后一条用户消息作为预算分配参考
+    const messages = this.conversation.getMessages();
+    const lastUserMsg = messages.length > 0
+      ? messages.filter((m) => m.role === "user").pop()
+      : undefined;
+    const userMessageText = lastUserMsg
+      ? (typeof lastUserMsg.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg.content))
+      : "";
 
-    const builder = new SkillPromptBuilder();
-    const skillPrompt = builder.buildSkillPrompt(
-      loadedSkills,
-      undefined,
-      this.skillManager.getRecentlyUsed(),
-    );
+    // 构建文件记忆层 prompt
+    const soulPrompt = this.cachedFileMemory.soul
+      ? `<soul>\n${this.cachedFileMemory.soul}\n</soul>`
+      : "";
+    const userPreferences = this.cachedFileMemory.user
+      ? `<user_preferences>\n${this.cachedFileMemory.user}\n</user_preferences>`
+      : "";
+    const fileMemory = this.cachedFileMemory.memory
+      ? `<file_memory>\n${this.cachedFileMemory.memory}\n</file_memory>`
+      : "";
 
-    if (!skillPrompt) return withScheduler;
+    // 使用 TokenBudget 进行预算分配
+    const allocation = allocateBudget({
+      systemPrompt: coreSystemPrompt,
+      userMessage: userMessageText,
+      conversationHistory: messages,
+      longTermMemory: this.cachedMemories,
+      skillPrompt,
+      soulPrompt,
+      userPreferences,
+      fileMemory,
+    });
 
-    return `${withScheduler}\n\nYou have access to skills that extend your capabilities. When a user's request matches a skill's description, follow the skill's instructions. Skills may require you to use shell commands or other tools to complete tasks.\n\n${skillPrompt}`;
+    // 组装最终的 system prompt，按加载顺序：
+    // SOUL.md → USER.md → MEMORY.md → core system prompt → 向量检索 → skill
+    let finalPrompt = "";
+
+    if (allocation.soulPrompt) {
+      finalPrompt += allocation.soulPrompt + "\n\n";
+    }
+
+    if (allocation.userPreferences) {
+      finalPrompt += allocation.userPreferences + "\n\n";
+    }
+
+    if (allocation.fileMemory) {
+      finalPrompt += allocation.fileMemory + "\n\n";
+    }
+
+    finalPrompt += allocation.systemPrompt;
+
+    const memoryBlock = formatLongTermMemory(allocation.longTermMemory);
+    if (memoryBlock) {
+      finalPrompt += `\n\n${memoryBlock}`;
+    }
+
+    if (allocation.skillPrompt) {
+      finalPrompt += `\n\n${allocation.skillPrompt}`;
+    }
+
+    return finalPrompt;
   }
 
   /**

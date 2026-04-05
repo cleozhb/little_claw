@@ -11,6 +11,7 @@ import type {
   CronJobInfo,
   WatcherInfo,
   AgentInfo,
+  MemoryResultEntry,
 } from "../gateway/protocol";
 
 // ============================================================
@@ -131,6 +132,9 @@ const COMMANDS = [
   "/cron",
   "/watchers",
   "/agents",
+  "/memory",
+  "/memory search ",
+  "/memory clear",
   "/status",
   "/quit",
   "/exit",
@@ -548,6 +552,25 @@ export class GatewayClient {
     return (resp as { agents: AgentInfo[] }).agents;
   }
 
+  async memorySearch(query: string): Promise<MemoryResultEntry[]> {
+    const resp = await this.request(
+      { type: "memory_search", query } as ClientMessage,
+      "memory_results",
+    );
+    return (resp as { results: MemoryResultEntry[] }).results;
+  }
+
+  async memoryStats(): Promise<{ totalCount: number; bySession: Array<{ sessionId: string; count: number }> }> {
+    const resp = await this.request({ type: "memory_stats" } as ClientMessage, "memory_stats_result");
+    const data = resp as { totalCount: number; bySession: Array<{ sessionId: string; count: number }> };
+    return { totalCount: data.totalCount, bySession: data.bySession };
+  }
+
+  async memoryClear(): Promise<number> {
+    const resp = await this.request({ type: "memory_clear" } as ClientMessage, "memory_cleared");
+    return (resp as { deletedCount: number }).deletedCount;
+  }
+
   async getStatus(): Promise<{ activeSessions: number; connections: number }> {
     const resp = await this.request({ type: "get_status" }, "status_info");
     const data = resp as { activeSessions: number; connections: number };
@@ -683,6 +706,9 @@ export class ClientRepl {
   /cron                  List all cron jobs
   /watchers              List all event watchers
   /agents                List available agent types
+  /memory                Show memory statistics
+  /memory search <query> Search memories by query
+  /memory clear          Clear all memories (requires confirmation)
   /status                Show server status
   /quit                  Exit the chat
   /exit                  Exit the chat
@@ -1169,6 +1195,73 @@ Type ${CYAN}/help${RESET} for available commands.
     console.log();
   }
 
+  // --- Memory commands ---
+
+  private async handleMemory(): Promise<void> {
+    try {
+      const stats = await this.client.memoryStats();
+      console.log(`${BOLD}Memory:${RESET} ${stats.totalCount} entries across ${stats.bySession.length} sessions`);
+      if (stats.bySession.length > 0) {
+        for (const s of stats.bySession) {
+          console.log(`  ${DIM}session ${YELLOW}${s.sessionId.slice(0, 8)}...${RESET}${DIM}: ${s.count} entries${RESET}`);
+        }
+      }
+      console.log();
+    } catch (err) {
+      console.log(`${RED}Failed to get memory stats: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleMemorySearch(query: string): Promise<void> {
+    if (!query) {
+      console.log("Usage: /memory search <query>\n");
+      return;
+    }
+
+    try {
+      const results = await this.client.memorySearch(query);
+      if (results.length === 0) {
+        console.log("No matching memories found.\n");
+        return;
+      }
+
+      console.log(`${BOLD}Memory search results (${results.length}):${RESET}`);
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]!;
+        const sim = (r.similarity * 100).toFixed(1);
+        const date = r.createdAt.slice(0, 10);
+        const preview = r.content.length > 100 ? r.content.slice(0, 100) + "..." : r.content;
+        console.log(
+          `  ${YELLOW}${i + 1}${RESET}. ${DIM}[${sim}%]${RESET} ${DIM}(${date}, session ${r.sessionId.slice(0, 8)}...)${RESET}`,
+        );
+        console.log(`     ${preview}`);
+      }
+      console.log();
+    } catch (err) {
+      console.log(`${RED}Memory search failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleMemoryClear(rl: readline.Interface): Promise<void> {
+    let confirm: string;
+    try {
+      confirm = await rl.question(`${YELLOW}Clear ALL memories? This cannot be undone. (y/N) ${RESET}`);
+    } catch {
+      return;
+    }
+    if (confirm.trim().toLowerCase() !== "y") {
+      console.log("Cancelled.\n");
+      return;
+    }
+
+    try {
+      const deleted = await this.client.memoryClear();
+      console.log(`${GREEN}Cleared ${deleted} memory entries.${RESET}\n`);
+    } catch (err) {
+      console.log(`${RED}Failed to clear memories: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
   private formatSkillStatus(skill: SkillInfo): string {
     switch (skill.status) {
       case "loaded":
@@ -1535,6 +1628,21 @@ Type ${CYAN}/help${RESET} for available commands.
 
         if (input === "/agents") {
           await this.handleAgents();
+          continue;
+        }
+
+        if (input.startsWith("/memory search")) {
+          await this.handleMemorySearch(input.slice(14).trim());
+          continue;
+        }
+
+        if (input === "/memory clear") {
+          await this.handleMemoryClear(rl);
+          continue;
+        }
+
+        if (input === "/memory") {
+          await this.handleMemory();
           continue;
         }
 

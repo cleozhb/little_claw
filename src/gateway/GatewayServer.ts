@@ -14,6 +14,7 @@ import {
   type CronJobInfo,
   type WatcherInfo,
   type AgentInfo,
+  type MemoryResultEntry,
 } from "./protocol";
 import { HealthChecker, type HealthStatus } from "./HealthChecker.ts";
 import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
@@ -23,6 +24,7 @@ import type { SkillManager } from "../skills/SkillManager.ts";
 import type { McpManager } from "../mcp/McpManager.ts";
 import type { CronScheduler } from "../scheduler/CronScheduler.ts";
 import type { EventWatcher } from "../scheduler/EventWatcher.ts";
+import type { MemoryManager } from "../memory/MemoryManager.ts";
 import { getAllAgentConfigs } from "../agents/presets.ts";
 
 // ============================================================
@@ -43,6 +45,10 @@ export interface GatewayOptions {
   /** Scheduler 实例，用于 list_cron / list_watchers */
   cronScheduler?: CronScheduler;
   eventWatcher?: EventWatcher;
+  /** MemoryManager，用于 memory_search */
+  memoryManager?: MemoryManager;
+  /** session 切换时的回调（用于触发旧 session 的记忆保存） */
+  onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
   onChat?: (connectionId: string, sessionId: string, content: string) => void;
   /** 获取活跃 session 数的回调 */
@@ -68,6 +74,8 @@ export class GatewayServer {
   private mcpManager?: McpManager;
   private cronScheduler?: CronScheduler;
   private eventWatcher?: EventWatcher;
+  private memoryManager?: MemoryManager;
+  private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   private port: number;
   private hostname: string;
 
@@ -91,6 +99,8 @@ export class GatewayServer {
     this.mcpManager = options.mcpManager;
     this.cronScheduler = options.cronScheduler;
     this.eventWatcher = options.eventWatcher;
+    this.memoryManager = options.memoryManager;
+    this.onSessionSwitch = options.onSessionSwitch;
 
     // 初始化健康检查
     this.healthChecker = new HealthChecker();
@@ -319,6 +329,12 @@ export class GatewayServer {
         return this.handleListWatchers(connectionId);
       case "list_agents":
         return this.handleListAgents(connectionId);
+      case "memory_search":
+        return this.handleMemorySearch(connectionId, msg.query);
+      case "memory_stats":
+        return this.handleMemoryStats(connectionId);
+      case "memory_clear":
+        return this.handleMemoryClear(connectionId);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -378,6 +394,10 @@ export class GatewayServer {
       }
 
       // 跟踪 connection → session 映射
+      const oldSessionId = this.connectionSessions.get(connectionId);
+      if (oldSessionId && oldSessionId !== sessionId && this.onSessionSwitch) {
+        this.onSessionSwitch(oldSessionId, sessionId);
+      }
       this.connectionSessions.set(connectionId, sessionId);
 
       const info: SessionInfo = {
@@ -619,6 +639,65 @@ export class GatewayServer {
       canSpawnSubAgent: c.canSpawnSubAgent,
     }));
     this.sendToConnection(connectionId, { type: "agents_list", agents });
+  }
+
+  // ----------------------------------------------------------
+  // Memory 命令
+  // ----------------------------------------------------------
+
+  private handleMemorySearch(connectionId: string, query: string): void {
+    if (!this.memoryManager) {
+      this.sendToConnection(connectionId, { type: "memory_results", results: [] });
+      return;
+    }
+
+    const vs = this.memoryManager.getVectorStore();
+    vs.search(query, 5)
+      .then((results) => {
+        const entries: MemoryResultEntry[] = results.map((r) => ({
+          content: r.content,
+          sessionId: r.sessionId,
+          similarity: r.similarity,
+          createdAt: (r.metadata.createdAt as string) ?? "unknown",
+        }));
+        this.sendToConnection(connectionId, { type: "memory_results", results: entries });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Memory search failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleMemoryStats(connectionId: string): void {
+    if (!this.memoryManager) {
+      this.sendToConnection(connectionId, {
+        type: "memory_stats_result",
+        totalCount: 0,
+        bySession: [],
+      });
+      return;
+    }
+
+    const vs = this.memoryManager.getVectorStore();
+    this.sendToConnection(connectionId, {
+      type: "memory_stats_result",
+      totalCount: vs.getCount(),
+      bySession: vs.getCountBySession(),
+    });
+  }
+
+  private handleMemoryClear(connectionId: string): void {
+    if (!this.memoryManager) {
+      this.sendToConnection(connectionId, { type: "memory_cleared", deletedCount: 0 });
+      return;
+    }
+
+    const vs = this.memoryManager.getVectorStore();
+    const count = vs.getCount();
+    vs.deleteAll();
+    this.sendToConnection(connectionId, { type: "memory_cleared", deletedCount: count });
   }
 
   private handleRenameSession(connectionId: string, sessionId: string, title: string): void {
