@@ -4,11 +4,16 @@ export interface ToolResult {
   error?: string;
 }
 
+export interface ToolExecuteOptions {
+  /** 用于取消工具执行的 abort 信号 */
+  signal?: AbortSignal;
+}
+
 export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute(params: Record<string, unknown>): Promise<ToolResult>;
+  execute(params: Record<string, unknown>, options?: ToolExecuteOptions): Promise<ToolResult>;
 }
 
 /** ShellTool 扩展接口，支持注入额外环境变量 */

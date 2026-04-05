@@ -1,4 +1,4 @@
-import type { ShellTool, ToolResult } from "../types.ts";
+import type { ShellTool, ToolResult, ToolExecuteOptions } from "../types.ts";
 
 const DEFAULT_TIMEOUT = 30_000;
 const MAX_OUTPUT_LEN = 10_000;
@@ -34,7 +34,7 @@ export function createShellTool(workspaceRoot: string): ShellTool {
       extraEnv = env;
     },
 
-    async execute(params: Record<string, unknown>): Promise<ToolResult> {
+    async execute(params: Record<string, unknown>, options?: ToolExecuteOptions): Promise<ToolResult> {
       const command = params.command as string;
       const timeout = (params.timeout_ms as number) || DEFAULT_TIMEOUT;
 
@@ -46,9 +46,26 @@ export function createShellTool(workspaceRoot: string): ShellTool {
           stderr: "pipe",
         });
 
+        // 超时 kill
         const timer = setTimeout(() => {
           proc.kill();
         }, timeout);
+
+        // abort 信号 kill
+        let abortHandler: (() => void) | undefined;
+        if (options?.signal) {
+          if (options.signal.aborted) {
+            // 已经 abort 了，立即 kill
+            console.log(`[abort] ShellTool: signal already aborted, killing process immediately, cmd="${command.slice(0, 80)}"`);
+            proc.kill();
+          } else {
+            abortHandler = () => {
+              console.log(`[abort] ShellTool: abort signal received, killing process, cmd="${command.slice(0, 80)}"`);
+              proc.kill();
+            };
+            options.signal.addEventListener("abort", abortHandler, { once: true });
+          }
+        }
 
         const [stdout, stderr, exitCode] = await Promise.all([
           new Response(proc.stdout).text(),
@@ -57,6 +74,19 @@ export function createShellTool(workspaceRoot: string): ShellTool {
         ]);
 
         clearTimeout(timer);
+        if (abortHandler && options?.signal) {
+          options.signal.removeEventListener("abort", abortHandler);
+        }
+
+        // 被 abort 信号 kill
+        if (options?.signal?.aborted) {
+          console.log(`[abort] ShellTool: command aborted, exitCode=${exitCode}, cmd="${command.slice(0, 80)}"`);
+          return {
+            success: false,
+            output: truncate(stdout),
+            error: "Command aborted by user",
+          };
+        }
 
         // Check if killed by timeout (exit code null or signal-based)
         if (exitCode === null || exitCode === 137 || exitCode === 143) {

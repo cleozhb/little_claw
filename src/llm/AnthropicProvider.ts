@@ -58,7 +58,9 @@ export class AnthropicProvider implements LLMProvider {
       params.tools = this.toAnthropicTools(options.tools);
     }
 
-    const stream = this.client.messages.stream(params);
+    const stream = this.client.messages.stream(params, {
+      signal: options?.signal,
+    });
 
     let inputTokens = 0;
     let outputTokens = 0;

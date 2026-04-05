@@ -54,6 +54,21 @@ export class AgentLoop {
   /** 多少轮触发一次自动摘要 */
   private static readonly SUMMARY_INTERVAL = 5;
 
+  // --- Abort 机制 ---
+  /** 是否已中断 */
+  private aborted = false;
+  /** 当前 LLM 请求的 AbortController，允许取消正在进行的 fetch */
+  private currentAbortController: AbortController | null = null;
+  /** 当前工具执行的 AbortController，允许 abort 时 kill 子进程 */
+  private currentToolAbortController: AbortController | null = null;
+
+  // --- 运行中注入指令 ---
+  /** 待注入的消息队列 */
+  private pendingInjections: string[] = [];
+
+  /** 当前是否正在 run() 中 */
+  private _isRunning = false;
+
   constructor(
     client: LLMProvider,
     toolRegistry: ToolRegistry,
@@ -74,11 +89,79 @@ export class AgentLoop {
     this.memoryManager = options?.memoryManager;
   }
 
+  // ----------------------------------------------------------
+  // Abort 机制
+  // ----------------------------------------------------------
+
+  /**
+   * 中断当前 AgentLoop 执行：
+   * 1. 设置 aborted 标志位
+   * 2. 如果正在等 LLM 响应，用 AbortController 取消 fetch
+   * 3. 如果正在执行工具，通过 AbortController 取消（ShellTool 会 kill 子进程）
+   */
+  abort(): void {
+    console.log(`[abort] AgentLoop: abort() called, setting aborted=true, hasLLMController=${!!this.currentAbortController}, hasToolController=${!!this.currentToolAbortController}`);
+    this.aborted = true;
+    // 取消正在进行的 LLM 请求
+    if (this.currentAbortController) {
+      console.log(`[abort] AgentLoop: aborting LLM request via AbortController`);
+      this.currentAbortController.abort();
+    }
+    // 取消正在执行的工具（会触发 ShellTool 里的 proc.kill()）
+    if (this.currentToolAbortController) {
+      console.log(`[abort] AgentLoop: aborting tool execution via AbortController`);
+      this.currentToolAbortController.abort();
+    }
+  }
+
+  // ----------------------------------------------------------
+  // 运行中注入指令
+  // ----------------------------------------------------------
+
+  /**
+   * 向 Agent 注入一条消息，将在下一个合适时机（工具执行后或 end_turn 后）被处理。
+   */
+  inject(message: string): void {
+    this.pendingInjections.push(message);
+  }
+
+  /** 是否正在执行 run() */
+  get isRunning(): boolean {
+    return this._isRunning;
+  }
+
+  /**
+   * 消费 pendingInjections 队列，合并为一段注入文本。
+   * 返回 null 表示队列为空。
+   */
+  private drainInjections(): string | null {
+    if (this.pendingInjections.length === 0) return null;
+    const messages = this.pendingInjections.splice(0);
+    const merged = messages.map((m) => `"${m}"`).join("\n");
+    return `\n\n---\n[USER UPDATE]: 用户在执行过程中补充了新的指令：\n${merged}\n请根据这个新指令调整你的后续行为。\n---`;
+  }
+
   /**
    * ReAct (Reason + Act) 循环：LLM 先推理（生成文本/工具调用），再执行工具，
    * 将工具结果反馈给 LLM 进行下一轮推理，如此反复直到 LLM 给出最终回复。
    */
   async *run(userMessage: string): AsyncGenerator<AgentEvent> {
+    // 重置 abort 状态
+    this.aborted = false;
+    this._isRunning = true;
+
+    try {
+      yield* this.runInner(userMessage);
+    } finally {
+      this._isRunning = false;
+      this.currentAbortController = null;
+      this.currentToolAbortController = null;
+      // 清空未消费的注入队列，防止泄漏到下一次 run()
+      this.pendingInjections.length = 0;
+    }
+  }
+
+  private async *runInner(userMessage: string): AsyncGenerator<AgentEvent> {
     const isFirstRound = this.conversation.getMessages().length === 0;
     this.conversation.addUser(userMessage);
 
@@ -107,6 +190,14 @@ export class AgentLoop {
 
     // ReAct 主循环：最多迭代 config.maxTurns 次，防止无限循环
     for (let i = 0; i < this.config.maxTurns; i++) {
+      // === Abort 检查 ===
+      if (this.aborted) {
+        console.log(`[abort] AgentLoop: aborted at loop start (turn ${i + 1})`);
+        yield { type: "text_delta", text: "\n\n[Aborted by user]" };
+        yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
+        return;
+      }
+
       const messages = this.conversation.getMessages();
       const estimatedTokens = JSON.stringify(messages).length / 4; // rough estimate: 1 token ≈ 4 chars
       console.log(
@@ -126,11 +217,23 @@ export class AgentLoop {
 
       let streamSuccess = false;
       for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt++) {
+        // Abort 检查
+        if (this.aborted) {
+          console.log(`[abort] AgentLoop: aborted at retry start (attempt ${attempt})`);
+          yield { type: "text_delta", text: "\n\n[Aborted by user]" };
+          yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
+          return;
+        }
+
         // 每次重试前重置流式状态
         textContent = "";
         pendingToolArgs.clear();
         pendingToolMeta.clear();
         stopReason = "end_turn";
+
+        // 创建 AbortController 用于取消当前 LLM 请求
+        const abortController = new AbortController();
+        this.currentAbortController = abortController;
 
         try {
           const chatStream = this.client.chat(
@@ -138,9 +241,22 @@ export class AgentLoop {
             {
               system: this.getEffectiveSystemPrompt(),
               tools: this.getFilteredToolDefinitions(),
+              signal: abortController.signal,
             },
           );
           for await (const event of chatStream) {
+            // Abort 检查（流式过程中）
+            if (this.aborted) {
+              console.log(`[abort] AgentLoop: aborted during stream, textContent length=${textContent.length}`);
+              // 尝试保存已收到的部分文本
+              if (textContent) {
+                this.conversation.addAssistant(textContent + "\n\n[Aborted by user]");
+              }
+              yield { type: "text_delta", text: "\n\n[Aborted by user]" };
+              yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
+              return;
+            }
+
             // 处理流式事件：文本增量、工具调用开始/增量/结束、消息结束
             if (process.env.DEBUG) {
               console.error(`[debug] stream event: ${event.type}`, JSON.stringify(event).slice(0, 200));
@@ -179,8 +295,22 @@ export class AgentLoop {
             }
           }
           streamSuccess = true;
+          this.currentAbortController = null;
           break; // 流式读取成功，跳出重试循环
         } catch (err) {
+          this.currentAbortController = null;
+
+          // 如果是因为 abort 导致的错误，直接退出
+          if (this.aborted) {
+            console.log(`[abort] AgentLoop: aborted during stream error catch, textContent length=${textContent.length}`);
+            if (textContent) {
+              this.conversation.addAssistant(textContent + "\n\n[Aborted by user]");
+            }
+            yield { type: "text_delta", text: "\n\n[Aborted by user]" };
+            yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
+            return;
+          }
+
           const msg = err instanceof Error ? err.message : String(err);
           const isRetryable = msg.includes("Stream timeout") || msg.includes("ECONNRESET") || msg.includes("fetch failed");
           const hasMoreRetries = attempt < MAX_STREAM_RETRIES;
@@ -235,6 +365,16 @@ export class AgentLoop {
           this.maybeGenerateTitle(userMessage, textContent);
         }
 
+        // === 注入检查（end_turn 场景）===
+        // LLM 返回了 end_turn，如果有待注入消息，作为新一轮 user message 追加并继续循环
+        const injection = this.drainInjections();
+        if (injection) {
+          this.conversation.addUser(injection);
+          console.log(`[DEBUG] Injection applied as new user message after end_turn`);
+          // 不 yield done，继续循环让 LLM 处理注入内容
+          continue;
+        }
+
         yield {
           type: "done",
           usage: { totalInputTokens, totalOutputTokens },
@@ -276,6 +416,19 @@ export class AgentLoop {
       }> = [];
 
       for (const block of toolUseBlocks) {
+        // Abort 检查（工具执行前）
+        if (this.aborted) {
+          console.log(`[abort] AgentLoop: aborted before tool execution, tool=${block.name}`);
+          toolResultParams.push({
+            toolUseId: block.id,
+            toolName: block.name,
+            input: block.input,
+            output: "[Aborted by user]",
+            isError: true,
+          });
+          continue;
+        }
+
         yield { type: "tool_call", name: block.name, params: block.input };
 
         const tool = this.toolRegistry.get(block.name);
@@ -302,7 +455,14 @@ export class AgentLoop {
         }
 
         try {
-          const result = await tool.execute(block.input);
+          const toolAbortController = new AbortController();
+          this.currentToolAbortController = toolAbortController;
+          // 如果已经 aborted，立即取消
+          if (this.aborted) {
+            toolAbortController.abort();
+          }
+          const result = await tool.execute(block.input, { signal: toolAbortController.signal });
+          this.currentToolAbortController = null;
           yield { type: "tool_result", name: block.name, result };
           toolResultParams.push({
             toolUseId: block.id,
@@ -314,6 +474,7 @@ export class AgentLoop {
             isError: !result.success,
           });
         } catch (err) {
+          this.currentToolAbortController = null;
           const errMsg = err instanceof Error ? err.message : String(err);
           const result = { success: false, output: "", error: errMsg };
           yield { type: "tool_result", name: block.name, result };
@@ -325,6 +486,27 @@ export class AgentLoop {
             isError: true,
           });
         }
+      }
+
+      // Abort 检查（所有工具执行完成后）
+      if (this.aborted) {
+        console.log(`[abort] AgentLoop: aborted after all tools executed`);
+        this.conversation.addToolResults(messageId, toolResultParams);
+        yield { type: "text_delta", text: "\n\n[Aborted by user]" };
+        yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
+        return;
+      }
+
+      // === 注入检查（tool_result 场景）===
+      // 执行完工具、准备把 tool_result 发给 LLM 之前，检查 pendingInjections 队列
+      const injection = this.drainInjections();
+      if (injection) {
+        // 把注入文本附加到最后一个 tool_result 的 output 末尾
+        const lastParam = toolResultParams[toolResultParams.length - 1];
+        if (lastParam) {
+          lastParam.output += injection;
+        }
+        console.log(`[DEBUG] Injection appended to tool_result`);
       }
 
       this.conversation.addToolResults(messageId, toolResultParams);

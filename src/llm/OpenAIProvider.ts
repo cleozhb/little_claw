@@ -53,7 +53,9 @@ export class OpenAIProvider implements LLMProvider {
       params.tools = this.toOpenAITools(options.tools);
     }
 
-    const stream = await this.client.chat.completions.create(params);
+    const stream = await this.client.chat.completions.create(params, {
+      signal: options?.signal,
+    });
 
     let inputTokens = 0;
     let outputTokens = 0;

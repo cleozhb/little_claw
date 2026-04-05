@@ -127,6 +127,19 @@ export interface MemoryClearMessage {
   type: "memory_clear";
 }
 
+/** Client → Server: 中断当前 Agent 执行 */
+export interface AbortMessage {
+  type: "abort";
+  sessionId: string;
+}
+
+/** Client → Server: 运行中注入指令 */
+export interface InjectMessage {
+  type: "inject";
+  sessionId: string;
+  content: string;
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -146,6 +159,8 @@ export type ClientMessage =
   | MemorySearchMessage
   | MemoryStatsMessage
   | MemoryClearMessage
+  | AbortMessage
+  | InjectMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -375,6 +390,18 @@ export interface MemoryClearedMessage {
   deletedCount: number;
 }
 
+/** Server → Client: Agent 已中断 */
+export interface AbortedMessage {
+  type: "aborted";
+  sessionId: string;
+}
+
+/** Server → Client: 注入指令已接收 */
+export interface InjectedMessage {
+  type: "injected";
+  sessionId: string;
+}
+
 export interface WatcherInfo {
   id: string;
   name: string;
@@ -416,7 +443,9 @@ export type ServerMessage =
   | AgentsListMessage
   | MemoryResultsMessage
   | MemoryStatsResultMessage
-  | MemoryClearedMessage;
+  | MemoryClearedMessage
+  | AbortedMessage
+  | InjectedMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -441,6 +470,8 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "memory_search",
   "memory_stats",
   "memory_clear",
+  "abort",
+  "inject",
   "ping",
   "health_check",
 ]);
@@ -524,6 +555,13 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "memory_stats":
       break;
     case "memory_clear":
+      break;
+    case "abort":
+      requireString(msg, "sessionId");
+      break;
+    case "inject":
+      requireString(msg, "sessionId");
+      requireString(msg, "content");
       break;
     case "ping":
       break;

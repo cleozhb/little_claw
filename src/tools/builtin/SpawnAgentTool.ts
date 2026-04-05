@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "../types.ts";
+import type { Tool, ToolResult, ToolExecuteOptions } from "../types.ts";
 import type { ToolRegistry } from "../ToolRegistry.ts";
 import type { LLMProvider } from "../../llm/types.ts";
 import type { AgentEvent } from "../../types/message.ts";
@@ -60,7 +60,7 @@ export function createSpawnAgentTool(
       currentCallback = cb;
     },
 
-    async execute(params: Record<string, unknown>): Promise<ToolResult> {
+    async execute(params: Record<string, unknown>, options?: ToolExecuteOptions): Promise<ToolResult> {
       const agentType = params.agent_type as string;
       const task = params.task as string;
       const context = params.context as string | undefined;
@@ -103,6 +103,17 @@ export function createSpawnAgentTool(
 
       const onEvent = currentCallback;
 
+      // 透传 abort signal：父 agent 被 abort 时，子 agent 也立即中断
+      let abortHandler: (() => void) | undefined;
+      if (options?.signal) {
+        if (options.signal.aborted) {
+          subAgentLoop.abort();
+        } else {
+          abortHandler = () => subAgentLoop.abort();
+          options.signal.addEventListener("abort", abortHandler, { once: true });
+        }
+      }
+
       // 通知外部：Sub-Agent 开始执行
       onEvent?.({
         type: "sub_agent_start",
@@ -128,6 +139,9 @@ export function createSpawnAgentTool(
         resultText = result?.text ?? "";
         hitMaxTurns = result?.hitMaxTurns ?? false;
       } catch (err) {
+        if (abortHandler && options?.signal) {
+          options.signal.removeEventListener("abort", abortHandler);
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         onEvent?.({
           type: "sub_agent_done",
@@ -142,6 +156,9 @@ export function createSpawnAgentTool(
       }
 
       if (timedOut) {
+        if (abortHandler && options?.signal) {
+          options.signal.removeEventListener("abort", abortHandler);
+        }
         const partial = resultText || "(no output before timeout)";
         onEvent?.({
           type: "sub_agent_done",
@@ -163,6 +180,10 @@ export function createSpawnAgentTool(
         const originalLength = output.length;
         const summarized = await summarizeResult(llmProvider, output);
         output = `[Sub-agent returned ${originalLength} chars, summarized below]\n\n${summarized}`;
+      }
+
+      if (abortHandler && options?.signal) {
+        options.signal.removeEventListener("abort", abortHandler);
       }
 
       onEvent?.({

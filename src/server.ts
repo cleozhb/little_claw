@@ -205,6 +205,12 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
           });
       });
     },
+    onAbort: (sessionId) => {
+      return sessionRouter.abortSession(sessionId);
+    },
+    onInject: (sessionId, content) => {
+      return sessionRouter.injectMessage(sessionId, content);
+    },
     getActiveSessionCount: () => sessionRouter.getActiveSessionCount(),
   });
 

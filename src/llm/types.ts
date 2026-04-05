@@ -13,6 +13,8 @@ export interface ToolDefinition {
 export interface ChatOptions {
   tools?: ToolDefinition[];
   system?: string;
+  /** AbortSignal for cancelling the request */
+  signal?: AbortSignal;
 }
 
 // --- LLM Provider interface ---

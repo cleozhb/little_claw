@@ -86,6 +86,41 @@ export class SessionRouter {
   }
 
   // ----------------------------------------------------------
+  // Abort & Inject
+  // ----------------------------------------------------------
+
+  /**
+   * 中断指定 session 的当前 AgentLoop 执行。
+   * 返回 true 表示成功发送中断信号，false 表示 session 不存在或未在运行。
+   */
+  abortSession(sessionId: string): boolean {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) {
+      console.log(`[abort] SessionRouter: session ${sessionId} not found`);
+      return false;
+    }
+    if (!entry.agentLoop.isRunning) {
+      console.log(`[abort] SessionRouter: session ${sessionId} agent not running, skip`);
+      return false;
+    }
+    console.log(`[abort] SessionRouter: aborting AgentLoop for session ${sessionId}`);
+    entry.agentLoop.abort();
+    return true;
+  }
+
+  /**
+   * 向指定 session 的 AgentLoop 注入一条消息。
+   * 返回 true 表示成功注入，false 表示 session 不存在或未在运行。
+   */
+  injectMessage(sessionId: string, content: string): boolean {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return false;
+    if (!entry.agentLoop.isRunning) return false;
+    entry.agentLoop.inject(content);
+    return true;
+  }
+
+  // ----------------------------------------------------------
   // 监控
   // ----------------------------------------------------------
 

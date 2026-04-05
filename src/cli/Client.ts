@@ -209,7 +209,7 @@ export class GatewayClient {
         reject(new Error(`WebSocket connection failed: ${this.url}`));
       };
 
-      this.ws.onclose = (event) => {
+      this.ws.onclose = () => {
         this.stopHeartbeat();
         if (!this.closed) {
           this.handleDisconnect();
@@ -437,6 +437,12 @@ export class GatewayClient {
       return;
     }
 
+    // aborted / injected 确认：直接忽略（CLI 通过回调/状态处理）
+    if (msg.type === "aborted" || msg.type === "injected") {
+      console.log(`[abort] GatewayClient: received ${msg.type} confirmation from server`);
+      return;
+    }
+
     // 流式事件（text_delta, tool_call, tool_result, done）
     if (this.onStreamEvent) {
       this.onStreamEvent(msg);
@@ -598,6 +604,23 @@ export class GatewayClient {
     });
   }
 
+  /**
+   * 发送 abort 消息，中断当前 Agent 执行。
+   */
+  abort(): void {
+    if (!this.sessionId) return;
+    console.log(`[abort] GatewayClient: sending abort message for session ${this.sessionId}`);
+    this.send({ type: "abort", sessionId: this.sessionId });
+  }
+
+  /**
+   * 发送 inject 消息，向运行中的 Agent 注入指令。
+   */
+  inject(content: string): void {
+    if (!this.sessionId) return;
+    this.send({ type: "inject", sessionId: this.sessionId, content });
+  }
+
   getSessionId(): string | null {
     return this.sessionId;
   }
@@ -622,6 +645,12 @@ export class GatewayClient {
 
 export class ClientRepl {
   private client: GatewayClient;
+  /** Agent 是否正在运行 */
+  private isRunning = false;
+  /** 上次 Ctrl+C 时间戳，用于双按退出检测 */
+  private lastSigintAt = 0;
+  /** SIGINT handler 引用，方便 raw mode 期间临时移除 */
+  private handleSigint: (() => void) | null = null;
 
   constructor(client: GatewayClient) {
     this.client = client;
@@ -1488,13 +1517,42 @@ Type ${CYAN}/help${RESET} for available commands.
       closed = true;
     });
 
-    const handleSigint = () => {
-      console.log(`\n${RESET}Bye!`);
-      this.client.close();
-      rl.close();
-      process.exit(0);
+    // Ctrl+C 处理逻辑：
+    // Agent 运行中：发送 abort 中断当前执行
+    // Agent 未运行：提示双按退出
+    // 双击 Ctrl+C（500ms 内）：直接退出
+    //
+    // 注意：Bun readline 的 SIGINT 行为与 Node.js 不同——
+    // readline 注册了 SIGINT 监听器后会拦截信号，导致 process.on("SIGINT") 收不到。
+    // 因此我们把核心逻辑放在 rl.on("SIGINT") 中，同时也注册 process.on("SIGINT") 作为兜底。
+    this.handleSigint = () => {
+      const now = Date.now();
+
+      // 连按两次退出
+      if (now - this.lastSigintAt < 500) {
+        console.log(`\n${RESET}Bye!`);
+        this.client.close();
+        rl.close();
+        process.exit(0);
+      }
+      this.lastSigintAt = now;
+
+      if (this.isRunning) {
+        // Agent 运行中：发送 abort 中断当前执行
+        console.log(`[abort] CLI: Ctrl+C caught while agent running, sending abort to server`);
+        this.client.abort();
+        process.stdout.write(`\n${DIM}(Aborting... press Ctrl+C again to exit)${RESET}\n`);
+        return;
+      }
+
+      // Agent 未运行：提示双按退出
+      process.stdout.write(`\n${DIM}(Press Ctrl+C again to exit)${RESET}\n`);
+      process.stdout.write(this.getPrompt());
     };
-    process.on("SIGINT", handleSigint);
+    // readline 拦截 SIGINT 后直接调用 handleSigint（Bun 下主要走这条路径）
+    rl.on("SIGINT", () => this.handleSigint!());
+    // 兜底：非 readline 活跃期间的 SIGINT（如 readline 已 pause）
+    process.on("SIGINT", this.handleSigint);
 
     try {
       while (!closed) {
@@ -1652,147 +1710,172 @@ Type ${CYAN}/help${RESET} for available commands.
         }
 
         // Chat — 发送消息并渲染流式输出
-        process.stdout.write(`${DIM}Thinking...${RESET}`);
-        let firstToken = true;
+        await this.runChat(input, rl);
+      }
+    } finally {
+      process.removeListener("SIGINT", this.handleSigint!);
+      this.client.close();
+      rl.close();
+    }
+  }
 
-        try {
-          await this.client.chat(input, (event) => {
-            switch (event.type) {
+  /**
+   * 执行 chat：发送消息、渲染流式输出，同时支持用户在运行中通过 readline 注入指令。
+   * 不切换 raw mode，避免 Bun 下 raw mode 切换导致 readline/WebSocket 状态异常。
+   */
+  private async runChat(input: string, rl: readline.Interface): Promise<void> {
+    process.stdout.write(`${DIM}Thinking...${RESET}`);
+    let firstToken = true;
+
+    this.isRunning = true;
+
+    // 用 readline 的 line 事件接收运行中的用户输入（inject）
+    // readline 在 SIGINT handler 中会自动处理 Ctrl+C
+    const lineHandler = (line: string) => {
+      const trimmed = line.trim();
+      if (trimmed) {
+        process.stdout.write(`${GREEN}💬 [You]: ${trimmed}${RESET}\n`);
+        this.client.inject(trimmed);
+      }
+    };
+    rl.on("line", lineHandler);
+
+    try {
+      await this.client.chat(input, (event) => {
+        switch (event.type) {
+          case "text_delta":
+            if (firstToken) {
+              process.stdout.write("\r            \r");
+              mainAgentAtLineStart = true;
+              mainAgentConsecutiveBlankLines = 0;
+              firstToken = false;
+            }
+            writeMainAgentText((event as { text: string }).text);
+            break;
+
+          case "tool_call": {
+            if (!firstToken) {
+              process.stdout.write(RESET + "\n");
+            } else {
+              process.stdout.write("\r            \r");
+            }
+            firstToken = true;
+            mainAgentAtLineStart = true;
+            mainAgentConsecutiveBlankLines = 0;
+            const tc = event as { name: string; params: Record<string, unknown> };
+            console.log(
+              `${MAIN_TAG}${YELLOW}> ${tc.name}(${this.formatParams(tc.params)})${RESET}`
+            );
+            break;
+          }
+
+          case "tool_result": {
+            const tr = event as { name: string; result: { success: boolean; output: string; error?: string } };
+            const status = tr.result.success
+              ? `${GREEN}ok${RESET}`
+              : `${RED}error${RESET}`;
+            const output = tr.result.success
+              ? tr.result.output
+              : tr.result.error ?? "Unknown error";
+            console.log(
+              `${MAIN_TAG}${DIM}  [${status}${DIM}] ${this.truncate(output)}${RESET}`
+            );
+            process.stdout.write(`${DIM}Thinking...${RESET}`);
+            break;
+          }
+
+          case "done": {
+            if (!firstToken) {
+              process.stdout.write(RESET);
+            } else {
+              process.stdout.write("\r            \r");
+            }
+            const d = event as { usage: Record<string, unknown> };
+            const usage = d.usage;
+            console.log(
+              `\n${DIM}[main tokens: ${usage.totalInputTokens ?? "?"} in / ${usage.totalOutputTokens ?? "?"} out]${RESET}`
+            );
+            break;
+          }
+
+          case "sub_agent_start": {
+            if (!firstToken) {
+              process.stdout.write(RESET + "\n");
+            } else {
+              process.stdout.write("\r            \r");
+            }
+            firstToken = true;
+            subAgentAtLineStart = true;
+            const sas = event as { agentName: string; task: string };
+            console.log(
+              `\n${PINK}┌── 🤖 ${BOLD}[${sas.agentName}]${RESET}${PINK} Task: ${sas.task}${RESET}`
+            );
+            break;
+          }
+
+          case "sub_agent_progress": {
+            const sap = event as { agentName: string; innerEvent: ServerMessage };
+            const inner = sap.innerEvent;
+            switch (inner.type) {
               case "text_delta":
-                if (firstToken) {
-                  process.stdout.write("\r            \r");
-                  mainAgentAtLineStart = true;
-                  mainAgentConsecutiveBlankLines = 0;
-                  firstToken = false;
-                }
-                writeMainAgentText((event as { text: string }).text);
+                writeSubAgentText(inner.text);
                 break;
-
-              case "tool_call": {
-                if (!firstToken) {
-                  process.stdout.write(RESET + "\n");
-                } else {
-                  process.stdout.write("\r            \r");
-                }
-                firstToken = true;
-                mainAgentAtLineStart = true;
-                mainAgentConsecutiveBlankLines = 0;
-                const tc = event as { name: string; params: Record<string, unknown> };
+              case "tool_call":
                 console.log(
-                  `${MAIN_TAG}${YELLOW}> ${tc.name}(${this.formatParams(tc.params)})${RESET}`
+                  `${SUB_AGENT_BAR}${subTag(sap.agentName)}${YELLOW}> ${inner.name}(${this.formatParams(inner.params)})${RESET}`
                 );
                 break;
-              }
-
               case "tool_result": {
-                const tr = event as { name: string; result: { success: boolean; output: string; error?: string } };
-                const status = tr.result.success
-                  ? `${GREEN}ok${RESET}`
-                  : `${RED}error${RESET}`;
-                const output = tr.result.success
-                  ? tr.result.output
-                  : tr.result.error ?? "Unknown error";
+                const status = inner.result.success ? `${GREEN}ok${RESET}` : `${RED}error${RESET}`;
+                const output = inner.result.success ? inner.result.output : inner.result.error ?? "Unknown error";
                 console.log(
-                  `${MAIN_TAG}${DIM}  [${status}${DIM}] ${this.truncate(output)}${RESET}`
+                  `${SUB_AGENT_BAR}${subTag(sap.agentName)}${DIM}[${status}${DIM}] ${this.truncate(output)}${RESET}`
                 );
-                process.stdout.write(`${DIM}Thinking...${RESET}`);
                 break;
               }
-
+              case "error":
+                console.log(
+                  `${SUB_AGENT_BAR}${subTag(sap.agentName)}${RED}⚠ ${(inner as { message: string }).message}${RESET}`
+                );
+                break;
               case "done": {
-                if (!firstToken) {
-                  process.stdout.write(RESET);
-                } else {
-                  process.stdout.write("\r            \r");
+                const d = inner as { usage?: Record<string, unknown> };
+                if (d.usage) {
+                  console.log(
+                    `${SUB_AGENT_BAR}${DIM}[${sap.agentName} tokens: ${d.usage.totalInputTokens ?? "?"} in / ${d.usage.totalOutputTokens ?? "?"} out]${RESET}`
+                  );
                 }
-                const d = event as { usage: Record<string, unknown> };
-                const usage = d.usage;
-                console.log(
-                  `\n${DIM}[main tokens: ${usage.totalInputTokens ?? "?"} in / ${usage.totalOutputTokens ?? "?"} out]${RESET}`
-                );
-                break;
-              }
-
-              case "sub_agent_start": {
-                if (!firstToken) {
-                  process.stdout.write(RESET + "\n");
-                } else {
-                  process.stdout.write("\r            \r");
-                }
-                firstToken = true;
-                subAgentAtLineStart = true;
-                const sas = event as { agentName: string; task: string };
-                console.log(
-                  `\n${PINK}┌── 🤖 ${BOLD}[${sas.agentName}]${RESET}${PINK} Task: ${sas.task}${RESET}`
-                );
-                break;
-              }
-
-              case "sub_agent_progress": {
-                const sap = event as { agentName: string; innerEvent: ServerMessage };
-                const inner = sap.innerEvent;
-                switch (inner.type) {
-                  case "text_delta":
-                    writeSubAgentText(inner.text);
-                    break;
-                  case "tool_call":
-                    console.log(
-                      `${SUB_AGENT_BAR}${subTag(sap.agentName)}${YELLOW}> ${inner.name}(${this.formatParams(inner.params)})${RESET}`
-                    );
-                    break;
-                  case "tool_result": {
-                    const status = inner.result.success ? `${GREEN}ok${RESET}` : `${RED}error${RESET}`;
-                    const output = inner.result.success ? inner.result.output : inner.result.error ?? "Unknown error";
-                    console.log(
-                      `${SUB_AGENT_BAR}${subTag(sap.agentName)}${DIM}[${status}${DIM}] ${this.truncate(output)}${RESET}`
-                    );
-                    break;
-                  }
-                  case "error":
-                    console.log(
-                      `${SUB_AGENT_BAR}${subTag(sap.agentName)}${RED}⚠ ${(inner as { message: string }).message}${RESET}`
-                    );
-                    break;
-                  case "done": {
-                    const d = inner as { usage?: Record<string, unknown> };
-                    if (d.usage) {
-                      console.log(
-                        `${SUB_AGENT_BAR}${DIM}[${sap.agentName} tokens: ${d.usage.totalInputTokens ?? "?"} in / ${d.usage.totalOutputTokens ?? "?"} out]${RESET}`
-                      );
-                    }
-                    break;
-                  }
-                }
-                break;
-              }
-
-              case "sub_agent_done": {
-                const sad = event as { agentName: string; result: string };
-                console.log(
-                  `${PINK}└── ✅ ${BOLD}[${sad.agentName}]${RESET}${PINK} Done: ${this.truncate(sad.result)}${RESET}\n`
-                );
-                mainAgentAtLineStart = true;
-                mainAgentConsecutiveBlankLines = 0;
-                process.stdout.write(`${DIM}Thinking...${RESET}`);
-                firstToken = true;
                 break;
               }
             }
-          });
-        } catch (err) {
-          if (firstToken) {
-            process.stdout.write("\r            \r");
+            break;
           }
-          process.stdout.write(RESET);
-          console.error(
-            `\n${RED}Error: ${err instanceof Error ? err.message : String(err)}${RESET}\n`
-          );
+
+          case "sub_agent_done": {
+            const sad = event as { agentName: string; result: string };
+            console.log(
+              `${PINK}└── ✅ ${BOLD}[${sad.agentName}]${RESET}${PINK} Done: ${this.truncate(sad.result)}${RESET}\n`
+            );
+            mainAgentAtLineStart = true;
+            mainAgentConsecutiveBlankLines = 0;
+            process.stdout.write(`${DIM}Thinking...${RESET}`);
+            firstToken = true;
+            break;
+          }
         }
+      });
+    } catch (err) {
+      if (firstToken) {
+        process.stdout.write("\r            \r");
       }
+      process.stdout.write(RESET);
+      console.error(
+        `\n${RED}Error: ${err instanceof Error ? err.message : String(err)}${RESET}\n`
+      );
     } finally {
-      process.removeListener("SIGINT", handleSigint);
-      this.client.close();
-      rl.close();
+      console.log(`[abort] CLI: runChat finished, setting isRunning=false`);
+      this.isRunning = false;
+      rl.removeListener("line", lineHandler);
     }
   }
 }

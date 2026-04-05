@@ -51,6 +51,10 @@ export interface GatewayOptions {
   onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
   onChat?: (connectionId: string, sessionId: string, content: string) => void;
+  /** abort 消息的处理回调 */
+  onAbort?: (sessionId: string) => boolean;
+  /** inject 消息的处理回调 */
+  onInject?: (sessionId: string, content: string) => boolean;
   /** 获取活跃 session 数的回调 */
   getActiveSessionCount?: () => number;
 }
@@ -69,6 +73,8 @@ export class GatewayServer {
   private db: Database;
   private toolRegistry: ToolRegistry;
   private onChat?: GatewayOptions["onChat"];
+  private onAbort?: GatewayOptions["onAbort"];
+  private onInject?: GatewayOptions["onInject"];
   private getActiveSessionCount?: GatewayOptions["getActiveSessionCount"];
   private skillManager?: SkillManager;
   private mcpManager?: McpManager;
@@ -94,6 +100,8 @@ export class GatewayServer {
     this.db = options.db;
     this.toolRegistry = options.toolRegistry;
     this.onChat = options.onChat;
+    this.onAbort = options.onAbort;
+    this.onInject = options.onInject;
     this.getActiveSessionCount = options.getActiveSessionCount;
     this.skillManager = options.skillManager;
     this.mcpManager = options.mcpManager;
@@ -301,6 +309,10 @@ export class GatewayServer {
     switch (msg.type) {
       case "chat":
         return this.handleChat(connectionId, msg.sessionId, msg.content);
+      case "abort":
+        return this.handleAbort(connectionId, msg.sessionId);
+      case "inject":
+        return this.handleInject(connectionId, msg.sessionId, msg.content);
       case "create_session":
         return this.handleCreateSession(connectionId, msg.systemPrompt);
       case "load_session":
@@ -358,6 +370,33 @@ export class GatewayServer {
     // 跟踪 connection → session 映射
     this.connectionSessions.set(connectionId, sessionId);
     this.onChat(connectionId, sessionId, content);
+  }
+
+  private handleAbort(connectionId: string, sessionId: string): void {
+    console.log(`[abort] GatewayServer: received abort for session ${sessionId} from connection ${connectionId}`);
+    const success = this.onAbort ? this.onAbort(sessionId) : false;
+    if (success) {
+      this.sendToConnection(connectionId, { type: "aborted", sessionId });
+    } else {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        sessionId,
+        message: "Abort failed: session not found or not running",
+      });
+    }
+  }
+
+  private handleInject(connectionId: string, sessionId: string, content: string): void {
+    const success = this.onInject ? this.onInject(sessionId, content) : false;
+    if (success) {
+      this.sendToConnection(connectionId, { type: "injected", sessionId });
+    } else {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        sessionId,
+        message: "Inject failed: session not found or not running",
+      });
+    }
   }
 
   private handleCreateSession(connectionId: string, systemPrompt?: string): void {
