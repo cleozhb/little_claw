@@ -27,6 +27,7 @@ import { createEmbeddingProvider } from "./memory/EmbeddingProvider.ts";
 import { FileMemoryManager } from "./memory/FileMemoryManager.ts";
 import { createMemoryWriteTool } from "./tools/builtin/MemoryWriteTool.ts";
 import { createMemoryReadTool } from "./tools/builtin/MemoryReadTool.ts";
+import { SimulationManager } from "./simulation/SimulationManager.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -166,6 +167,17 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const memoryBySession = vectorStore.getCountBySession();
   console.log(`Memory: ${memoryCount} entries across ${memoryBySession.length} sessions`);
 
+  // --- Simulation 系统初始化 ---
+  const simulationManager = new SimulationManager({
+    llmProvider,
+    toolRegistry,
+  });
+  await simulationManager.initialize();
+
+  const personaCount = simulationManager.listPersonas().length;
+  const scenarioCount = simulationManager.listScenarios().length;
+  console.log(`Simulation: ${personaCount} personas, ${scenarioCount} scenarios`);
+
   const sessionRouter = new SessionRouter({
     db,
     llmProvider,
@@ -187,6 +199,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     cronScheduler,
     eventWatcher,
     memoryManager,
+    simulationManager,
     onSessionSwitch: (oldSessionId) => {
       sessionRouter.saveMemoryForSession(oldSessionId);
     },

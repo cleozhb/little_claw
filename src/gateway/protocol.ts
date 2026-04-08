@@ -140,6 +140,82 @@ export interface InjectMessage {
   content: string;
 }
 
+// --- Simulation Client Messages ---
+
+export interface ListPersonasMessage {
+  type: "list_personas";
+}
+
+export interface ListScenariosMessage {
+  type: "list_scenarios";
+}
+
+export interface StartSimulationMessage {
+  type: "start_simulation";
+  scenarioName: string;
+  personaNames: string[];
+  rounds?: number;
+  mode?: string;
+}
+
+export interface SimInjectMessage {
+  type: "sim_inject";
+  simId: string;
+  content: string;
+}
+
+export interface SimPauseMessage {
+  type: "sim_pause";
+  simId: string;
+}
+
+export interface SimResumeMessage {
+  type: "sim_resume";
+  simId: string;
+}
+
+export interface SimStopMessage {
+  type: "sim_stop";
+  simId: string;
+}
+
+export interface SimNextRoundMessage {
+  type: "sim_next_round";
+  simId: string;
+}
+
+export interface SimSpeakMessage {
+  type: "sim_speak";
+  simId: string;
+  content: string;
+}
+
+export interface SimEndMessage {
+  type: "sim_end";
+  simId: string;
+}
+
+export interface UpdatePersonaMessage {
+  type: "update_persona";
+  name: string;
+  content: string;
+}
+
+export interface UpdateScenarioMessage {
+  type: "update_scenario";
+  name: string;
+  content: string;
+}
+
+/** Client → Server: 使用 LLM 生成 persona 或 scenario 的完整 Markdown 内容 */
+export interface GenerateContentMessage {
+  type: "generate_content";
+  /** "persona" 或 "scenario" */
+  target: "persona" | "scenario";
+  /** 用户提供的自然语言描述 */
+  prompt: string;
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -161,6 +237,19 @@ export type ClientMessage =
   | MemoryClearMessage
   | AbortMessage
   | InjectMessage
+  | ListPersonasMessage
+  | ListScenariosMessage
+  | StartSimulationMessage
+  | SimInjectMessage
+  | SimPauseMessage
+  | SimResumeMessage
+  | SimStopMessage
+  | SimNextRoundMessage
+  | SimSpeakMessage
+  | SimEndMessage
+  | UpdatePersonaMessage
+  | UpdateScenarioMessage
+  | GenerateContentMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -402,6 +491,45 @@ export interface InjectedMessage {
   sessionId: string;
 }
 
+// --- Simulation Server Messages ---
+
+export interface PersonasListMessage {
+  type: "personas_list";
+  personas: Array<{ name: string; role: string; emoji: string; content: string }>;
+}
+
+export interface ScenariosListMessage {
+  type: "scenarios_list";
+  scenarios: Array<{ name: string; description: string; mode: string; content: string }>;
+}
+
+/** Server → Client: 透传 SimulationEvent，加上 simId 字段 */
+export interface SimulationEventMessage {
+  type: "simulation_event";
+  simId: string;
+  event: {
+    type: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface PersonaUpdatedMessage {
+  type: "persona_updated";
+  name: string;
+}
+
+export interface ScenarioUpdatedMessage {
+  type: "scenario_updated";
+  name: string;
+}
+
+/** Server → Client: LLM 生成的 Markdown 内容 */
+export interface GeneratedContentMessage {
+  type: "generated_content";
+  target: "persona" | "scenario";
+  content: string;
+}
+
 export interface WatcherInfo {
   id: string;
   name: string;
@@ -445,7 +573,13 @@ export type ServerMessage =
   | MemoryStatsResultMessage
   | MemoryClearedMessage
   | AbortedMessage
-  | InjectedMessage;
+  | InjectedMessage
+  | PersonasListMessage
+  | ScenariosListMessage
+  | SimulationEventMessage
+  | PersonaUpdatedMessage
+  | ScenarioUpdatedMessage
+  | GeneratedContentMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -472,6 +606,19 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "memory_clear",
   "abort",
   "inject",
+  "list_personas",
+  "list_scenarios",
+  "start_simulation",
+  "sim_inject",
+  "sim_pause",
+  "sim_resume",
+  "sim_stop",
+  "sim_next_round",
+  "sim_speak",
+  "sim_end",
+  "update_persona",
+  "update_scenario",
+  "generate_content",
   "ping",
   "health_check",
 ]);
@@ -562,6 +709,53 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "inject":
       requireString(msg, "sessionId");
       requireString(msg, "content");
+      break;
+    case "list_personas":
+      break;
+    case "list_scenarios":
+      break;
+    case "start_simulation":
+      requireString(msg, "scenarioName");
+      if (!Array.isArray(msg.personaNames) || msg.personaNames.length === 0) {
+        throw new Error("'personaNames' must be a non-empty array");
+      }
+      break;
+    case "sim_inject":
+      requireString(msg, "simId");
+      requireString(msg, "content");
+      break;
+    case "sim_pause":
+      requireString(msg, "simId");
+      break;
+    case "sim_resume":
+      requireString(msg, "simId");
+      break;
+    case "sim_stop":
+      requireString(msg, "simId");
+      break;
+    case "sim_next_round":
+      requireString(msg, "simId");
+      break;
+    case "sim_speak":
+      requireString(msg, "simId");
+      requireString(msg, "content");
+      break;
+    case "sim_end":
+      requireString(msg, "simId");
+      break;
+    case "update_persona":
+      requireString(msg, "name");
+      requireString(msg, "content");
+      break;
+    case "update_scenario":
+      requireString(msg, "name");
+      requireString(msg, "content");
+      break;
+    case "generate_content":
+      if (msg.target !== "persona" && msg.target !== "scenario") {
+        throw new Error("'target' must be 'persona' or 'scenario'");
+      }
+      requireString(msg, "prompt");
       break;
     case "ping":
       break;

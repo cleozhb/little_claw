@@ -37,6 +37,6 @@ data/
 # LLM tool workspace sandbox
 workspace/
 tests/
-web/
+DESIGN.md
 # Finder (MacOS) folder config
 .DS_Store

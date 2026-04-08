@@ -5,6 +5,9 @@ import type { AgentEvent } from "../../types/message.ts";
 import { AgentLoop } from "../../core/AgentLoop.ts";
 import { EphemeralConversation } from "../../core/EphemeralConversation.ts";
 import { getAgentConfig } from "../../agents/presets.ts";
+import { createLogger } from "../../utils/logger.ts";
+
+const log = createLogger("SpawnAgent");
 
 const SUB_AGENT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const SUMMARY_THRESHOLD = 3000; // chars — trigger summarization above this
@@ -73,9 +76,11 @@ export function createSpawnAgentTool(
         };
       }
 
-      console.log(
-        `[DEBUG] SpawnAgentTool.execute() — agent_type: "${agentType}", task: "${task.slice(0, 100)}", context: "${(context ?? '').slice(0, 100)}"`,
-      );
+      log.step("Spawning sub-agent", {
+        agentType,
+        task,
+        context: context ?? "(none)",
+      });
 
       const config = getAgentConfig(agentType);
 
@@ -121,6 +126,8 @@ export function createSpawnAgentTool(
         task,
       });
 
+      log.info(`Sub-agent "${agentType}" started`, `task: ${task}\nconfig: ${JSON.stringify({ maxTurns: config.maxTurns, allowedTools: config.allowedTools })}`);
+
       // 收集 Sub-Agent 的文本输出
       let resultText = "";
       let hitMaxTurns = false;
@@ -143,6 +150,7 @@ export function createSpawnAgentTool(
           options.signal.removeEventListener("abort", abortHandler);
         }
         const errMsg = err instanceof Error ? err.message : String(err);
+        log.error(`Sub-agent "${agentType}" failed`, errMsg);
         onEvent?.({
           type: "sub_agent_done",
           agentName: agentType,
@@ -160,6 +168,7 @@ export function createSpawnAgentTool(
           options.signal.removeEventListener("abort", abortHandler);
         }
         const partial = resultText || "(no output before timeout)";
+        log.warn(`Sub-agent "${agentType}" timed out after ${SUB_AGENT_TIMEOUT_MS / 1000}s`, `partial result length: ${partial.length}`);
         onEvent?.({
           type: "sub_agent_done",
           agentName: agentType,
@@ -178,9 +187,16 @@ export function createSpawnAgentTool(
       // 结果长度控制：超过阈值时做摘要压缩
       if (output.length > SUMMARY_THRESHOLD) {
         const originalLength = output.length;
+        log.info(`Sub-agent "${agentType}" result too long (${originalLength} chars), summarizing...`);
         const summarized = await summarizeResult(llmProvider, output);
         output = `[Sub-agent returned ${originalLength} chars, summarized below]\n\n${summarized}`;
       }
+
+      log.step(`Sub-agent "${agentType}" completed`, {
+        resultLength: output.length,
+        hitMaxTurns,
+        result: output,
+      });
 
       if (abortHandler && options?.signal) {
         options.signal.removeEventListener("abort", abortHandler);
@@ -259,21 +275,39 @@ async function collectAgentResult(
       event,
     });
 
-    if (event.type === "text_delta") {
-      text += event.text;
-    } else if (event.type === "done") {
-      turnCount++;
-    } else if (
-      event.type === "error" &&
-      event.message.includes("exceeded maximum iterations")
-    ) {
-      hitMaxTurns = true;
+    // 详细记录 sub-agent 的每个中间事件
+    switch (event.type) {
+      case "text_delta":
+        text += event.text;
+        break;
+      case "tool_call":
+        log.toolCall(`[sub:${agentName}] ${event.name}`, event.params);
+        break;
+      case "tool_result":
+        log.toolResult(`[sub:${agentName}] ${event.name}`, {
+          success: event.result.success,
+          output: event.result.output,
+          error: event.result.error,
+        });
+        break;
+      case "done":
+        turnCount++;
+        log.info(`[sub:${agentName}] Turn ${turnCount} done`, `accumulated text: ${text.length} chars`);
+        break;
+      case "error":
+        if (event.message.includes("exceeded maximum iterations")) {
+          hitMaxTurns = true;
+        }
+        log.warn(`[sub:${agentName}] Error event`, event.message);
+        break;
     }
   }
 
-  console.log(
-    `[DEBUG] Sub-agent "${agentName}" finished — total turns: ${turnCount}, result length: ${text.length} chars`,
-  );
+  log.step(`Sub-agent "${agentName}" finished`, {
+    totalTurns: turnCount,
+    resultLength: text.length,
+    hitMaxTurns,
+  });
 
   return { text, hitMaxTurns };
 }

@@ -8,6 +8,9 @@ import type { MemoryManager } from "../memory/MemoryManager";
 import { AgentLoop } from "../core/AgentLoop";
 import { Conversation } from "../core/Conversation";
 import type { SkillManager } from "../skills/SkillManager";
+import { createLogger } from "../utils/logger";
+
+const log = createLogger("SessionRouter");
 
 // ============================================================
 // Types
@@ -74,6 +77,10 @@ export class SessionRouter {
     content: string,
     onEvent: (event: ServerMessage) => void,
   ): Promise<void> {
+    log.step("handleChat", {
+      sessionId,
+      content,
+    });
     const entry = this.getOrCreate(sessionId);
     entry.lastActiveAt = Date.now();
 
@@ -96,14 +103,14 @@ export class SessionRouter {
   abortSession(sessionId: string): boolean {
     const entry = this.sessions.get(sessionId);
     if (!entry) {
-      console.log(`[abort] SessionRouter: session ${sessionId} not found`);
+      log.warn(`Abort: session ${sessionId} not found`);
       return false;
     }
     if (!entry.agentLoop.isRunning) {
-      console.log(`[abort] SessionRouter: session ${sessionId} agent not running, skip`);
+      log.warn(`Abort: session ${sessionId} agent not running, skip`);
       return false;
     }
-    console.log(`[abort] SessionRouter: aborting AgentLoop for session ${sessionId}`);
+    log.step(`Aborting AgentLoop for session ${sessionId}`);
     entry.agentLoop.abort();
     return true;
   }
@@ -116,6 +123,7 @@ export class SessionRouter {
     const entry = this.sessions.get(sessionId);
     if (!entry) return false;
     if (!entry.agentLoop.isRunning) return false;
+    log.info(`Injecting message to session ${sessionId}`, content);
     entry.agentLoop.inject(content);
     return true;
   }
@@ -149,8 +157,12 @@ export class SessionRouter {
    */
   private getOrCreate(sessionId: string): SessionEntry {
     const existing = this.sessions.get(sessionId);
-    if (existing) return existing;
+    if (existing) {
+      log.debug(`Session ${sessionId} found in cache`);
+      return existing;
+    }
 
+    log.info(`Session ${sessionId} not in cache, loading from DB`);
     // 从 DB 加载 session + 恢复对话历史
     const conversation = Conversation.loadExisting(this.db, sessionId);
     const agentLoop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
@@ -178,11 +190,16 @@ export class SessionRouter {
     content: string,
     onEvent: (event: ServerMessage) => void,
   ): Promise<void> {
+    log.step(`runAgent START`, {
+      sessionId,
+      content,
+    });
     // 每次 run 前，为 SpawnAgentTool 设置当前 session 的事件回调
     if (this.spawnAgentTool) {
       this.spawnAgentTool.setEventCallback((agentEvent) => {
         switch (agentEvent.type) {
           case "sub_agent_start":
+            log.info(`[Event→Client] sub_agent_start: agent="${agentEvent.agentName}", task="${agentEvent.task}"`);
             onEvent({
               type: "sub_agent_start",
               sessionId,
@@ -222,6 +239,7 @@ export class SessionRouter {
             break;
           }
           case "sub_agent_done":
+            log.info(`[Event→Client] sub_agent_done: agent="${agentEvent.agentName}"`, agentEvent.result.slice(0, 200));
             onEvent({
               type: "sub_agent_done",
               sessionId,
@@ -240,15 +258,22 @@ export class SessionRouter {
             onEvent({ type: "text_delta", sessionId, text: event.text });
             break;
           case "tool_call":
+            log.info(`[Event→Client] tool_call: "${event.name}"`, JSON.stringify(event.params).slice(0, 200));
             onEvent({ type: "tool_call", sessionId, name: event.name, params: event.params });
             break;
           case "tool_result":
+            log.info(`[Event→Client] tool_result: "${event.name}", success=${event.result.success}`);
             onEvent({ type: "tool_result", sessionId, name: event.name, result: event.result });
             break;
           case "done":
+            log.step("runAgent DONE", {
+              sessionId,
+              usage: event.usage,
+            });
             onEvent({ type: "done", sessionId, usage: event.usage });
             break;
           case "error":
+            log.error(`[Event→Client] error`, event.message);
             onEvent({ type: "error", sessionId, message: event.message });
             break;
         }
@@ -261,6 +286,7 @@ export class SessionRouter {
         onEvent({ type: "title_updated", sessionId, title: session.title });
       }
     } catch (err) {
+      log.error(`runAgent exception for session ${sessionId}`, err instanceof Error ? err.message : String(err));
       onEvent({
         type: "error",
         sessionId,
@@ -281,6 +307,7 @@ export class SessionRouter {
     const now = Date.now();
     for (const [sessionId, entry] of this.sessions) {
       if (now - entry.lastActiveAt > this.idleTimeoutMs) {
+        log.info(`Cleaning up idle session ${sessionId}, idle for ${Math.round((now - entry.lastActiveAt) / 1000)}s`);
         // 移除前触发记忆保存（fire-and-forget）
         this.saveSessionMemory(sessionId, entry);
         this.sessions.delete(sessionId);
@@ -311,9 +338,7 @@ export class SessionRouter {
     try {
       await this.memoryManager.saveSummary(sessionId, messages);
     } catch (err) {
-      if (process.env.DEBUG) {
-        console.error(`[debug] Memory save for session ${sessionId} failed:`, err);
-      }
+      log.error(`Memory save for session ${sessionId} failed`, err instanceof Error ? err.message : String(err));
     }
   }
 

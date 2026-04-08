@@ -14,6 +14,9 @@ import { MAIN_AGENT } from "../agents/presets.ts";
 import { SkillPromptBuilder } from "../skills/SkillPromptBuilder.ts";
 import { generateTitle } from "./TitleGenerator.ts";
 import { allocateBudget, formatLongTermMemory } from "../memory/TokenBudget.ts";
+import { createLogger } from "../utils/logger.ts";
+
+const log = createLogger("AgentLoop");
 
 const SPAWN_AGENT_TOOL_NAME = "spawn_agent";
 const MAX_STREAM_RETRIES = 2;
@@ -100,16 +103,19 @@ export class AgentLoop {
    * 3. 如果正在执行工具，通过 AbortController 取消（ShellTool 会 kill 子进程）
    */
   abort(): void {
-    console.log(`[abort] AgentLoop: abort() called, setting aborted=true, hasLLMController=${!!this.currentAbortController}, hasToolController=${!!this.currentToolAbortController}`);
+    log.step("Abort requested", {
+      hasLLMController: !!this.currentAbortController,
+      hasToolController: !!this.currentToolAbortController,
+    });
     this.aborted = true;
     // 取消正在进行的 LLM 请求
     if (this.currentAbortController) {
-      console.log(`[abort] AgentLoop: aborting LLM request via AbortController`);
+      log.info("Aborting LLM request via AbortController");
       this.currentAbortController.abort();
     }
     // 取消正在执行的工具（会触发 ShellTool 里的 proc.kill()）
     if (this.currentToolAbortController) {
-      console.log(`[abort] AgentLoop: aborting tool execution via AbortController`);
+      log.info("Aborting tool execution via AbortController");
       this.currentToolAbortController.abort();
     }
   }
@@ -165,6 +171,13 @@ export class AgentLoop {
     const isFirstRound = this.conversation.getMessages().length === 0;
     this.conversation.addUser(userMessage);
 
+    log.step("Run started", {
+      agent: this.config.name ?? "main",
+      session: this.conversation.getSessionId(),
+      userMessage: userMessage,
+      isFirstRound,
+    });
+
     // 每轮对话开始时，加载文件记忆层 + 从向量数据库检索相关上下文
     if (this.memoryManager) {
       try {
@@ -192,7 +205,7 @@ export class AgentLoop {
     for (let i = 0; i < this.config.maxTurns; i++) {
       // === Abort 检查 ===
       if (this.aborted) {
-        console.log(`[abort] AgentLoop: aborted at loop start (turn ${i + 1})`);
+        log.warn(`Aborted at loop start (turn ${i + 1})`);
         yield { type: "text_delta", text: "\n\n[Aborted by user]" };
         yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
         return;
@@ -200,9 +213,12 @@ export class AgentLoop {
 
       const messages = this.conversation.getMessages();
       const estimatedTokens = JSON.stringify(messages).length / 4; // rough estimate: 1 token ≈ 4 chars
-      console.log(
-        `[DEBUG] AgentLoop.run() — turn ${i + 1}/${this.config.maxTurns}, messages: ${messages.length}, estimated tokens: ${Math.round(estimatedTokens)}`,
-      );
+      log.step(`====== ReAct Turn ${i + 1}/${this.config.maxTurns} START ======`, {
+        agent: this.config.name ?? "main",
+        session: this.conversation.getSessionId(),
+        messageCount: messages.length,
+        estimatedTokens: Math.round(estimatedTokens),
+      });
 
       // === Reason 阶段：调用 LLM，流式接收推理结果 ===
       // --- Call LLM ---
@@ -219,7 +235,7 @@ export class AgentLoop {
       for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt++) {
         // Abort 检查
         if (this.aborted) {
-          console.log(`[abort] AgentLoop: aborted at retry start (attempt ${attempt})`);
+          log.warn(`Aborted at retry start (attempt ${attempt})`);
           yield { type: "text_delta", text: "\n\n[Aborted by user]" };
           yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
           return;
@@ -236,18 +252,27 @@ export class AgentLoop {
         this.currentAbortController = abortController;
 
         try {
+          const systemPrompt = this.getEffectiveSystemPrompt();
+          const filteredTools = this.getFilteredToolDefinitions();
+
+          log.llmCall(`Turn ${i + 1} (attempt ${attempt})`, {
+            system: systemPrompt,
+            messages: this.conversation.getMessages(),
+            tools: filteredTools,
+          });
+
           const chatStream = this.client.chat(
             this.conversation.getMessages(),
             {
-              system: this.getEffectiveSystemPrompt(),
-              tools: this.getFilteredToolDefinitions(),
+              system: systemPrompt,
+              tools: filteredTools,
               signal: abortController.signal,
             },
           );
           for await (const event of chatStream) {
             // Abort 检查（流式过程中）
             if (this.aborted) {
-              console.log(`[abort] AgentLoop: aborted during stream, textContent length=${textContent.length}`);
+              log.warn(`Aborted during LLM stream, textContent length=${textContent.length}`);
               // 尝试保存已收到的部分文本
               if (textContent) {
                 this.conversation.addAssistant(textContent + "\n\n[Aborted by user]");
@@ -302,7 +327,7 @@ export class AgentLoop {
 
           // 如果是因为 abort 导致的错误，直接退出
           if (this.aborted) {
-            console.log(`[abort] AgentLoop: aborted during stream error catch, textContent length=${textContent.length}`);
+            log.warn(`Aborted during stream error catch, textContent length=${textContent.length}`);
             if (textContent) {
               this.conversation.addAssistant(textContent + "\n\n[Aborted by user]");
             }
@@ -350,12 +375,24 @@ export class AgentLoop {
         });
       }
 
+      // 记录 LLM 返回的完整响应
+      log.llmResponse(`Turn ${i + 1} response`, {
+        stopReason,
+        text: textContent,
+        toolCalls: toolUseBlocks.length > 0
+          ? toolUseBlocks.map((t) => ({ name: t.name, input: t.input }))
+          : undefined,
+        usage: { totalInputTokens, totalOutputTokens },
+      });
+
       // --- No tool calls: end turn ---
       // 判断停止条件：LLM 没有请求工具调用，说明推理完成，保存回复并结束循环
       if (stopReason === "end_turn" || toolUseBlocks.length === 0) {
-        console.log(
-          `[DEBUG] AgentLoop turn ${i + 1} ended — stop_reason: "${stopReason}", no tool calls, text length: ${textContent.length}, summary: "${textContent.slice(0, 120)}..."`,
-        );
+        log.step(`Turn ${i + 1} COMPLETE — end_turn (no tool calls)`, {
+          stopReason,
+          textLength: textContent.length,
+          response: textContent,
+        });
 
         this.conversation.addAssistant(textContent);
 
@@ -370,7 +407,7 @@ export class AgentLoop {
         const injection = this.drainInjections();
         if (injection) {
           this.conversation.addUser(injection);
-          console.log(`[DEBUG] Injection applied as new user message after end_turn`);
+          log.info("Injection applied as new user message after end_turn", injection);
           // 不 yield done，继续循环让 LLM 处理注入内容
           continue;
         }
@@ -418,7 +455,7 @@ export class AgentLoop {
       for (const block of toolUseBlocks) {
         // Abort 检查（工具执行前）
         if (this.aborted) {
-          console.log(`[abort] AgentLoop: aborted before tool execution, tool=${block.name}`);
+          log.warn(`Aborted before tool execution, tool=${block.name}`);
           toolResultParams.push({
             toolUseId: block.id,
             toolName: block.name,
@@ -430,6 +467,7 @@ export class AgentLoop {
         }
 
         yield { type: "tool_call", name: block.name, params: block.input };
+        log.toolCall(block.name, block.input);
 
         const tool = this.toolRegistry.get(block.name);
         if (!tool) {
@@ -463,6 +501,11 @@ export class AgentLoop {
           }
           const result = await tool.execute(block.input, { signal: toolAbortController.signal });
           this.currentToolAbortController = null;
+          log.toolResult(block.name, {
+            success: result.success,
+            output: result.output,
+            error: result.error,
+          });
           yield { type: "tool_result", name: block.name, result };
           toolResultParams.push({
             toolUseId: block.id,
@@ -476,6 +519,7 @@ export class AgentLoop {
         } catch (err) {
           this.currentToolAbortController = null;
           const errMsg = err instanceof Error ? err.message : String(err);
+          log.toolResult(block.name, { success: false, error: errMsg });
           const result = { success: false, output: "", error: errMsg };
           yield { type: "tool_result", name: block.name, result };
           toolResultParams.push({
@@ -490,7 +534,7 @@ export class AgentLoop {
 
       // Abort 检查（所有工具执行完成后）
       if (this.aborted) {
-        console.log(`[abort] AgentLoop: aborted after all tools executed`);
+        log.warn("Aborted after all tools executed");
         this.conversation.addToolResults(messageId, toolResultParams);
         yield { type: "text_delta", text: "\n\n[Aborted by user]" };
         yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
@@ -510,9 +554,12 @@ export class AgentLoop {
       }
 
       this.conversation.addToolResults(messageId, toolResultParams);
-      console.log(
-        `[DEBUG] AgentLoop turn ${i + 1} ended — stop_reason: "${stopReason}", tool calls: [${toolUseBlocks.map((t) => t.name).join(", ")}], text length: ${textContent.length}, summary: "${textContent.slice(0, 120)}..."`,
-      );
+      log.step(`Turn ${i + 1} COMPLETE — has tool calls, continuing loop`, {
+        stopReason,
+        toolCalls: toolUseBlocks.map((t) => t.name).join(", "),
+        textLength: textContent.length,
+        text: textContent,
+      });
       // continue loop — LLM will see tool results and respond
       // 继续循环 — LLM 在下一轮迭代中会看到工具执行结果，并据此继续推理
     }

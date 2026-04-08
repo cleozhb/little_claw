@@ -25,6 +25,7 @@ import type { McpManager } from "../mcp/McpManager.ts";
 import type { CronScheduler } from "../scheduler/CronScheduler.ts";
 import type { EventWatcher } from "../scheduler/EventWatcher.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
+import type { SimulationManager } from "../simulation/SimulationManager.ts";
 import { getAllAgentConfigs } from "../agents/presets.ts";
 
 // ============================================================
@@ -47,6 +48,8 @@ export interface GatewayOptions {
   eventWatcher?: EventWatcher;
   /** MemoryManager，用于 memory_search */
   memoryManager?: MemoryManager;
+  /** SimulationManager，用于 simulation 相关命令 */
+  simulationManager?: SimulationManager;
   /** session 切换时的回调（用于触发旧 session 的记忆保存） */
   onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
@@ -81,6 +84,7 @@ export class GatewayServer {
   private cronScheduler?: CronScheduler;
   private eventWatcher?: EventWatcher;
   private memoryManager?: MemoryManager;
+  private simulationManager?: SimulationManager;
   private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   private port: number;
   private hostname: string;
@@ -108,6 +112,7 @@ export class GatewayServer {
     this.cronScheduler = options.cronScheduler;
     this.eventWatcher = options.eventWatcher;
     this.memoryManager = options.memoryManager;
+    this.simulationManager = options.simulationManager;
     this.onSessionSwitch = options.onSessionSwitch;
 
     // 初始化健康检查
@@ -347,6 +352,32 @@ export class GatewayServer {
         return this.handleMemoryStats(connectionId);
       case "memory_clear":
         return this.handleMemoryClear(connectionId);
+      case "list_personas":
+        return this.handleListPersonas(connectionId);
+      case "list_scenarios":
+        return this.handleListScenarios(connectionId);
+      case "start_simulation":
+        return this.handleStartSimulation(connectionId, msg.scenarioName, msg.personaNames, msg.rounds, msg.mode);
+      case "sim_inject":
+        return this.handleSimInject(connectionId, msg.simId, msg.content);
+      case "sim_pause":
+        return this.handleSimPause(connectionId, msg.simId);
+      case "sim_resume":
+        return this.handleSimResume(connectionId, msg.simId);
+      case "sim_stop":
+        return this.handleSimStop(connectionId, msg.simId);
+      case "sim_next_round":
+        return this.handleSimNextRound(connectionId, msg.simId);
+      case "sim_speak":
+        return this.handleSimSpeak(connectionId, msg.simId, msg.content);
+      case "sim_end":
+        return this.handleSimEnd(connectionId, msg.simId);
+      case "update_persona":
+        return this.handleUpdatePersona(connectionId, msg.name, msg.content);
+      case "update_scenario":
+        return this.handleUpdateScenario(connectionId, msg.name, msg.content);
+      case "generate_content":
+        return this.handleGenerateContent(connectionId, msg.target, msg.prompt);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -737,6 +768,265 @@ export class GatewayServer {
     const count = vs.getCount();
     vs.deleteAll();
     this.sendToConnection(connectionId, { type: "memory_cleared", deletedCount: count });
+  }
+
+  // ----------------------------------------------------------
+  // Simulation 命令
+  // ----------------------------------------------------------
+
+  private handleListPersonas(connectionId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "personas_list", personas: [] });
+      return;
+    }
+    this.sendToConnection(connectionId, {
+      type: "personas_list",
+      personas: this.simulationManager.listPersonas(),
+    });
+  }
+
+  private handleListScenarios(connectionId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "scenarios_list", scenarios: [] });
+      return;
+    }
+    this.sendToConnection(connectionId, {
+      type: "scenarios_list",
+      scenarios: this.simulationManager.listScenarios(),
+    });
+  }
+
+  private handleStartSimulation(
+    connectionId: string,
+    scenarioName: string,
+    personaNames: string[],
+    rounds?: number,
+    mode?: string,
+  ): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: "Simulation not configured",
+      });
+      return;
+    }
+
+    try {
+      const { simId, events } = this.simulationManager.start(
+        scenarioName,
+        personaNames,
+        {
+          rounds,
+          mode: mode as any,
+        },
+      );
+
+      // 异步消费事件流，透传给客户端
+      (async () => {
+        try {
+          for await (const event of events) {
+            this.sendToConnection(connectionId, {
+              type: "simulation_event",
+              simId,
+              event: event as any,
+            });
+          }
+        } catch (err) {
+          this.sendToConnection(connectionId, {
+            type: "error",
+            message: `Simulation error: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+      })();
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to start simulation: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  private handleSimInject(connectionId: string, simId: string, content: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    const success = this.simulationManager.inject(simId, content);
+    if (!success) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Simulation not found or not running: ${simId}`,
+      });
+    }
+  }
+
+  private handleSimPause(connectionId: string, simId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    const success = this.simulationManager.pause(simId);
+    if (!success) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Simulation not found or not running: ${simId}`,
+      });
+    }
+  }
+
+  private handleSimResume(connectionId: string, simId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    const success = this.simulationManager.resume(simId);
+    if (!success) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Simulation not found or not running: ${simId}`,
+      });
+    }
+  }
+
+  private handleSimStop(connectionId: string, simId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    const success = this.simulationManager.stop(simId);
+    if (!success) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Simulation not found or not running: ${simId}`,
+      });
+    }
+  }
+
+  private handleSimNextRound(connectionId: string, simId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    const success = this.simulationManager.nextRound(simId);
+    if (!success) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Simulation not found or not waiting: ${simId}`,
+      });
+    }
+  }
+
+  private handleSimSpeak(connectionId: string, simId: string, content: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    const success = this.simulationManager.speakThenNextRound(simId, content);
+    if (!success) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Simulation not found or not waiting: ${simId}`,
+      });
+    }
+  }
+
+  private handleSimEnd(connectionId: string, simId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    const success = this.simulationManager.endSimulation(simId);
+    if (!success) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Simulation not found or not waiting: ${simId}`,
+      });
+    }
+  }
+
+  private handleUpdatePersona(connectionId: string, name: string, content: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    this.simulationManager.updatePersona(name, content)
+      .then(() => {
+        this.sendToConnection(connectionId, { type: "persona_updated", name });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Failed to update persona: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleUpdateScenario(connectionId: string, name: string, content: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+    this.simulationManager.updateScenario(name, content)
+      .then(() => {
+        this.sendToConnection(connectionId, { type: "scenario_updated", name });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Failed to update scenario: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleGenerateContent(connectionId: string, target: "persona" | "scenario", prompt: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "error", message: "Simulation not configured" });
+      return;
+    }
+
+    const llm = this.simulationManager.getLLMProvider();
+
+    const systemPrompt = target === "persona"
+      ? `You are a creative writer that generates persona definition files in Markdown with YAML frontmatter.
+Given a user description, generate a complete persona file with:
+- YAML frontmatter: name, role, emoji (single emoji), tags (array of strings)
+- Markdown body sections: # Identity, # Values & priorities, # Knowledge & expertise, # Behavioral tendencies, # Communication style
+
+Each section should have detailed, vivid bullet points that bring the persona to life.
+Output ONLY the markdown content, starting with --- for the frontmatter. No extra explanation.`
+      : `You are a creative writer that generates simulation scenario definition files in Markdown with YAML frontmatter.
+Given a user description, generate a complete scenario file with:
+- YAML frontmatter: name, description, mode (one of: roundtable, parallel, parallel_then_roundtable, free), rounds (number 1-5), parallel_prompt (multi-line string), roundtable_prompt (multi-line string)
+- Markdown body sections: # Environment, # Constraints, # Trigger event
+
+Each section should be detailed and immersive.
+Output ONLY the markdown content, starting with --- for the frontmatter. No extra explanation.`;
+
+    const messages = [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: prompt },
+    ];
+
+    (async () => {
+      try {
+        let result = "";
+        for await (const event of llm.chat(messages)) {
+          if (event.type === "text_delta") {
+            result += event.text;
+          }
+        }
+        this.sendToConnection(connectionId, {
+          type: "generated_content",
+          target,
+          content: result,
+        });
+      } catch (err) {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Failed to generate content: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    })();
   }
 
   private handleRenameSession(connectionId: string, sessionId: string, title: string): void {
