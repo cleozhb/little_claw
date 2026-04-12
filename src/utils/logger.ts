@@ -93,8 +93,7 @@ export function createLogger(module: string): Logger {
         detail = Object.entries(data)
           .map(([k, v]) => {
             const s = typeof v === "string" ? v : JSON.stringify(v);
-            const truncated = s.length > 500 ? s.slice(0, 500) + "... (truncated)" : s;
-            return `${k}: ${truncated}`;
+            return `${k}: ${s}`;
           })
           .join("\n");
       }
@@ -105,18 +104,15 @@ export function createLogger(module: string): Logger {
       const caller = getCallerInfo();
       const parts: string[] = [];
       if (data.system) {
-        const sys = data.system.length > 1000 ? data.system.slice(0, 1000) + "... (truncated)" : data.system;
-        parts.push(`[System Prompt]\n${sys}`);
+        parts.push(`[System Prompt]\n${data.system}`);
       }
       if (data.messages) {
-        const msgs = JSON.stringify(data.messages);
-        const truncated = msgs.length > 2000 ? msgs.slice(0, 2000) + "... (truncated)" : msgs;
-        parts.push(`[Messages] ${truncated}`);
+        parts.push(`[Messages] ${JSON.stringify(data.messages)}`);
       }
       if (data.tools) {
         const toolNames = Array.isArray(data.tools)
           ? (data.tools as Array<{ name: string }>).map((t) => t.name).join(", ")
-          : JSON.stringify(data.tools).slice(0, 200);
+          : JSON.stringify(data.tools);
         parts.push(`[Tools] ${toolNames}`);
       }
       console.log(formatMessage("INFO", module, `🤖 LLM Call: ${description}`, caller, parts.join("\n")));
@@ -129,11 +125,10 @@ export function createLogger(module: string): Logger {
         parts.push(`stop_reason: ${data.stopReason}`);
       }
       if (data.text !== undefined) {
-        const t = data.text.length > 500 ? data.text.slice(0, 500) + "... (truncated)" : data.text;
-        parts.push(`text (${data.text.length} chars): "${t}"`);
+        parts.push(`text (${data.text.length} chars): "${data.text}"`);
       }
       if (data.toolCalls) {
-        parts.push(`tool_calls: ${JSON.stringify(data.toolCalls).slice(0, 500)}`);
+        parts.push(`tool_calls: ${JSON.stringify(data.toolCalls)}`);
       }
       if (data.usage) {
         parts.push(`usage: ${JSON.stringify(data.usage)}`);
@@ -143,17 +138,14 @@ export function createLogger(module: string): Logger {
 
     toolCall(toolName: string, params: unknown) {
       const caller = getCallerInfo();
-      const p = JSON.stringify(params);
-      const truncated = p.length > 500 ? p.slice(0, 500) + "... (truncated)" : p;
-      console.log(formatMessage("INFO", module, `🔧 Tool Call: ${toolName}`, caller, `params: ${truncated}`));
+      console.log(formatMessage("INFO", module, `🔧 Tool Call: ${toolName}`, caller, `params: ${JSON.stringify(params)}`));
     },
 
     toolResult(toolName: string, result: { success: boolean; output?: string; error?: string }) {
       const caller = getCallerInfo();
       const icon = result.success ? "✅" : "❌";
       const body = result.success ? (result.output ?? "") : (result.error ?? "");
-      const truncated = body.length > 500 ? body.slice(0, 500) + "... (truncated)" : body;
-      console.log(formatMessage("INFO", module, `${icon} Tool Result: ${toolName}`, caller, `success: ${result.success}\noutput: "${truncated}"`));
+      console.log(formatMessage("INFO", module, `${icon} Tool Result: ${toolName}`, caller, `success: ${result.success}\noutput: "${body}"`));
     },
 
     info(message: string, detail?: string) {

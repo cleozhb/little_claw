@@ -276,6 +276,14 @@ export class SessionRouter {
             log.error(`[Event→Client] error`, event.message);
             onEvent({ type: "error", sessionId, message: event.message });
             break;
+          case "skills_matched":
+            log.info(`[Event→Client] skills_matched: ${event.skills.map(s => s.name).join(", ")}`);
+            onEvent({
+              type: "skills_matched",
+              sessionId,
+              skills: event.skills,
+            });
+            break;
         }
       }
 

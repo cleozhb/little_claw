@@ -9,7 +9,7 @@ import type {
 } from "../types/message.ts";
 
 const TIMEOUT_MS = 30_000;
-const STREAM_CHUNK_TIMEOUT_MS = 120_000;
+const STREAM_CHUNK_TIMEOUT_MS = 300_000;
 
 export class AnthropicProvider implements LLMProvider {
   private client: Anthropic;
@@ -74,7 +74,7 @@ export class AnthropicProvider implements LLMProvider {
         iterator.next(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error("Stream timeout: no data received for 120s")),
+            () => reject(new Error("Stream timeout: no data received for 300s")),
             STREAM_CHUNK_TIMEOUT_MS,
           );
         }),

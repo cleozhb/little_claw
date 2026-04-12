@@ -127,6 +127,7 @@ const COMMANDS = [
   "/skills install ",
   "/skills remove ",
   "/skills reload",
+  "/skills match ",
   "/mcp",
   "/mcp reconnect ",
   "/cron",
@@ -528,6 +529,15 @@ export class GatewayClient {
     return (resp as { skills: SkillInfo[] }).skills;
   }
 
+  async matchSkills(query: string): Promise<Array<{ name: string; score: number; matchReason: string }>> {
+    const resp = await this.request(
+      { type: "match_skills", query } as ClientMessage,
+      "skills_match_result",
+      15_000,
+    );
+    return (resp as { skills: Array<{ name: string; score: number; matchReason: string }> }).skills;
+  }
+
   async listMcpServers(): Promise<McpServerInfo[]> {
     const resp = await this.request({ type: "list_mcp_servers" }, "mcp_servers_list");
     return (resp as { servers: McpServerInfo[] }).servers;
@@ -730,6 +740,7 @@ export class ClientRepl {
   /skills install <path> Install a skill from a directory
   /skills remove <name>  Remove an installed skill
   /skills reload         Reload all skills
+  /skills match <query>  Test skill matching for a query
   /mcp                   List MCP server status
   /mcp reconnect <name>  Reconnect a MCP server
   /cron                  List all cron jobs
@@ -1096,6 +1107,30 @@ Type ${CYAN}/help${RESET} for available commands.
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`${RED}Failed to remove: ${msg}${RESET}\n`);
+    }
+  }
+
+  private async handleSkillMatch(query: string): Promise<void> {
+    if (!query) {
+      console.log("Usage: /skills match <query>\n");
+      return;
+    }
+
+    console.log(`${DIM}Matching skills for: "${query}"...${RESET}`);
+    try {
+      const results = await this.client.matchSkills(query);
+      if (results.length === 0) {
+        console.log("No skills matched.\n");
+        return;
+      }
+      console.log(`\n${BOLD}Matched skills:${RESET}\n`);
+      for (const r of results) {
+        const bar = "█".repeat(Math.round(r.score * 20)).padEnd(20, "░");
+        console.log(`  ${GREEN}${r.name.padEnd(30)}${RESET} ${DIM}${bar}${RESET} ${r.score.toFixed(3)}  ${DIM}${r.matchReason}${RESET}`);
+      }
+      console.log();
+    } catch (err) {
+      console.log(`${RED}Match failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
     }
   }
 
@@ -1664,6 +1699,11 @@ Type ${CYAN}/help${RESET} for available commands.
           continue;
         }
 
+        if (input.startsWith("/skills match")) {
+          await this.handleSkillMatch(input.slice(13).trim());
+          continue;
+        }
+
         if (input.startsWith("/mcp reconnect")) {
           await this.handleMcpReconnect(input.slice(14).trim());
           continue;
@@ -1781,6 +1821,14 @@ Type ${CYAN}/help${RESET} for available commands.
               `${MAIN_TAG}${DIM}  [${status}${DIM}] ${this.truncate(output)}${RESET}`
             );
             process.stdout.write(`${DIM}Thinking...${RESET}`);
+            break;
+          }
+
+          case "skills_matched": {
+            const sm = event as { skills: Array<{ name: string; score: number; matchReason: string }> };
+            const summary = sm.skills.map(s => `${s.name} (${s.score.toFixed(2)})`).join(", ");
+            console.log(`${MAIN_TAG}${DIM}🔧 Matched skills: ${summary}${RESET}`);
+            console.log(`${MAIN_TAG}${DIM}   Skills injected. Look for "> skill-name" in response to confirm usage.${RESET}`);
             break;
           }
 

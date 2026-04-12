@@ -15,10 +15,12 @@ export interface EmbeddingProvider {
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private client: OpenAI;
   private model: string;
+  private maxInputTokens: number;
   private cache = new Map<string, number[]>();
 
-  constructor(apiKey: string, model: string = "embedding-v1", baseURL?: string) {
+  constructor(apiKey: string, model: string = "embedding-v1", baseURL?: string, maxInputTokens: number = 900) {
     this.model = model;
+    this.maxInputTokens = maxInputTokens;
     this.client = new OpenAI({
       apiKey,
       baseURL: baseURL ?? "https://qianfan.baidubce.com/v2",
@@ -26,13 +28,17 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(text: string): Promise<number[]> {
-    const key = await hashText(text);
+    // 粗略截断：embedding API 有单条 input token 上限（qianfan embedding-v1 为 1000）
+    // 按 1 token ≈ 2 中文字符 / 4 英文字符 的保守估计截断
+    const truncated = truncateForEmbedding(text, this.maxInputTokens);
+
+    const key = await hashText(truncated);
     const cached = this.cache.get(key);
     if (cached) return cached;
 
     const response = await this.client.embeddings.create({
       model: this.model,
-      input: text,
+      input: truncated,
       encoding_format: "float",
     });
 
@@ -121,4 +127,16 @@ async function hashText(text: string): Promise<string> {
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/**
+ * 粗略截断文本以满足 embedding API 的 token 上限。
+ * 中文按 1 token ≈ 2 字符、英文按 1 token ≈ 4 字符保守估计。
+ * 超长时从末尾截断，保留开头（通常信息密度更高）。
+ */
+function truncateForEmbedding(text: string, maxTokens: number): string {
+  // 保守取 maxChars = maxTokens * 2（中文场景为主）
+  const maxChars = maxTokens * 2;
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars);
 }

@@ -145,6 +145,9 @@ function toDisplayMessages(m: MessageSummary): DisplayMessage[] {
 export function useChat(sessionId: string | null) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [activeSkills, setActiveSkills] = useState<Array<{ name: string; score: number; matchReason: string }>>([]);
+  const activeSkillsRef = useRef(activeSkills);
+  activeSkillsRef.current = activeSkills;
 
   // Track current session to filter messages
   const sessionRef = useRef(sessionId);
@@ -379,7 +382,31 @@ export function useChat(sessionId: string | null) {
           break;
         }
 
+        case "skills_matched": {
+          if (msg.skills.length > 0) {
+            setActiveSkills(msg.skills);
+          }
+          break;
+        }
+
         case "done": {
+          // Persist activeSkills onto the first assistant text message of this turn
+          setMessages((prev) => {
+            if (activeSkillsRef.current.length === 0) return prev;
+            // Find the last user message index — skills belong to assistant messages after it
+            let lastUserIdx = -1;
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === "user") { lastUserIdx = i; break; }
+            }
+            // Find the first assistant text message after last user message
+            for (let i = lastUserIdx + 1; i < prev.length; i++) {
+              if (prev[i].role === "assistant" && prev[i].type === "text") {
+                const updated = { ...prev[i], meta: { ...prev[i].meta, skills: activeSkillsRef.current } };
+                return [...prev.slice(0, i), updated, ...prev.slice(i + 1)];
+              }
+            }
+            return prev;
+          });
           setIsStreaming(false);
           break;
         }
@@ -450,7 +477,8 @@ export function useChat(sessionId: string | null) {
   useEffect(() => {
     setMessages([]);
     setIsStreaming(false);
+    setActiveSkills([]);
   }, [sessionId]);
 
-  return { messages, isStreaming, sendMessage, abort, inject };
+  return { messages, isStreaming, activeSkills, sendMessage, abort, inject };
 }

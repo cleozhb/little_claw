@@ -7,16 +7,18 @@ import { SubAgentCard } from "@/components/chat/SubAgentCard";
 import { MemoryRecallBanner } from "@/components/chat/MemoryRecallBanner";
 import { ModeratorMessage } from "@/components/chat/ModeratorMessage";
 import { StreamingCursor } from "@/components/chat/StreamingCursor";
-import { Bot, User } from "lucide-react";
+import { Bot, User, Sparkles } from "lucide-react";
 import type { DisplayMessage } from "@/lib/mock-data";
 
 interface MessageBubbleProps {
   message: DisplayMessage;
   /** Whether this is the last assistant message and currently streaming */
   isStreaming?: boolean;
+  /** Active skills for the current turn (only passed to the streaming assistant message) */
+  activeSkills?: Array<{ name: string; score: number; matchReason: string }>;
 }
 
-export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
+export function MessageBubble({ message, isStreaming, activeSkills }: MessageBubbleProps) {
   // ---- Memory recall banner ----
   if (message.type === "memory_recall") {
     return <MemoryRecallBanner memories={message.meta?.memories ?? []} />;
@@ -72,6 +74,10 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
         {message.type === "sub_agent_done" && <SubAgentCard message={message} />}
         {message.type === "text" && (
           <div className="text-sm leading-relaxed">
+            {(() => {
+              const skills = activeSkills ?? message.meta?.skills;
+              return skills && skills.length > 0 ? <ActiveSkillTag skills={skills} /> : null;
+            })()}
             <Markdown content={message.content} />
             {isStreaming && <StreamingCursor />}
             {!isStreaming && (
@@ -114,5 +120,26 @@ function TimeStamp({ date, className }: { date: Date; className?: string }) {
     <time className={`block mt-1 text-[10px] ${className ?? ""}`}>
       {date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
     </time>
+  );
+}
+
+function ActiveSkillTag({ skills }: { skills: Array<{ name: string; score: number; matchReason: string }> }) {
+  // Show the highest-scoring skill as the primary active skill
+  const sorted = [...skills].sort((a, b) => b.score - a.score);
+  const primary = sorted[0];
+  if (!primary) return null;
+
+  return (
+    <div className="flex items-center gap-1.5 mb-2">
+      <Sparkles className="h-3 w-3 text-amber-500" />
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/20 px-2.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+        {primary.name}
+      </span>
+      {sorted.length > 1 && (
+        <span className="text-[10px] text-muted-foreground/50">
+          +{sorted.length - 1}
+        </span>
+      )}
+    </div>
   );
 }

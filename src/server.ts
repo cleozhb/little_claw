@@ -116,7 +116,10 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   await skillConfig.load();
 
   const skillLoader = new SkillLoader();
-  const skillManager = new SkillManager(skillLoader, skillConfig);
+  const skillManager = new SkillManager(skillLoader, skillConfig, {
+    db,
+    embeddingProvider,
+  });
   await skillManager.initializeAll();
 
   // 打印 Skill 加载摘要

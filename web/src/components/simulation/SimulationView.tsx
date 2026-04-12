@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConnectionStatus } from "@/lib/websocket";
@@ -45,6 +45,15 @@ export function SimulationView({ onBackToChat }: SimulationViewProps) {
     [sim.transcript],
   );
 
+  // Build persona name -> emoji map from personaStates
+  const personaEmojis = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [name, state] of sim.personaStates) {
+      map.set(name, state.emoji);
+    }
+    return map;
+  }, [sim.personaStates]);
+
   return (
     <div className="flex h-full flex-col">
       {/* Top bar with back-to-chat button */}
@@ -68,6 +77,7 @@ export function SimulationView({ onBackToChat }: SimulationViewProps) {
           arguments={sim.argumentNodes}
           newTopics={sim.newArgumentTopics}
           onArgumentClick={handleArgumentClick}
+          personaEmojis={personaEmojis}
         />
       </aside>
 
@@ -77,6 +87,7 @@ export function SimulationView({ onBackToChat }: SimulationViewProps) {
           transcript={sim.transcript}
           entryRefMap={entryRefMap}
           highlightEntryId={highlightEntryId}
+          scenarioName={sim.scenarioName}
         />
       </main>
 

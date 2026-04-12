@@ -336,6 +336,8 @@ export class GatewayServer {
         return this.handleListSkills(connectionId);
       case "reload_skills":
         return this.handleReloadSkills(connectionId);
+      case "match_skills":
+        return this.handleMatchSkills(connectionId, msg.query);
       case "list_mcp_servers":
         return this.handleListMcpServers(connectionId);
       case "reconnect_mcp":
@@ -612,6 +614,41 @@ export class GatewayServer {
         this.sendToConnection(connectionId, {
           type: "error",
           message: `Failed to reload skills: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleMatchSkills(connectionId: string, query: string): void {
+    if (!this.skillManager) {
+      this.sendToConnection(connectionId, { type: "skills_match_result", skills: [] });
+      return;
+    }
+
+    const retriever = this.skillManager.getRetriever();
+    if (!retriever) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: "Skill retriever not available (no embedding provider configured)",
+      });
+      return;
+    }
+
+    retriever
+      .retrieve(query, 5)
+      .then((results) => {
+        this.sendToConnection(connectionId, {
+          type: "skills_match_result",
+          skills: results.map((r) => ({
+            name: r.skill.name,
+            score: r.score,
+            matchReason: r.matchReason,
+          })),
+        });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Skill match failed: ${err instanceof Error ? err.message : String(err)}`,
         });
       });
   }

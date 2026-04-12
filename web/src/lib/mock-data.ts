@@ -15,7 +15,8 @@ export type DisplayMessageType =
   | "sub_agent_progress"
   | "sub_agent_done"
   | "inject"
-  | "memory_recall";
+  | "memory_recall"
+  | "skills_matched";
 
 export interface DisplayMessage {
   id: string;
@@ -37,6 +38,8 @@ export interface DisplayMessage {
     nestedEvents?: DisplayMessage[];
     /** Memory recall entries */
     memories?: Array<{ content: string; similarity: number }>;
+    /** Matched skills */
+    skills?: Array<{ name: string; score: number; matchReason: string }>;
   };
   timestamp: Date;
 }

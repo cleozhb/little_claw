@@ -60,4 +60,17 @@ export interface SkillConfigManager {
   isDisabled(skillName: string): boolean;
   /** 获取用户为某个 Skill 配置的环境变量覆盖 */
   getEnvOverrides(skillName: string): Record<string, string>;
+  /** 获取 skill prompt 的 token 预算 */
+  getTokenBudget(): number;
+  /** 获取用户 pin 的 skill 列表（始终完整注入） */
+  getPinnedSkills(): string[];
+}
+
+/** 混合检索返回的带分数 Skill */
+export interface ScoredSkill {
+  skill: ParsedSkill;
+  score: number;       // 0-1，最终混合分
+  bm25Score: number;   // 归一化后的 BM25 分
+  vectorScore: number; // 余弦相似度
+  matchReason: string; // "keyword: 马斯克, musk | vector: 0.85"
 }

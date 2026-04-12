@@ -9,6 +9,8 @@ interface ArgumentMapProps {
   arguments: ArgumentNode[];
   newTopics: Set<string>;
   onArgumentClick: (topic: string) => void;
+  /** persona name -> emoji mapping for avatar display */
+  personaEmojis?: Map<string, string>;
 }
 
 const statusColors: Record<ArgumentNode["status"], { border: string; bg: string; label: string }> = {
@@ -17,7 +19,7 @@ const statusColors: Record<ArgumentNode["status"], { border: string; bg: string;
   open: { border: "border-muted-foreground/40", bg: "bg-muted/30", label: "开放" },
 };
 
-export function ArgumentMap({ arguments: args, newTopics, onArgumentClick }: ArgumentMapProps) {
+export function ArgumentMap({ arguments: args, newTopics, onArgumentClick, personaEmojis }: ArgumentMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new arguments appear
@@ -36,7 +38,7 @@ export function ArgumentMap({ arguments: args, newTopics, onArgumentClick }: Arg
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="shrink-0 border-b border-border/50 px-3 py-2.5">
-        <h2 className="text-xs font-semibold tracking-tight">Argument Map</h2>
+        <h2 className="text-xs font-semibold tracking-tight">论点地图</h2>
         <p className="text-[10px] text-muted-foreground mt-0.5">
           {args.length} 个论点
         </p>
@@ -91,12 +93,12 @@ export function ArgumentMap({ arguments: args, newTopics, onArgumentClick }: Arg
                 {arg.description}
               </p>
 
-              {/* Supporters */}
+              {/* Supporters & Opposers */}
               <div className="mt-1.5 flex items-center gap-1 flex-wrap">
                 {arg.supporters.map((s) => (
                   <Tooltip key={`s-${s}`}>
                     <TooltipTrigger className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30 text-[10px] ring-1 ring-green-300/50">
-                      {s.charAt(0)}
+                      {personaEmojis?.get(s) ?? s.charAt(0)}
                     </TooltipTrigger>
                     <TooltipContent side="top" className="text-[10px]">
                       {s} (支持)
@@ -106,7 +108,7 @@ export function ArgumentMap({ arguments: args, newTopics, onArgumentClick }: Arg
                 {arg.opposers.map((o) => (
                   <Tooltip key={`o-${o}`}>
                     <TooltipTrigger className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30 text-[10px] ring-1 ring-red-300/50">
-                      {o.charAt(0)}
+                      {personaEmojis?.get(o) ?? o.charAt(0)}
                     </TooltipTrigger>
                     <TooltipContent side="top" className="text-[10px]">
                       {o} (反对)
@@ -132,7 +134,7 @@ export function ArgumentMap({ arguments: args, newTopics, onArgumentClick }: Arg
       {/* Bottom consensus strength bar */}
       <div className="shrink-0 border-t border-border/50 px-3 py-2.5">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] text-muted-foreground">Consensus Strength</span>
+          <span className="text-[10px] text-muted-foreground">整体共识度</span>
           <span className="text-[10px] font-medium">{Math.round(avgConsensus * 100)}%</span>
         </div>
         <div className="h-2 w-full rounded-full bg-muted">

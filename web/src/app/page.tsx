@@ -24,7 +24,7 @@ export default function Home() {
     deleteSession,
   } = useSessions();
 
-  const { messages, isStreaming, sendMessage, abort } = useChat(currentSessionId);
+  const { messages, isStreaming, activeSkills, sendMessage, abort } = useChat(currentSessionId);
 
   // Connect on mount, fetch session list when connected
   useEffect(() => {
@@ -89,6 +89,7 @@ export default function Home() {
             sessionTitle={activeSession?.title ?? "新对话"}
             messages={messages}
             isStreaming={isStreaming}
+            activeSkills={activeSkills}
             onMenuClick={() => setSidebarOpen(true)}
             onSend={sendMessage}
             onAbort={abort}

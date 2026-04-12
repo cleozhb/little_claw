@@ -257,8 +257,7 @@ export function ControlPanel({
         {/* ====== SETUP (when idle) ====== */}
         {isIdle && (
           <>
-            {/* Scenario selector */}
-            <div>
+            {/* Scenario selector */}            <div>
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
                   Scenario
@@ -444,6 +443,20 @@ export function ControlPanel({
               开始模拟
             </Button>
 
+            {simStatus === "ended" && summary && (
+              <>
+                <Separator className="opacity-50" />
+                <div>
+                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    总结
+                  </label>
+                  <div className="mt-1.5 rounded-lg bg-muted/50 p-2.5 text-[11px] leading-relaxed">
+                    {summary}
+                  </div>
+                </div>
+              </>
+            )}
+
             {simStatus === "ended" && (
               <Button variant="outline" className="w-full gap-2" size="sm" onClick={onReset}>
                 重新开始
@@ -624,7 +637,7 @@ export function ControlPanel({
                       value={injectText}
                       onChange={(e) => setInjectText(e.target.value)}
                       className="min-h-[60px] text-xs resize-none"
-                      disabled={!isRunning && !isPaused}
+                      disabled={!isRunning && !isPaused && !isWaiting}
                     />
                     <div className="flex gap-1.5">
                       <Button
@@ -674,7 +687,7 @@ export function ControlPanel({
                       size="sm"
                       className="gap-1.5 text-[10px] h-7"
                       onClick={() => onInject("[MODERATOR] 请各位就对方的核心论点进行反驳或交叉辩论。")}
-                      disabled={!isRunning && !isPaused}
+                      disabled={!isRunning && !isPaused && !isWaiting}
                     >
                       <MessageCircle className="h-3 w-3" />
                       Cross-debate
@@ -684,7 +697,7 @@ export function ControlPanel({
                       size="sm"
                       className="gap-1.5 text-[10px] h-7"
                       onClick={() => onInject("[MODERATOR] 请找出你们之间的共同点和共识区域。")}
-                      disabled={!isRunning && !isPaused}
+                      disabled={!isRunning && !isPaused && !isWaiting}
                     >
                       <Handshake className="h-3 w-3" />
                       Consensus
@@ -694,7 +707,7 @@ export function ControlPanel({
                       size="sm"
                       className="gap-1.5 text-[10px] h-7"
                       onClick={() => onInject("[MODERATOR] 请总结到目前为止的讨论要点。")}
-                      disabled={!isRunning && !isPaused}
+                      disabled={!isRunning && !isPaused && !isWaiting}
                     >
                       <FileText className="h-3 w-3" />
                       Summarize
@@ -705,7 +718,7 @@ export function ControlPanel({
                     size="sm"
                     className="w-full mt-2 gap-1.5 text-xs h-7"
                     onClick={onStop}
-                    disabled={!isRunning && !isPaused}
+                    disabled={!isRunning && !isPaused && !isWaiting}
                   >
                     <Square className="h-3 w-3" />
                     Stop (force)
@@ -714,8 +727,8 @@ export function ControlPanel({
               </>
             )}
 
-            {/* Summary (when ended) */}
-            {summary && (
+            {/* Summary (shown while still in active view, e.g. during ending transition) */}
+            {summary && !isIdle && (
               <>
                 <Separator className="opacity-50" />
                 <div>

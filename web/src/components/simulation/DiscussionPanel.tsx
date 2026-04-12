@@ -11,6 +11,8 @@ interface DiscussionPanelProps {
   /** ID ref map: topic -> entryId for scroll-to-argument linking */
   entryRefMap: React.MutableRefObject<Map<string, HTMLDivElement>>;
   highlightEntryId: string | null;
+  /** Scenario name to display as title */
+  scenarioName?: string;
 }
 
 /** Color palette for persona names */
@@ -40,6 +42,7 @@ export function DiscussionPanel({
   transcript,
   entryRefMap,
   highlightEntryId,
+  scenarioName,
 }: DiscussionPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -73,7 +76,7 @@ export function DiscussionPanel({
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="shrink-0 border-b border-border/50 px-4 py-2.5">
-        <h2 className="text-xs font-semibold tracking-tight">Discussion Transcript</h2>
+        <h2 className="text-xs font-semibold tracking-tight">{scenarioName || "讨论记录"}</h2>
       </div>
 
       {/* Transcript */}
@@ -116,6 +119,22 @@ export function DiscussionPanel({
                     {entry.text}
                   </span>
                   <div className="h-px flex-1 bg-blue-300 dark:bg-blue-700" />
+                </div>
+              );
+            }
+
+            // Speaker selected notification (Free mode)
+            if (entry.isSpeakerSelected) {
+              return (
+                <div
+                  key={entry.id}
+                  className="flex items-center gap-2 py-1.5"
+                >
+                  <div className="h-px flex-1 bg-amber-300 dark:bg-amber-700" />
+                  <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium whitespace-nowrap">
+                    🎤 下一位发言人: {entry.persona}
+                  </span>
+                  <div className="h-px flex-1 bg-amber-300 dark:bg-amber-700" />
                 </div>
               );
             }

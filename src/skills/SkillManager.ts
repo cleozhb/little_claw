@@ -5,6 +5,10 @@ import type {
   ManagedSkill,
   SkillConfigManager,
 } from "./types";
+import type { Database } from "../db/Database";
+import type { EmbeddingProvider } from "../memory/EmbeddingProvider";
+import { SkillIndexer } from "./SkillIndexer";
+import { SkillRetriever } from "./SkillRetriever";
 
 export interface SkillSummary {
   total: number;
@@ -19,10 +23,20 @@ export class SkillManager {
   private configManager: SkillConfigManager;
   private skills = new Map<string, ManagedSkill>();
   private recentlyUsedSkills = new Set<string>();
+  private db?: Database;
+  private embeddingProvider?: EmbeddingProvider;
+  private indexer?: SkillIndexer;
+  private retriever?: SkillRetriever;
 
-  constructor(loader: SkillLoader, configManager: SkillConfigManager) {
+  constructor(
+    loader: SkillLoader,
+    configManager: SkillConfigManager,
+    options?: { db?: Database; embeddingProvider?: EmbeddingProvider },
+  ) {
     this.loader = loader;
     this.configManager = configManager;
+    this.db = options?.db;
+    this.embeddingProvider = options?.embeddingProvider;
   }
 
   /**
@@ -75,6 +89,29 @@ export class SkillManager {
           status: "error",
           error: `Gating check failed: ${message}`,
         });
+      }
+    }
+
+    // 若 db + embeddingProvider 可用，构建索引和检索器
+    if (this.db && this.embeddingProvider) {
+      try {
+        this.indexer = new SkillIndexer(this.db, this.embeddingProvider);
+        await this.indexer.indexAll(this.getLoadedSkills());
+
+        this.retriever = new SkillRetriever(
+          this.db,
+          this.embeddingProvider,
+          () => {
+            const map = new Map<string, ParsedSkill>();
+            for (const s of this.skills.values()) {
+              if (s.status === "loaded") map.set(s.parsed.name, s.parsed);
+            }
+            return map;
+          },
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[SkillManager] Failed to build skill index: ${message}`);
       }
     }
   }
@@ -137,6 +174,21 @@ export class SkillManager {
   /** 获取指定名称的 ManagedSkill */
   getSkill(name: string): ManagedSkill | undefined {
     return this.skills.get(name);
+  }
+
+  /** 获取 skill prompt 的 token 预算 */
+  getTokenBudget(): number {
+    return this.configManager.getTokenBudget();
+  }
+
+  /** 获取混合检索器（若索引已建立） */
+  getRetriever(): SkillRetriever | undefined {
+    return this.retriever;
+  }
+
+  /** 获取用户 pin 的 skill 列表 */
+  getPinnedSkills(): string[] {
+    return this.configManager.getPinnedSkills();
   }
 
   /** 重新加载所有 Skill（清空现有状态，重新扫描） */

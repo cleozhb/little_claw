@@ -19,6 +19,7 @@ export interface SkillEntryConfig {
 
 export interface SkillsConfig {
   tokenBudget?: number;
+  pinned?: string[];
   entries: Record<string, SkillEntryConfig>;
 }
 
@@ -28,7 +29,8 @@ export interface ConfigFile {
 
 const DEFAULT_CONFIG: ConfigFile = {
   skills: {
-    tokenBudget: 4000,
+    tokenBudget: 20000,
+    pinned: [],
     entries: {},
   },
 };
@@ -59,7 +61,8 @@ export class SkillConfigFile implements SkillConfigManager {
       const parsed = JSON.parse(text) as Partial<ConfigFile>;
       this.config = {
         skills: {
-          tokenBudget: parsed.skills?.tokenBudget ?? 4000,
+          tokenBudget: parsed.skills?.tokenBudget ?? 20000,
+          pinned: parsed.skills?.pinned ?? [],
           entries: parsed.skills?.entries ?? {},
         },
       };
@@ -97,6 +100,10 @@ export class SkillConfigFile implements SkillConfigManager {
 
   getTokenBudget(): number {
     return this.config.skills.tokenBudget ?? 4000;
+  }
+
+  getPinnedSkills(): string[] {
+    return this.config.skills.pinned ?? [];
   }
 
   getConfigPath(): string {

@@ -5,13 +5,15 @@ import type {
   AgentEvent,
   TextBlock,
   ToolUseBlock,
+  AgentSkillsMatchedEvent,
 } from "../types/message.ts";
 import type { SkillManager } from "../skills/SkillManager.ts";
+import type { ParsedSkill } from "../skills/types.ts";
 import type { ShellTool } from "../tools/types.ts";
 import type { AgentConfig } from "../agents/AgentConfig.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
 import { MAIN_AGENT } from "../agents/presets.ts";
-import { SkillPromptBuilder } from "../skills/SkillPromptBuilder.ts";
+import { SkillPromptBuilder, SKILL_GUIDE } from "../skills/SkillPromptBuilder.ts";
 import { generateTitle } from "./TitleGenerator.ts";
 import { allocateBudget, formatLongTermMemory } from "../memory/TokenBudget.ts";
 import { createLogger } from "../utils/logger.ts";
@@ -51,6 +53,9 @@ export class AgentLoop {
     user: string | null;
     memory: string | null;
   } = { soul: null, user: null, memory: null };
+
+  /** 当前轮次检索命中的 skill 列表（由 runInner 设置，getEffectiveSystemPrompt 使用） */
+  private selectedSkills: ParsedSkill[] = [];
 
   /** 对话轮次计数器，每完成一次 run() 计数 +1 */
   private roundCount = 0;
@@ -195,6 +200,52 @@ export class AgentLoop {
         }
         this.cachedMemories = [];
         this.cachedFileMemory = { soul: null, user: null, memory: null };
+      }
+    }
+
+    // Skill 混合检索
+    if (this.skillManager) {
+      const retriever = this.skillManager.getRetriever();
+      if (retriever && userMessage) {
+        try {
+          // 构造检索 query：当前用户消息 + 最近几轮对话摘要，提供足够上下文
+          const query = this.buildSkillQuery(userMessage);
+          const matched = await retriever.retrieve(query, 5);
+          // 合并 pinned + retrieved（去重）
+          const pinnedNames = new Set(this.skillManager.getPinnedSkills());
+          const allLoaded = this.skillManager.getLoadedSkills();
+          const pinned = allLoaded.filter(s => pinnedNames.has(s.name));
+          const matchedNames = new Set(matched.map(m => m.skill.name));
+          const extraPinned = pinned.filter(s => !matchedNames.has(s.name));
+
+          // 保留之前选中但本轮未匹配到的 skill（避免多轮对话中丢失上下文）
+          const newNames = new Set([...matchedNames, ...pinnedNames]);
+          const carried = this.selectedSkills.filter(s => !newNames.has(s.name));
+
+          this.selectedSkills = [...extraPinned, ...matched.map(m => m.skill), ...carried];
+
+          if (matched.length > 0) {
+            const matchedEvent: AgentSkillsMatchedEvent = {
+              type: "skills_matched",
+              skills: matched.map(m => ({
+                name: m.skill.name,
+                score: m.score,
+                matchReason: m.matchReason,
+              })),
+            };
+            yield matchedEvent;
+          }
+        } catch (err) {
+          if (process.env.DEBUG) {
+            console.error(`[debug] Skill retrieval failed:`, err);
+          }
+          // 失败时保留之前选中的 skill，而非回退到全量
+          if (this.selectedSkills.length === 0) {
+            this.selectedSkills = this.skillManager.getLoadedSkills();
+          }
+        }
+      } else if (this.selectedSkills.length === 0) {
+        this.selectedSkills = this.skillManager.getLoadedSkills();
       }
     }
 
@@ -591,6 +642,25 @@ export class AgentLoop {
   }
 
   /**
+   * 构造 skill 检索 query：当前用户消息 + 最近几轮用户消息，
+   * 避免多轮对话中后续短消息（如"继续"）缺乏上下文导致检索失效。
+   */
+  private buildSkillQuery(currentMessage: string): string {
+    const messages = this.conversation.getMessages();
+    // 取最近 3 条用户消息（不含当前这条，因为它刚刚被 addUser 加入）
+    const recentUserMsgs: string[] = [];
+    for (let i = messages.length - 2; i >= 0 && recentUserMsgs.length < 3; i--) {
+      const m = messages[i]!;
+      if (m.role === "user" && typeof m.content === "string") {
+        recentUserMsgs.push(m.content);
+      }
+    }
+    if (recentUserMsgs.length === 0) return currentMessage;
+    // 当前消息权重最高，放在最前面
+    return [currentMessage, ...recentUserMsgs.reverse()].join("\n");
+  }
+
+  /**
    * 构建完整的 LLM 输入上下文，按优先级分配 token 预算：
    *
    * Context Assembler 加载顺序：
@@ -610,24 +680,7 @@ export class AgentLoop {
     const basePrompt = this.conversation.getSystemPrompt();
     const coreSystemPrompt = `${basePrompt}\n\n${this.config.systemPrompt}\n\n${SCHEDULER_GUIDANCE}\n\n${MEMORY_GUIDANCE}`;
 
-    // 构建 skill prompt
-    let skillPrompt = "";
-    if (this.skillManager) {
-      const loadedSkills = this.skillManager.getLoadedSkills();
-      if (loadedSkills.length > 0) {
-        const builder = new SkillPromptBuilder();
-        const raw = builder.buildSkillPrompt(
-          loadedSkills,
-          undefined,
-          this.skillManager.getRecentlyUsed(),
-        );
-        if (raw) {
-          skillPrompt = `You have access to skills that extend your capabilities. When a user's request matches a skill's description, follow the skill's instructions. Skills may require you to use shell commands or other tools to complete tasks.\n\n${raw}`;
-        }
-      }
-    }
-
-    // 获取当前对话中最后一条用户消息作为预算分配参考
+    // 获取当前对话中最后一条用户消息（用于 skill 相关性匹配和预算分配）
     const messages = this.conversation.getMessages();
     const lastUserMsg = messages.length > 0
       ? messages.filter((m) => m.role === "user").pop()
@@ -635,6 +688,24 @@ export class AgentLoop {
     const userMessageText = lastUserMsg
       ? (typeof lastUserMsg.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg.content))
       : "";
+
+    // 构建 skill prompt
+    let skillPrompt = "";
+    if (this.skillManager) {
+      const skills = this.selectedSkills.length > 0
+        ? this.selectedSkills
+        : this.skillManager.getLoadedSkills();
+      if (skills.length > 0) {
+        const builder = new SkillPromptBuilder();
+        const raw = builder.buildSkillPrompt(
+          skills,
+          this.skillManager.getTokenBudget(),
+        );
+        if (raw) {
+          skillPrompt = `${SKILL_GUIDE}\n\n${raw}`;
+        }
+      }
+    }
 
     // 构建文件记忆层 prompt
     const soulPrompt = this.cachedFileMemory.soul

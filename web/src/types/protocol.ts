@@ -524,6 +524,12 @@ export interface GeneratedContentMessage {
   content: string;
 }
 
+export interface SkillsMatchedMessage {
+  type: "skills_matched";
+  sessionId: string;
+  skills: Array<{ name: string; score: number; matchReason: string }>;
+}
+
 // --- Simulation Domain Types ---
 
 export interface ArgumentNode {
@@ -571,4 +577,5 @@ export type ServerMessage =
   | SimulationEventMessage
   | PersonaUpdatedMessage
   | ScenarioUpdatedMessage
-  | GeneratedContentMessage;
+  | GeneratedContentMessage
+  | SkillsMatchedMessage;

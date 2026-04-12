@@ -50,6 +50,8 @@ export interface TranscriptEntry {
   argumentTopic?: string;
   /** Waiting divider between rounds */
   isWaiting?: boolean;
+  /** Speaker selected notification (Free mode) */
+  isSpeakerSelected?: boolean;
 }
 
 export type SimStatus = "idle" | "running" | "paused" | "waiting" | "ended";
@@ -101,8 +103,9 @@ export function useSimulation() {
           break;
 
         case "simulation_event": {
-          if (simIdRef.current && msg.simId !== simIdRef.current) return;
+          // 对 sim_start 事件始终放行，允许新模拟覆盖旧的 simId
           const evt = msg.event;
+          if (evt.type !== "sim_start" && simIdRef.current && msg.simId !== simIdRef.current) return;
 
           switch (evt.type) {
             case "sim_start": {
@@ -302,6 +305,23 @@ export function useSimulation() {
               // Could be displayed in control panel
               break;
 
+            case "speaker_selected": {
+              const persona = evt.persona as string;
+              setTranscript((prev) => [
+                ...prev,
+                {
+                  id: nextEntryId(),
+                  persona,
+                  emoji: "🎤",
+                  text: `下一位发言人: ${persona}`,
+                  isStreaming: false,
+                  round: currentRound,
+                  isSpeakerSelected: true,
+                },
+              ]);
+              break;
+            }
+
             case "sim_end": {
               setSimStatus("ended");
               setSummary(evt.summary as string);
@@ -343,13 +363,18 @@ export function useSimulation() {
 
   const startSimulation = useCallback(
     (scenarioName: string, personaNames: string[], rounds?: number, mode?: string) => {
+      // 清除旧模拟状态，确保新模拟的事件不被 simId 过滤掉
+      setSimId(null);
       setSimStatus("running");
+      setCurrentRound(0);
+      setTotalRounds(rounds ?? 0);
       setTranscript([]);
       setArgumentNodes([]);
+      setNewArgumentTopics(new Set());
       setSummary("");
+      setPersonaStates(new Map());
       setScenarioName(scenarioName);
       if (mode) setScenarioMode(mode);
-      if (rounds) setTotalRounds(rounds);
       wsClient.send({
         type: "start_simulation",
         scenarioName,
@@ -419,7 +444,7 @@ export function useSimulation() {
 
   const endDiscussion = useCallback(() => {
     if (!simId) return;
-    setSimStatus("running");
+    setSimStatus("ended");
     // Remove the waiting divider
     setTranscript((prev) => prev.filter((e) => !e.isWaiting));
     wsClient.send({ type: "sim_end", simId });

@@ -41,6 +41,15 @@ export interface AddToolResultParams {
   isError?: boolean;
 }
 
+export interface SkillIndexRow {
+  skill_name: string;
+  description: string;
+  instructions_summary: string;
+  keywords: string;
+  embedding: string; // JSON-serialized number[]
+  updated_at: string;
+}
+
 // --- Database Class ---
 
 export class Database {
@@ -61,6 +70,10 @@ export class Database {
   private stmtGetMessageCount;
   private stmtInsertToolResult;
   private stmtGetToolResults;
+  private stmtUpsertSkillIndex;
+  private stmtGetAllSkillIndex;
+  private stmtDeleteSkillIndex;
+  private stmtClearSkillIndex;
 
   constructor(dbPath: string) {
     this.db = new SQLiteDatabase(dbPath);
@@ -130,6 +143,23 @@ export class Database {
     this.stmtGetToolResults = this.db.prepare(
       `SELECT * FROM tool_results WHERE message_id = ?1 ORDER BY created_at ASC`
     );
+
+    this.stmtUpsertSkillIndex = this.db.prepare(
+      `INSERT OR REPLACE INTO skill_index (skill_name, description, instructions_summary, keywords, embedding, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+    );
+
+    this.stmtGetAllSkillIndex = this.db.prepare(
+      `SELECT * FROM skill_index`
+    );
+
+    this.stmtDeleteSkillIndex = this.db.prepare(
+      `DELETE FROM skill_index WHERE skill_name = ?1`
+    );
+
+    this.stmtClearSkillIndex = this.db.prepare(
+      `DELETE FROM skill_index`
+    );
   }
 
   private initTables(): void {
@@ -180,6 +210,17 @@ export class Database {
         created_at   TEXT NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id),
         FOREIGN KEY (message_id) REFERENCES messages(id)
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS skill_index (
+        skill_name          TEXT PRIMARY KEY,
+        description         TEXT NOT NULL,
+        instructions_summary TEXT NOT NULL,
+        keywords            TEXT NOT NULL,
+        embedding           TEXT NOT NULL,
+        updated_at          TEXT NOT NULL
       )
     `);
   }
@@ -296,6 +337,31 @@ export class Database {
 
   getToolResults(messageId: string): ToolResultRecord[] {
     return this.stmtGetToolResults.all(messageId) as ToolResultRecord[];
+  }
+
+  // --- Skill Index CRUD ---
+
+  upsertSkillIndex(row: SkillIndexRow): void {
+    this.stmtUpsertSkillIndex.run(
+      row.skill_name,
+      row.description,
+      row.instructions_summary,
+      row.keywords,
+      row.embedding,
+      row.updated_at,
+    );
+  }
+
+  getAllSkillIndex(): SkillIndexRow[] {
+    return this.stmtGetAllSkillIndex.all() as SkillIndexRow[];
+  }
+
+  deleteSkillIndex(name: string): void {
+    this.stmtDeleteSkillIndex.run(name);
+  }
+
+  clearSkillIndex(): void {
+    this.stmtClearSkillIndex.run();
   }
 
   // --- Lifecycle ---

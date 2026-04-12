@@ -131,6 +131,11 @@ export interface SubAgentDoneEvent {
   result: string;
 }
 
+export interface AgentSkillsMatchedEvent {
+  type: "skills_matched";
+  skills: Array<{ name: string; score: number; matchReason: string }>;
+}
+
 export type AgentEvent =
   | AgentTextDeltaEvent
   | AgentToolCallEvent
@@ -139,4 +144,5 @@ export type AgentEvent =
   | AgentErrorEvent
   | SubAgentStartEvent
   | SubAgentProgressEvent
-  | SubAgentDoneEvent;
+  | SubAgentDoneEvent
+  | AgentSkillsMatchedEvent;

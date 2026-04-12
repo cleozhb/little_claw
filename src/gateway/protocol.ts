@@ -216,6 +216,12 @@ export interface GenerateContentMessage {
   prompt: string;
 }
 
+/** Client → Server: 查询 skill 匹配结果 */
+export interface MatchSkillsMessage {
+  type: "match_skills";
+  query: string;
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -237,6 +243,7 @@ export type ClientMessage =
   | MemoryClearMessage
   | AbortMessage
   | InjectMessage
+  | MatchSkillsMessage
   | ListPersonasMessage
   | ListScenariosMessage
   | StartSimulationMessage
@@ -543,6 +550,19 @@ export interface WatcherInfo {
   lastTriggeredAt?: string;
 }
 
+/** Server → Client: Skill 检索匹配结果（对话时自动触发） */
+export interface SkillsMatchedMessage {
+  type: "skills_matched";
+  sessionId: string;
+  skills: Array<{ name: string; score: number; matchReason: string }>;
+}
+
+/** Server → Client: /skills match 命令的响应 */
+export interface SkillsMatchResultMessage {
+  type: "skills_match_result";
+  skills: Array<{ name: string; score: number; matchReason: string }>;
+}
+
 export type ServerMessage =
   | TextDeltaMessage
   | ToolCallMessage
@@ -574,6 +594,8 @@ export type ServerMessage =
   | MemoryClearedMessage
   | AbortedMessage
   | InjectedMessage
+  | SkillsMatchedMessage
+  | SkillsMatchResultMessage
   | PersonasListMessage
   | ScenariosListMessage
   | SimulationEventMessage
@@ -606,6 +628,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "memory_clear",
   "abort",
   "inject",
+  "match_skills",
   "list_personas",
   "list_scenarios",
   "start_simulation",
@@ -709,6 +732,9 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "inject":
       requireString(msg, "sessionId");
       requireString(msg, "content");
+      break;
+    case "match_skills":
+      requireString(msg, "query");
       break;
     case "list_personas":
       break;

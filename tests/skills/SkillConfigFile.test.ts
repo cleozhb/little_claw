@@ -23,7 +23,7 @@ describe("SkillConfigFile", () => {
     const raw = config.getRawConfig();
     expect(raw.skills).toBeDefined();
     expect(raw.skills.entries).toEqual({});
-    expect(raw.skills.tokenBudget).toBe(4000);
+    expect(raw.skills.tokenBudget).toBe(20000);
 
     // File should be created on disk
     const file = Bun.file(CONFIG_PATH);
@@ -95,7 +95,7 @@ describe("SkillConfigFile", () => {
     await config.load();
 
     // Should fall back to defaults
-    expect(config.getTokenBudget()).toBe(4000);
+    expect(config.getTokenBudget()).toBe(20000);
     expect(config.isDisabled("anything")).toBe(false);
   });
 
@@ -105,7 +105,7 @@ describe("SkillConfigFile", () => {
     const config = new SkillConfigFile(CONFIG_PATH);
     await config.load();
 
-    expect(config.getTokenBudget()).toBe(4000);
+    expect(config.getTokenBudget()).toBe(20000);
     expect(config.getRawConfig().skills.entries).toEqual({});
   });
 
