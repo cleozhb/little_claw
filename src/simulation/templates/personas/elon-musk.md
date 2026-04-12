@@ -5,6 +5,7 @@ emoji: 🚀
 tags:
   - tech-leader
   - entrepreneur
+skill: elon-musk-perspective
 ---
 
 # Identity

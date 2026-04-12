@@ -6,6 +6,7 @@ tags:
   - scientist
   - physicist
   - educator
+skill: feynman-perspective
 ---
 
 # Identity

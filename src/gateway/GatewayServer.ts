@@ -27,6 +27,7 @@ import type { EventWatcher } from "../scheduler/EventWatcher.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
 import type { SimulationManager } from "../simulation/SimulationManager.ts";
 import { getAllAgentConfigs } from "../agents/presets.ts";
+import type { FeishuAdapter } from "./adapters/FeishuAdapter.ts";
 
 // ============================================================
 // Types
@@ -50,10 +51,14 @@ export interface GatewayOptions {
   memoryManager?: MemoryManager;
   /** SimulationManager，用于 simulation 相关命令 */
   simulationManager?: SimulationManager;
+  /** 飞书适配器，启用后接收 POST /webhook/feishu */
+  feishuAdapter?: FeishuAdapter;
   /** session 切换时的回调（用于触发旧 session 的记忆保存） */
   onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
   onChat?: (connectionId: string, sessionId: string, content: string) => void;
+  /** webhook chat 的处理回调，收集完整回复后回调 */
+  onWebhookChat?: (sessionId: string, content: string) => Promise<string>;
   /** abort 消息的处理回调 */
   onAbort?: (sessionId: string) => boolean;
   /** inject 消息的处理回调 */
@@ -76,6 +81,7 @@ export class GatewayServer {
   private db: Database;
   private toolRegistry: ToolRegistry;
   private onChat?: GatewayOptions["onChat"];
+  private onWebhookChat?: GatewayOptions["onWebhookChat"];
   private onAbort?: GatewayOptions["onAbort"];
   private onInject?: GatewayOptions["onInject"];
   private getActiveSessionCount?: GatewayOptions["getActiveSessionCount"];
@@ -85,6 +91,7 @@ export class GatewayServer {
   private eventWatcher?: EventWatcher;
   private memoryManager?: MemoryManager;
   private simulationManager?: SimulationManager;
+  private feishuAdapter?: FeishuAdapter;
   private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   private port: number;
   private hostname: string;
@@ -98,12 +105,16 @@ export class GatewayServer {
   // connection → sessionId 映射，用于按 session 广播
   private connectionSessions = new Map<string, string>();
 
+  // webhook chatId → sessionId 映射（飞书等 IM 渠道）
+  private webhookChatSessions = new Map<string, string>();
+
   constructor(options: GatewayOptions) {
     this.port = options.port ?? 4000;
     this.hostname = options.hostname ?? "localhost";
     this.db = options.db;
     this.toolRegistry = options.toolRegistry;
     this.onChat = options.onChat;
+    this.onWebhookChat = options.onWebhookChat;
     this.onAbort = options.onAbort;
     this.onInject = options.onInject;
     this.getActiveSessionCount = options.getActiveSessionCount;
@@ -113,6 +124,7 @@ export class GatewayServer {
     this.eventWatcher = options.eventWatcher;
     this.memoryManager = options.memoryManager;
     this.simulationManager = options.simulationManager;
+    this.feishuAdapter = options.feishuAdapter;
     this.onSessionSwitch = options.onSessionSwitch;
 
     // 初始化健康检查
@@ -166,6 +178,11 @@ export class GatewayServer {
           return self.handleHealthEndpoint();
         }
 
+        // POST /webhook/feishu — 飞书 IM 回调
+        if (url.pathname === "/webhook/feishu" && req.method === "POST") {
+          return self.handleFeishuWebhook(req);
+        }
+
         if (url.pathname === "/ws") {
           const connectionId = crypto.randomUUID();
           const upgraded = server.upgrade(req, { data: { connectionId } });
@@ -181,6 +198,9 @@ export class GatewayServer {
     this.startedAt = Date.now();
     this.healthChecker.start();
     console.log(`[Gateway] listening on ws://localhost:${this.server.port}/ws`);
+    if (this.feishuAdapter) {
+      console.log(`[Gateway] Feishu webhook enabled at POST /webhook/feishu`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -197,6 +217,7 @@ export class GatewayServer {
     }
     this.connections.clear();
     this.connectionSessions.clear();
+    this.webhookChatSessions.clear();
     this.clientTargets.clear();
 
     // 关闭 HTTP 服务器
@@ -1117,6 +1138,117 @@ Output ONLY the markdown content, starting with --- for the frontmatter. No extr
       activeSessions: this.getActiveSessionCount?.() ?? 0,
       connections: this.connections.size,
     });
+  }
+
+  // ----------------------------------------------------------
+  // Webhook: 飞书
+  // ----------------------------------------------------------
+
+  private async handleFeishuWebhook(req: Request): Promise<Response> {
+    if (!this.feishuAdapter) {
+      return new Response(JSON.stringify({ error: "Feishu not configured" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = await req.json() as Record<string, unknown>;
+    } catch {
+      return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 0. 解密（如果配了 Encrypt Key，飞书会把整个 body 加密为 { encrypt: "..." }）
+    try {
+      body = this.feishuAdapter.decryptBody(body);
+    } catch {
+      return new Response(JSON.stringify({ error: "Decryption failed" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 1. Challenge 处理（飞书首次配置 URL 验证，优先处理）
+    const challenge = this.feishuAdapter.handleChallenge(body);
+    if (challenge) {
+      console.log(`[Feishu] Challenge request received, responding with challenge`);
+      return new Response(JSON.stringify(challenge), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 2. 验证 token（challenge 之外的正常事件回调需要验证）
+    if (!this.feishuAdapter.verifyToken(body)) {
+      console.warn(`[Feishu] Token verification failed`);
+      return new Response(JSON.stringify({ error: "Invalid token" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 3. 解析消息
+    const message = this.feishuAdapter.parseToInternal(body);
+    if (!message) {
+      // 不是我们关心的事件类型（非文本消息、重复事件等），返回 200 让飞书不重试
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 4. 先返回 200（飞书要求 1s 内响应），异步处理消息
+    const { chatId, text } = message;
+
+    // 异步处理：映射 session → 调 Agent → 发送回复
+    this.processWebhookMessage(chatId, text).catch((err) => {
+      console.error(
+        `[Feishu] Error processing message from chat ${chatId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  /**
+   * 异步处理 webhook 消息：映射 session、调用 Agent、发送回复。
+   */
+  private async processWebhookMessage(chatId: string, text: string): Promise<void> {
+    if (!this.feishuAdapter || !this.onWebhookChat) return;
+
+    // chatId → sessionId 映射，不存在则自动创建
+    let sessionId = this.webhookChatSessions.get(chatId);
+    if (!sessionId) {
+      const session = this.db.createSession();
+      sessionId = session.id;
+      this.webhookChatSessions.set(chatId, sessionId);
+      console.log(`[Feishu] Created new session ${sessionId} for chat ${chatId}`);
+    }
+
+    try {
+      // 调用 Agent，等待完整回复
+      const reply = await this.onWebhookChat(sessionId, text);
+
+      // 发送回复到飞书
+      if (reply.trim()) {
+        await this.feishuAdapter.sendToChannel(chatId, reply);
+      }
+    } catch (err) {
+      console.error(
+        `[Feishu] Agent error for chat ${chatId}, session ${sessionId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      // 发送错误提示给用户
+      await this.feishuAdapter.sendToChannel(chatId, "抱歉，处理消息时出现了错误，请稍后重试。");
+    }
   }
 
   // ----------------------------------------------------------

@@ -28,6 +28,7 @@ import { FileMemoryManager } from "./memory/FileMemoryManager.ts";
 import { createMemoryWriteTool } from "./tools/builtin/MemoryWriteTool.ts";
 import { createMemoryReadTool } from "./tools/builtin/MemoryReadTool.ts";
 import { SimulationManager } from "./simulation/SimulationManager.ts";
+import { FeishuAdapter } from "./gateway/adapters/FeishuAdapter.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -182,6 +183,13 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const scenarioCount = simulationManager.listScenarios().length;
   console.log(`Simulation: ${personaCount} personas, ${scenarioCount} scenarios`);
 
+  // --- 飞书 IM 适配器初始化 ---
+  let feishuAdapter: FeishuAdapter | undefined;
+  if (config.feishu?.enabled) {
+    feishuAdapter = new FeishuAdapter(config.feishu);
+    console.log(`Feishu: webhook enabled (app_id: ${config.feishu.appId})`);
+  }
+
   const sessionRouter = new SessionRouter({
     db,
     llmProvider,
@@ -204,6 +212,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     eventWatcher,
     memoryManager,
     simulationManager,
+    feishuAdapter,
     onSessionSwitch: (oldSessionId) => {
       sessionRouter.saveMemoryForSession(oldSessionId);
     },
@@ -220,6 +229,21 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
               message: `Agent error: ${err instanceof Error ? err.message : String(err)}`,
             });
           });
+      });
+    },
+    onWebhookChat: (sessionId, content) => {
+      return new Promise<string>((resolve, reject) => {
+        sessionIdStorage.run(sessionId, () => {
+          let fullText = "";
+          sessionRouter
+            .handleChat(sessionId, content, (event) => {
+              if (event.type === "text_delta") {
+                fullText += event.text;
+              }
+            })
+            .then(() => resolve(fullText))
+            .catch(reject);
+        });
       });
     },
     onAbort: (sessionId) => {
@@ -301,6 +325,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const cleanup = async () => {
     cronScheduler.stop();
     eventWatcher.stop();
+    feishuAdapter?.dispose();
     await mcpManager.disconnectAll();
     // 关闭前保存所有活跃 session 的记忆
     await sessionRouter.saveAllMemories();
