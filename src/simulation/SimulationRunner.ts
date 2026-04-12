@@ -8,6 +8,7 @@ import type {
   SimulationEvent,
 } from "./types";
 import type { Message } from "../types/message";
+import type { SkillManager } from "../skills/SkillManager";
 import { ArgumentExtractor } from "./ArgumentExtractor";
 import { createPersonaSandboxTools } from "./SandboxTools";
 import { SpeakerSelector } from "./SpeakerSelector";
@@ -209,17 +210,23 @@ const LANGUAGE_NAMES: Record<string, string> = {
 /**
  * 构建 persona 的 system prompt。
  * hasTools 为 true 时不添加 [THINKING] 指令（tool-using 路径不需要文本标签思考）。
+ * skillInstructions 不为空时，追加到 persona body 之后作为认知框架细节。
  */
 function buildPersonaSystemPrompt(
   persona: ParsedPersona,
   scenarioBody: string,
   language?: string,
   hasTools?: boolean,
+  skillInstructions?: string,
 ): string {
-  let prompt =
-    persona.body +
-    "\n\n[SCENARIO]\n" +
-    scenarioBody;
+  let prompt = persona.body;
+
+  // 如果有关联的 Skill instructions，追加到 persona body 之后
+  if (skillInstructions) {
+    prompt += "\n\n" + skillInstructions;
+  }
+
+  prompt += "\n\n[SCENARIO]\n" + scenarioBody;
 
   if (!hasTools) {
     prompt += "\n\nBefore your public response, write private thoughts in [THINKING]...[/THINKING] tags. This will not be shared with others.";
@@ -418,6 +425,7 @@ export class SimulationRunner {
   private personas: ParsedPersona[];
   private llmProvider: LLMProvider;
   private toolRegistry?: ToolRegistry;
+  private skillManager?: SkillManager;
   private argumentExtractor: ArgumentExtractor;
 
   // --- 控制状态 ---
@@ -457,11 +465,13 @@ export class SimulationRunner {
     personas: ParsedPersona[],
     llmProvider: LLMProvider,
     toolRegistry?: ToolRegistry,
+    skillManager?: SkillManager,
   ) {
     this.scenario = scenario;
     this.personas = personas;
     this.llmProvider = llmProvider;
     this.toolRegistry = toolRegistry;
+    this.skillManager = skillManager;
     this.argumentExtractor = new ArgumentExtractor();
     this.simId = generateSimId();
   }
@@ -469,6 +479,29 @@ export class SimulationRunner {
   // ----------------------------------------------------------
   // 控制接口
   // ----------------------------------------------------------
+
+  /**
+   * 解析 persona 关联的 Skill instructions。
+   * 如果 persona.skill 设置了且 SkillManager 中对应 Skill 已加载，返回其 instructions；
+   * 否则打印警告并返回 undefined。
+   */
+  private resolveSkillInstructions(persona: ParsedPersona): string | undefined {
+    if (!persona.skill) return undefined;
+    if (!this.skillManager) {
+      log.warn(`Persona "${persona.name}" references skill "${persona.skill}" but SkillManager is not available`);
+      return undefined;
+    }
+    const managed = this.skillManager.getSkill(persona.skill);
+    if (!managed) {
+      log.warn(`Persona "${persona.name}" references skill "${persona.skill}" but it was not found`);
+      return undefined;
+    }
+    if (managed.status !== "loaded") {
+      log.warn(`Persona "${persona.name}" references skill "${persona.skill}" but its status is "${managed.status}"`);
+      return undefined;
+    }
+    return managed.parsed.instructions;
+  }
 
   inject(message: string): void {
     this.pendingInjections.push(message);
@@ -674,7 +707,8 @@ export class SimulationRunner {
     for (const persona of activePersonas) {
       const tools = this.personaTools.get(persona.name);
       const hasTools = !!(tools && tools.length > 0);
-      const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, hasTools);
+      const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, hasTools, this.resolveSkillInstructions(persona));
+      console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
 
       (async () => {
         try {
@@ -1009,7 +1043,10 @@ export class SimulationRunner {
           persona,
           this.scenario.body,
           this.scenario.language,
+          undefined,
+          this.resolveSkillInstructions(persona),
         );
+        console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
 
         const rawStream = llmChatStreaming(
           this.llmProvider,
@@ -1243,6 +1280,8 @@ export class SimulationRunner {
             currentSpeaker,
             this.scenario.body,
             this.scenario.language,
+            undefined,
+            this.resolveSkillInstructions(currentSpeaker),
           );
 
           const rawStream = llmChatStreaming(
@@ -1389,7 +1428,8 @@ export class SimulationRunner {
       roundActionsCount: roundActions.length,
     });
 
-    const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language);
+    const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, undefined, this.resolveSkillInstructions(persona));
+    console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
 
     const actionsContext = roundActions.length > 0
       ? roundActions.join("\n")
@@ -1476,7 +1516,8 @@ export class SimulationRunner {
       userMessage,
     });
 
-    const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, true);
+    const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, true, this.resolveSkillInstructions(persona));
+    console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
 
     const toolDefs: ToolDefinition[] = tools.map((t) => ({
       name: t.name,

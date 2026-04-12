@@ -13,6 +13,11 @@ export interface PersonaInfo {
   content: string;
 }
 
+export interface SimSkillInfo {
+  name: string;
+  description: string;
+}
+
 export interface ScenarioInfo {
   name: string;
   description: string;
@@ -65,6 +70,7 @@ export function useSimulation() {
   // ---- Lists ----
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
   const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
+  const [simulationSkills, setSimulationSkills] = useState<SimSkillInfo[]>([]);
 
   // ---- Active simulation state ----
   const [simId, setSimId] = useState<string | null>(null);
@@ -100,6 +106,10 @@ export function useSimulation() {
 
         case "scenarios_list":
           setScenarios(msg.scenarios);
+          break;
+
+        case "simulation_skills_list":
+          setSimulationSkills(msg.skills);
           break;
 
         case "simulation_event": {
@@ -361,6 +371,10 @@ export function useSimulation() {
     wsClient.send({ type: "list_scenarios" });
   }, []);
 
+  const listSimulationSkills = useCallback(() => {
+    wsClient.send({ type: "list_simulation_skills" });
+  }, []);
+
   const startSimulation = useCallback(
     (scenarioName: string, personaNames: string[], rounds?: number, mode?: string) => {
       // 清除旧模拟状态，确保新模拟的事件不被 simId 过滤掉
@@ -486,8 +500,10 @@ export function useSimulation() {
     // Lists
     personas,
     scenarios,
+    simulationSkills,
     listPersonas,
     listScenarios,
+    listSimulationSkills,
 
     // Simulation state
     simId,

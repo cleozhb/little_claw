@@ -358,6 +358,8 @@ export class GatewayServer {
         return this.handleListPersonas(connectionId);
       case "list_scenarios":
         return this.handleListScenarios(connectionId);
+      case "list_simulation_skills":
+        return this.handleListSimulationSkills(connectionId);
       case "start_simulation":
         return this.handleStartSimulation(connectionId, msg.scenarioName, msg.personaNames, msg.rounds, msg.mode);
       case "sim_inject":
@@ -830,6 +832,17 @@ export class GatewayServer {
     this.sendToConnection(connectionId, {
       type: "scenarios_list",
       scenarios: this.simulationManager.listScenarios(),
+    });
+  }
+
+  private handleListSimulationSkills(connectionId: string): void {
+    if (!this.simulationManager) {
+      this.sendToConnection(connectionId, { type: "simulation_skills_list", skills: [] });
+      return;
+    }
+    this.sendToConnection(connectionId, {
+      type: "simulation_skills_list",
+      skills: this.simulationManager.listLoadedSkills(),
     });
   }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Sparkles, Loader2, FileText } from "lucide-react";
+import { Sparkles, Loader2, FileText, Puzzle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,6 +11,10 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogFooter, DialogClose,
 } from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import type { SimSkillInfo } from "@/hooks/useSimulation";
 
 // ---- Templates ----
 
@@ -185,6 +189,8 @@ interface PersonaCreatorProps {
   /** Pre-fill for editing an existing persona */
   editName?: string;
   editContent?: string;
+  /** Available skills for the skill dropdown */
+  simulationSkills?: SimSkillInfo[];
 }
 
 export function PersonaCreator({
@@ -197,10 +203,12 @@ export function PersonaCreator({
   onClearGenerated,
   editName,
   editContent,
+  simulationSkills,
 }: PersonaCreatorProps) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [emoji, setEmoji] = useState("🤖");
+  const [skill, setSkill] = useState("");
   const [body, setBody] = useState("");
   const [aiPrompt, setAiPrompt] = useState("");
 
@@ -217,14 +225,17 @@ export function PersonaCreator({
           const nameMatch = fm.match(/^name:\s*(.+)$/m);
           const roleMatch = fm.match(/^role:\s*(.+)$/m);
           const emojiMatch = fm.match(/^emoji:\s*(.+)$/m);
+          const skillMatch = fm.match(/^skill:\s*(.+)$/m);
           if (nameMatch) setName(nameMatch[1].trim());
           if (roleMatch) setRole(roleMatch[1].trim());
           if (emojiMatch) setEmoji(emojiMatch[1].trim());
+          setSkill(skillMatch ? skillMatch[1].trim() : "");
         }
       } else {
         setName("");
         setRole("");
         setEmoji("🤖");
+        setSkill("");
         setBody("");
       }
       setAiPrompt("");
@@ -261,20 +272,36 @@ export function PersonaCreator({
   };
 
   const buildContent = (): string => {
-    // If body already has frontmatter, update the name/role/emoji in it
+    // If body already has frontmatter, update the name/role/emoji/skill in it
     if (body.startsWith("---")) {
       let updated = body;
       updated = updated.replace(/^(name:\s*).*$/m, `$1${name}`);
       updated = updated.replace(/^(role:\s*).*$/m, `$1${role}`);
       updated = updated.replace(/^(emoji:\s*).*$/m, `$1${emoji}`);
+      // Update or add/remove skill field
+      if (updated.match(/^skill:\s*.*$/m)) {
+        if (skill) {
+          updated = updated.replace(/^(skill:\s*).*$/m, `$1${skill}`);
+        } else {
+          // Remove the skill line if cleared
+          updated = updated.replace(/^skill:\s*.*\n?/m, "");
+        }
+      } else if (skill) {
+        // Insert skill field before the closing --- (second occurrence)
+        const closingIdx = updated.indexOf("\n---", 3);
+        if (closingIdx !== -1) {
+          updated = updated.slice(0, closingIdx) + `\nskill: ${skill}` + updated.slice(closingIdx);
+        }
+      }
       return updated;
     }
     // Otherwise, prepend frontmatter
+    const skillLine = skill ? `\nskill: ${skill}` : "";
     return `---
 name: ${name}
 role: ${role}
 emoji: ${emoji}
-tags: []
+tags: []${skillLine}
 ---
 
 ${body}`;
@@ -333,6 +360,34 @@ ${body}`;
               />
             </div>
           </div>
+
+          {/* Skill selector */}
+          {simulationSkills && simulationSkills.length > 0 && (
+            <div>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                <Puzzle className="h-3 w-3" />
+                关联 Skill (可选)
+              </label>
+              <Select value={skill || "__none__"} onValueChange={(v) => setSkill(v === "__none__" ? "" : v)}>
+                <SelectTrigger className="mt-1 h-8 text-xs w-full">
+                  <SelectValue placeholder="不关联 Skill" />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectItem value="__none__" className="text-xs">
+                    <span className="text-muted-foreground">不关联 Skill</span>
+                  </SelectItem>
+                  {simulationSkills.map((s) => (
+                    <SelectItem key={s.name} value={s.name} className="text-xs">
+                      <div>
+                        <div className="font-medium">{s.name}</div>
+                        <div className="text-[10px] text-muted-foreground">{s.description}</div>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {/* Templates */}
           <div>

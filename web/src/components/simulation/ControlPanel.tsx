@@ -15,12 +15,13 @@ import {
 } from "@/components/ui/select";
 import { PersonaCreator } from "./PersonaCreator";
 import { ScenarioCreator } from "./ScenarioCreator";
-import type { PersonaInfo, PersonaState, ScenarioInfo, SimStatus } from "@/hooks/useSimulation";
+import type { PersonaInfo, PersonaState, ScenarioInfo, SimSkillInfo, SimStatus } from "@/hooks/useSimulation";
 
 interface ControlPanelProps {
   // Lists
   personas: PersonaInfo[];
   scenarios: ScenarioInfo[];
+  simulationSkills: SimSkillInfo[];
   // Simulation state
   simStatus: SimStatus;
   scenarioName: string;
@@ -123,6 +124,7 @@ function PersonaItem({
 export function ControlPanel({
   personas,
   scenarios,
+  simulationSkills,
   simStatus,
   scenarioName,
   scenarioMode,
@@ -764,6 +766,7 @@ export function ControlPanel({
         onClearGenerated={onClearGenerated}
         editName={editPersonaName}
         editContent={editPersonaContent}
+        simulationSkills={simulationSkills}
       />
       <ScenarioCreator
         open={scenarioCreatorOpen}

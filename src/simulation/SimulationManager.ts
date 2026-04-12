@@ -1,5 +1,6 @@
 import type { LLMProvider } from "../llm/types";
 import type { ToolRegistry } from "../tools/ToolRegistry";
+import type { SkillManager } from "../skills/SkillManager";
 import type { SimulationEvent, SimulationMode } from "./types";
 import { PersonaManager } from "./Persona";
 import { ScenarioManager } from "./Scenario";
@@ -9,6 +10,7 @@ import { installTemplatesIfEmpty } from "./TemplateInstaller";
 export interface SimulationManagerOptions {
   llmProvider: LLMProvider;
   toolRegistry?: ToolRegistry;
+  skillManager?: SkillManager;
 }
 
 export interface ActiveSimulation {
@@ -26,6 +28,7 @@ export interface ActiveSimulation {
 export class SimulationManager {
   private llmProvider: LLMProvider;
   private toolRegistry?: ToolRegistry;
+  private skillManager?: SkillManager;
   private personaManager: PersonaManager;
   private scenarioManager: ScenarioManager;
   private active: ActiveSimulation | null = null;
@@ -33,6 +36,7 @@ export class SimulationManager {
   constructor(options: SimulationManagerOptions) {
     this.llmProvider = options.llmProvider;
     this.toolRegistry = options.toolRegistry;
+    this.skillManager = options.skillManager;
     this.personaManager = new PersonaManager();
     this.scenarioManager = new ScenarioManager();
   }
@@ -102,6 +106,15 @@ export class SimulationManager {
     return this.llmProvider;
   }
 
+  /** 获取已加载的 Skill 列表（name + description），供 Persona 编辑器的下拉选择器 */
+  listLoadedSkills(): Array<{ name: string; description: string }> {
+    if (!this.skillManager) return [];
+    return this.skillManager.getLoadedSkills().map((s) => ({
+      name: s.name,
+      description: s.description,
+    }));
+  }
+
   // ----------------------------------------------------------
   // Simulation 生命周期
   // ----------------------------------------------------------
@@ -160,6 +173,7 @@ export class SimulationManager {
       personas,
       this.llmProvider,
       this.toolRegistry,
+      this.skillManager,
     );
 
     const simId = `sim_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;

@@ -5,6 +5,8 @@ export interface PersonaFrontmatter {
   role: string;
   emoji: string;
   tags: string[];
+  /** 关联的 Skill 名称（对应 ~/.little_claw/skills/<skill>/SKILL.md） */
+  skill?: string;
 }
 
 export interface ParsedPersona {
@@ -14,6 +16,8 @@ export interface ParsedPersona {
   tags: string[];
   /** 该 Persona 可用的工具名列表（如 ["read_file", "write_file", "shell"]），为空表示纯对话 */
   tools: string[];
+  /** 关联的 Skill 名称（对应 ~/.little_claw/skills/<skill>/SKILL.md） */
+  skill?: string;
   /** Markdown body（Identity, Values, Knowledge, Behavioral tendencies, Communication style 等章节） */
   body: string;
   /** 原始 .md 文件完整内容（含 frontmatter），用于编辑回显 */

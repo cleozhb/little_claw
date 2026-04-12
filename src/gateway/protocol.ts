@@ -150,6 +150,10 @@ export interface ListScenariosMessage {
   type: "list_scenarios";
 }
 
+export interface ListSimulationSkillsMessage {
+  type: "list_simulation_skills";
+}
+
 export interface StartSimulationMessage {
   type: "start_simulation";
   scenarioName: string;
@@ -246,6 +250,7 @@ export type ClientMessage =
   | MatchSkillsMessage
   | ListPersonasMessage
   | ListScenariosMessage
+  | ListSimulationSkillsMessage
   | StartSimulationMessage
   | SimInjectMessage
   | SimPauseMessage
@@ -510,6 +515,11 @@ export interface ScenariosListMessage {
   scenarios: Array<{ name: string; description: string; mode: string; content: string }>;
 }
 
+export interface SimulationSkillsListMessage {
+  type: "simulation_skills_list";
+  skills: Array<{ name: string; description: string }>;
+}
+
 /** Server → Client: 透传 SimulationEvent，加上 simId 字段 */
 export interface SimulationEventMessage {
   type: "simulation_event";
@@ -598,6 +608,7 @@ export type ServerMessage =
   | SkillsMatchResultMessage
   | PersonasListMessage
   | ScenariosListMessage
+  | SimulationSkillsListMessage
   | SimulationEventMessage
   | PersonaUpdatedMessage
   | ScenarioUpdatedMessage
@@ -631,6 +642,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "match_skills",
   "list_personas",
   "list_scenarios",
+  "list_simulation_skills",
   "start_simulation",
   "sim_inject",
   "sim_pause",
@@ -739,6 +751,8 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "list_personas":
       break;
     case "list_scenarios":
+      break;
+    case "list_simulation_skills":
       break;
     case "start_simulation":
       requireString(msg, "scenarioName");

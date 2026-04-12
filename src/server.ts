@@ -174,6 +174,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const simulationManager = new SimulationManager({
     llmProvider,
     toolRegistry,
+    skillManager,
   });
   await simulationManager.initialize();
 

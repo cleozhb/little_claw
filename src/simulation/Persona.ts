@@ -88,6 +88,7 @@ export class PersonaLoader {
     const emoji = typeof parsed["emoji"] === "string" ? parsed["emoji"] : "";
     const tags = toStringArray(parsed["tags"]);
     const tools = toStringArray(parsed["tools"]);
+    const skill = typeof parsed["skill"] === "string" ? parsed["skill"] : undefined;
 
     return {
       name,
@@ -95,6 +96,7 @@ export class PersonaLoader {
       emoji,
       tags,
       tools,
+      skill,
       body,
       rawContent: content,
       sourcePath: absolutePath,

@@ -21,13 +21,14 @@ export function SimulationView({ onBackToChat }: SimulationViewProps) {
   const entryRefMap = useRef<Map<string, HTMLDivElement>>(new Map());
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
 
-  // Fetch personas and scenarios when connected
+  // Fetch personas, scenarios, and skills when connected
   useEffect(() => {
     if (connectionStatus === "connected") {
       sim.listPersonas();
       sim.listScenarios();
+      sim.listSimulationSkills();
     }
-  }, [connectionStatus, sim.listPersonas, sim.listScenarios]);
+  }, [connectionStatus, sim.listPersonas, sim.listScenarios, sim.listSimulationSkills]);
 
   // Handle argument card click -> scroll to first mention in transcript
   const handleArgumentClick = useCallback(
@@ -96,6 +97,7 @@ export function SimulationView({ onBackToChat }: SimulationViewProps) {
         <ControlPanel
           personas={sim.personas}
           scenarios={sim.scenarios}
+          simulationSkills={sim.simulationSkills}
           simStatus={sim.simStatus}
           scenarioName={sim.scenarioName}
           scenarioMode={sim.scenarioMode}

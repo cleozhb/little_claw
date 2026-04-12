@@ -164,6 +164,7 @@ export type ClientMessage =
   | InjectMessage
   | ListPersonasMessage
   | ListScenariosMessage
+  | ListSimulationSkillsMessage
   | StartSimulationMessage
   | SimInjectMessage
   | SimPauseMessage
@@ -424,6 +425,10 @@ export interface ListScenariosMessage {
   type: "list_scenarios";
 }
 
+export interface ListSimulationSkillsMessage {
+  type: "list_simulation_skills";
+}
+
 export interface StartSimulationMessage {
   type: "start_simulation";
   scenarioName: string;
@@ -497,6 +502,11 @@ export interface PersonasListMessage {
 export interface ScenariosListMessage {
   type: "scenarios_list";
   scenarios: Array<{ name: string; description: string; mode: string; personas?: { required: string[]; optional: string[]; max?: number }; content: string }>;
+}
+
+export interface SimulationSkillsListMessage {
+  type: "simulation_skills_list";
+  skills: Array<{ name: string; description: string }>;
 }
 
 export interface SimulationEventMessage {
@@ -574,6 +584,7 @@ export type ServerMessage =
   | InjectedMessage
   | PersonasListMessage
   | ScenariosListMessage
+  | SimulationSkillsListMessage
   | SimulationEventMessage
   | PersonaUpdatedMessage
   | ScenarioUpdatedMessage
