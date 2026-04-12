@@ -4,11 +4,13 @@ import type { Tool } from "../tools/types";
 import type {
   ParsedPersona,
   ParsedScenario,
+  ResponseStyle,
   SimulationEvent,
 } from "./types";
 import type { Message } from "../types/message";
 import { ArgumentExtractor } from "./ArgumentExtractor";
 import { createPersonaSandboxTools } from "./SandboxTools";
+import { SpeakerSelector } from "./SpeakerSelector";
 import { mkdir } from "node:fs/promises";
 import { createLogger } from "../utils/logger";
 
@@ -21,6 +23,75 @@ type RoundAction =
 
 const THINKING_RE = /\[THINKING\]([\s\S]*?)\[\/THINKING\]/g;
 const TRANSCRIPT_SUMMARY_THRESHOLD = 4000;
+
+// --- Response Style Rules ---
+
+const RESPONSE_STYLE_RULES: Record<ResponseStyle, string> = {
+  conversational: `--- RESPONSE RULES ---
+Keep your response SHORT and conversational:
+- 2 to 4 sentences for a normal response
+- 6 sentences maximum, only when making a complex argument
+- Do NOT write essays, lists, or structured analysis
+- Speak like you're in a real room talking to real people
+- It's okay to be brief — you'll get more turns to speak
+- React to the last 1-2 speakers, don't try to address everyone at once`,
+  formal: `--- RESPONSE RULES ---
+Keep your response focused and structured:
+- 4 to 6 sentences, structured arguments welcome
+- You may use brief lists or numbered points when clarifying a position
+- Maintain a professional, deliberative tone
+- Address specific arguments from other participants
+- It's okay to be thorough — but stay on point`,
+  rapid: `--- RESPONSE RULES ---
+Keep your response VERY short:
+- 1 to 2 sentences maximum, quick gut reactions, fragments okay
+- React instantly — don't overthink
+- One idea per turn, no elaboration
+- You'll get plenty of turns to add more`,
+};
+
+// --- Simulation Rules ---
+
+type ResponseTag = "ACT" | "SKIP" | "DONE";
+
+/**
+ * 构建追加到每个 Agent prompt 末尾的标准 SIMULATION RULES 文本。
+ * 如果 scenario 设了 completion_hint，则包含在规则中。
+ * responseStyle 控制发言长度约束，默认 conversational。
+ */
+function buildSimulationRules(completionHint?: string, responseStyle?: ResponseStyle): string {
+  const style = responseStyle ?? "conversational";
+  let rules = RESPONSE_STYLE_RULES[style];
+
+  rules += `\n\n--- SIMULATION RULES ---
+After reviewing the situation, choose ONE of these actions:
+
+[ACT] — You have work to do. Do it now (write files, run commands, share your analysis, state your argument).
+[SKIP] — You're waiting for someone else's output, or there's nothing for you to do yet. Briefly say what you're waiting for.
+[DONE] — Your part is fully complete. You have nothing more to contribute.`;
+
+  if (completionHint) {
+    rules += `\n\n${completionHint}`;
+  }
+
+  rules += `\n\nStart your response with one of these tags, then proceed with your response.`;
+  return rules;
+}
+
+/**
+ * 从 Agent 响应开头解析 [ACT] / [SKIP] / [DONE] 标记。
+ * 没有标记时默认当作 [ACT]（兼容纯对话场景）。
+ */
+function parseResponseTag(text: string): { tag: ResponseTag; body: string } {
+  const trimmed = text.trimStart();
+  const tagMatch = trimmed.match(/^\[(ACT|SKIP|DONE)\]\s*/i);
+  if (tagMatch) {
+    const tag = tagMatch[1]!.toUpperCase() as ResponseTag;
+    const body = trimmed.slice(tagMatch[0].length);
+    return { tag, body };
+  }
+  return { tag: "ACT", body: text };
+}
 
 // --- Streaming thinking filter ---
 
@@ -253,7 +324,7 @@ async function summarizeTranscript(
 ): Promise<string> {
   return llmChat(
     llmProvider,
-    "You are a concise summarizer. Summarize the key points of this discussion in under 2000 characters, preserving each speaker's main positions.",
+    "You are a concise summarizer. Summarize the key points of this discussion in under 2000 characters. You MUST preserve:\n- Each speaker's main positions and arguments\n- All concrete ACTIONS taken (files created/modified, commands run, code written) — include file paths and what was done\n- Current project state and what has been completed vs what remains\nDo NOT omit action details — they are critical for participants to avoid redoing work.",
     `Summarize this discussion transcript:\n\n${transcript}`,
   );
 }
@@ -372,6 +443,15 @@ export class SimulationRunner {
   /** 下一轮只执行这些 persona（为空表示全部执行） */
   private nextRoundTargetPersonas: ParsedPersona[] = [];
 
+  /** 已标记 [DONE] 的 persona 名字集合，后续轮次不再调用 */
+  private donePersonas = new Set<string>();
+
+  /** 每个 persona 的行动日志，用于保持跨轮次的行动记忆 */
+  private personaActionLogs = new Map<string, string[]>();
+
+  /** Free 模式：动态发言人选择器 */
+  private speakerSelector = new SpeakerSelector();
+
   constructor(
     scenario: ParsedScenario,
     personas: ParsedPersona[],
@@ -410,6 +490,11 @@ export class SimulationRunner {
     this.stopped = true;
     // 如果暂停中，也要唤醒以便结束
     this.resume();
+    // 如果在等待用户操作，也要唤醒以便结束
+    if (this.roundWaitResolve) {
+      this.roundWaitResolve({ type: "end" });
+      this.roundWaitResolve = null;
+    }
   }
 
   /** 直接开始下一轮 */
@@ -430,6 +515,10 @@ export class SimulationRunner {
 
   /** 结束模拟 */
   endSimulation(): void {
+    this.stopped = true;
+    // 如果暂停中，也要唤醒以便结束
+    this.resume();
+    // 如果在等待用户操作，也要唤醒以便结束
     if (this.roundWaitResolve) {
       this.roundWaitResolve({ type: "end" });
       this.roundWaitResolve = null;
@@ -511,12 +600,25 @@ export class SimulationRunner {
       // 处理注入
       this.drainInjections();
 
-      yield* this.executeParallelRound(round);
+      const roundTags = yield* this.executeParallelRound(round);
 
       // 提取论点
       yield* this.extractAndYieldArguments();
 
       yield { type: "round_end", simId: this.simId, round };
+
+      const maxRounds = this.scenario.rounds;
+      const withinRounds = maxRounds != null && round < maxRounds;
+
+      // 自动结束检测：如果所有未 DONE 的 Agent 都返回了 SKIP 或 DONE，自动结束
+      // 但在配置的 rounds 轮数结束之前不自动结束
+      if (!withinRounds && roundTags.length > 0 && roundTags.every((t) => t === "SKIP" || t === "DONE")) {
+        log.step(`[Parallel] All agents returned SKIP or DONE at round ${round}, auto-ending`);
+        return;
+      }
+
+      // 在配置的 rounds 轮数结束之前自动继续，不等待用户
+      if (withinRounds) continue;
 
       // 等待外部指令
       const action = yield* this.waitForRoundAction(round);
@@ -531,11 +633,14 @@ export class SimulationRunner {
    * 执行一轮 parallel 模式：所有 persona 并行发言，交错流式输出。
    * 同时启动所有 persona 的 LLM 调用，通过异步队列收集事件后 yield。
    * 如果 persona 配了 tools，使用 ReAct 循环执行工具调用。
+   * 返回本轮各 persona 的响应标记，用于自动结束检测。
    */
   private async *executeParallelRound(
     _round: number,
-  ): AsyncGenerator<SimulationEvent> {
-    const prompt = this.scenario.parallelPrompt || this.scenario.roundtablePrompt;
+  ): AsyncGenerator<SimulationEvent, ResponseTag[]> {
+    const scenarioPrompt = this.scenario.parallelPrompt || this.scenario.roundtablePrompt;
+    const simulationRules = buildSimulationRules(this.scenario.completionHint, this.scenario.responseStyle);
+    const prompt = scenarioPrompt + `\n\n${simulationRules}`;
     const activePersonas = this.getPersonasForRound();
 
     // 先为所有 persona 发出 persona_start，前端同时创建多个 streaming entry
@@ -584,7 +689,13 @@ export class SimulationRunner {
               description: t.description,
               parameters: t.parameters,
             }));
-            const toolUserMessage = prompt + `\n\nYou have tools available to take real actions (read files, write files, run commands). Use them to accomplish your goals. After taking actions, provide a brief public summary of what you did.`;
+            // 注入历史行动日志
+            const priorActions = this.personaActionLogs.get(persona.name) ?? [];
+            let toolUserMessage = prompt;
+            if (priorActions.length > 0) {
+              toolUserMessage += `\n\n--- YOUR PREVIOUS ACTIONS (do NOT redo these) ---\n${priorActions.join("\n")}\n--- END PREVIOUS ACTIONS ---`;
+            }
+            toolUserMessage += `\n\nYou have tools available to take real actions (read files, write files, run commands). Use them to accomplish your goals. After taking actions, provide a brief public summary of what you did.`;
             const messages: Message[] = [{ role: "user", content: toolUserMessage }];
             const actionSummaries: string[] = [];
             let finalPublicText = "";
@@ -718,18 +829,42 @@ export class SimulationRunner {
       }
     }
 
-    // 写入 transcript
+    // 写入 transcript，解析响应标记，累积 action log
+    const roundTags: ResponseTag[] = [];
     for (const persona of activePersonas) {
       const result = personaResults.get(persona.name);
-      if (result && result.publicText) {
+      if (!result) continue;
+
+      // 累积行动日志
+      if (result.actionSummaries.length > 0) {
+        const existing = this.personaActionLogs.get(persona.name) ?? [];
+        this.personaActionLogs.set(persona.name, [...existing, ...result.actionSummaries]);
+      }
+
+      const { tag, body: publicBody } = parseResponseTag(result.publicText);
+      roundTags.push(tag);
+
+      if (tag === "SKIP") {
+        this.transcript += `\n\n[${persona.name}] Skipped — ${publicBody}`;
+      } else if (tag === "DONE") {
+        this.donePersonas.add(persona.name);
         if (result.actionSummaries.length > 0) {
           const allActions = result.actionSummaries.join("\n");
           this.transcript += `\n\n${persona.emoji} **${persona.name}**:\n${allActions}`;
         } else {
           this.transcript += `\n\n${persona.emoji} **${persona.name}**: ${result.publicText}`;
         }
+      } else {
+        if (result.actionSummaries.length > 0) {
+          const allActions = result.actionSummaries.join("\n");
+          this.transcript += `\n\n${persona.emoji} **${persona.name}**:\n${allActions}`;
+        } else if (result.publicText) {
+          this.transcript += `\n\n${persona.emoji} **${persona.name}**: ${result.publicText}`;
+        }
       }
     }
+
+    return roundTags;
   }
 
   // ----------------------------------------------------------
@@ -753,12 +888,25 @@ export class SimulationRunner {
       // 处理注入
       this.drainInjections();
 
-      yield* this.executeRoundtableRound(round);
+      const roundTags = yield* this.executeRoundtableRound(round);
 
       // 提取论点
       yield* this.extractAndYieldArguments();
 
       yield { type: "round_end", simId: this.simId, round };
+
+      const maxRounds = this.scenario.rounds;
+      const withinRounds = maxRounds != null && round < maxRounds;
+
+      // 自动结束检测：如果所有未 DONE 的 Agent 都返回了 SKIP 或 DONE，自动结束
+      // 但在配置的 rounds 轮数结束之前不自动结束
+      if (!withinRounds && roundTags.length > 0 && roundTags.every((t) => t === "SKIP" || t === "DONE")) {
+        log.step(`[Roundtable] All agents returned SKIP or DONE at round ${round}, auto-ending`);
+        return;
+      }
+
+      // 在配置的 rounds 轮数结束之前自动继续，不等待用户
+      if (withinRounds) continue;
 
       // 等待外部指令
       const action = yield* this.waitForRoundAction(round);
@@ -772,15 +920,21 @@ export class SimulationRunner {
   /**
    * 执行一轮 roundtable：每个 persona 顺序发言，能看到之前所有人的发言。
    * 如果 persona 配了 tools，使用 ReAct 循环执行工具调用。
+   * 返回本轮各 persona 的响应标记，用于自动结束检测。
    */
   private async *executeRoundtableRound(
-    _round: number,
-  ): AsyncGenerator<SimulationEvent> {
-    const prompt = this.scenario.roundtablePrompt || this.scenario.parallelPrompt;
+    round: number,
+  ): AsyncGenerator<SimulationEvent, ResponseTag[]> {
+    // 第一轮使用 parallelPrompt（开场/初始反应），后续轮使用 roundtablePrompt（互动讨论）
+    const scenarioPrompt = round === 1
+      ? (this.scenario.parallelPrompt || this.scenario.roundtablePrompt)
+      : (this.scenario.roundtablePrompt || this.scenario.parallelPrompt);
+    const simulationRules = buildSimulationRules(this.scenario.completionHint, this.scenario.responseStyle);
     const activePersonas = this.getPersonasForRound();
+    const roundTags: ResponseTag[] = [];
 
     for (const persona of activePersonas) {
-      if (this.stopped) return;
+      if (this.stopped) return roundTags;
       yield* this.waitForPause();
 
       yield {
@@ -799,26 +953,53 @@ export class SimulationRunner {
         );
       }
 
-      const userMessage = transcriptForContext
-        ? `Discussion so far:\n${transcriptForContext}\n\n---\n\n${prompt}`
-        : prompt;
+      // 组装 user message：transcript + scenario prompt + SIMULATION RULES
+      let userMessage = transcriptForContext
+        ? `Discussion so far:\n${transcriptForContext}\n\n---\n\n${scenarioPrompt}`
+        : scenarioPrompt;
+      userMessage += `\n\n${simulationRules}`;
 
       const tools = this.personaTools.get(persona.name);
 
       if (tools && tools.length > 0) {
         // 行动型 Persona：ReAct 循环
         log.step(`[Roundtable] Persona "${persona.name}" starting (with tools)`);
-        const toolUserMessage = userMessage + `\n\nYou have tools available to take real actions (read files, write files, run commands). Use them to accomplish your goals. After taking actions, provide a brief public summary of what you did.`;
+        const priorActions = this.personaActionLogs.get(persona.name) ?? [];
+        let toolUserMessage = userMessage;
+        if (priorActions.length > 0) {
+          toolUserMessage += `\n\n--- YOUR PREVIOUS ACTIONS (do NOT redo these) ---\n${priorActions.join("\n")}\n--- END PREVIOUS ACTIONS ---`;
+        }
+        toolUserMessage += `\n\nYou have tools available to take real actions (read files, write files, run commands). Use them to accomplish your goals. After taking actions, provide a brief public summary of what you did.`;
         const { publicText, actionSummaries } = yield* this.executePersonaWithTools(
           persona,
           toolUserMessage,
           tools,
         );
-        const allActions = actionSummaries.length > 0
+
+        // 累积行动日志
+        if (actionSummaries.length > 0) {
+          const existing = this.personaActionLogs.get(persona.name) ?? [];
+          this.personaActionLogs.set(persona.name, [...existing, ...actionSummaries]);
+        }
+
+        // 解析响应标记
+        const fullText = actionSummaries.length > 0
           ? actionSummaries.join("\n")
           : publicText;
-        const actionEntry = `${persona.emoji} **${persona.name}**:\n${allActions}`;
-        this.transcript += `\n\n${actionEntry}`;
+        const { tag } = parseResponseTag(publicText);
+        roundTags.push(tag);
+
+        if (tag === "SKIP") {
+          const skipEntry = `[${persona.name}] Skipped — ${publicText}`;
+          this.transcript += `\n\n${skipEntry}`;
+        } else if (tag === "DONE") {
+          this.donePersonas.add(persona.name);
+          const actionEntry = `${persona.emoji} **${persona.name}**:\n${fullText}`;
+          this.transcript += `\n\n${actionEntry}`;
+        } else {
+          const actionEntry = `${persona.emoji} **${persona.name}**:\n${fullText}`;
+          this.transcript += `\n\n${actionEntry}`;
+        }
       } else {
         // 纯文本 Persona：流式文本生成
         log.step(`[Roundtable] Persona "${persona.name}" starting (text-only)`, {
@@ -864,6 +1045,10 @@ export class SimulationRunner {
           };
         }
 
+        // 解析响应标记
+        const { tag, body: publicBody } = parseResponseTag(fullPublicText.trim());
+        roundTags.push(tag);
+
         yield {
           type: "persona_done",
           simId: this.simId,
@@ -871,9 +1056,18 @@ export class SimulationRunner {
           fullResponse: fullPublicText.trim(),
         };
 
-        this.transcript += `\n\n${persona.emoji} **${persona.name}**: ${fullPublicText.trim()}`;
+        if (tag === "SKIP") {
+          this.transcript += `\n\n[${persona.name}] Skipped — ${publicBody}`;
+        } else if (tag === "DONE") {
+          this.donePersonas.add(persona.name);
+          this.transcript += `\n\n${persona.emoji} **${persona.name}**: ${fullPublicText.trim()}`;
+        } else {
+          this.transcript += `\n\n${persona.emoji} **${persona.name}**: ${fullPublicText.trim()}`;
+        }
       }
     }
+
+    return roundTags;
   }
 
   // ----------------------------------------------------------
@@ -890,15 +1084,27 @@ export class SimulationRunner {
     };
 
     this.drainInjections();
-    yield* this.executeParallelRound(1);
+    const roundTags = yield* this.executeParallelRound(1);
     yield* this.extractAndYieldArguments();
     yield { type: "round_end", simId: this.simId, round: 1 };
 
-    // 等待外部指令
-    const action = yield* this.waitForRoundAction(1);
-    if (action.type === "end") return;
-    if (action.type === "speak") {
-      yield* this.handleUserSpeak(action.message);
+    const maxRounds = this.scenario.rounds;
+    const withinRounds = maxRounds != null && 1 < maxRounds;
+
+    // 自动结束检测（rounds 轮数内不自动结束）
+    if (!withinRounds && roundTags.length > 0 && roundTags.every((t) => t === "SKIP" || t === "DONE")) {
+      log.step(`[ParallelThenRoundtable] All agents returned SKIP or DONE at round 1, auto-ending`);
+      return;
+    }
+
+    // rounds 轮数内自动继续
+    if (!withinRounds) {
+      // 等待外部指令
+      const action = yield* this.waitForRoundAction(1);
+      if (action.type === "end") return;
+      if (action.type === "speak") {
+        yield* this.handleUserSpeak(action.message);
+      }
     }
 
     // 第 2 轮开始：Roundtable
@@ -943,121 +1149,241 @@ export class SimulationRunner {
   }
 
   private async *runFreeMode(): AsyncGenerator<SimulationEvent> {
-    // 初始 worldState 为 scenario 的 Environment 描述
-    let worldState = this.extractEnvironment(this.scenario.body);
-    await this.writeWorldState(worldState);
+    const simulationRules = buildSimulationRules(this.scenario.completionHint, this.scenario.responseStyle);
+    const scenarioPrompt = this.scenario.roundtablePrompt || this.scenario.parallelPrompt;
 
-    for (let round = 1; ; round++) {
+    // 初始化 SpeakerSelector
+    this.speakerSelector.init(this.personas);
+
+    // 初始发言人：kickoff_agent 或 personas[0]
+    let currentSpeaker: ParsedPersona = this.personas[0]!;
+    let step = 0;
+
+    this.drainInjections();
+
+    while (true) {
       if (this.stopped) return;
       yield* this.waitForPause();
 
+      step++;
+
+      // 每步发出 round_start，让前端更新轮数显示
       yield {
         type: "round_start",
         simId: this.simId,
-        round,
+        round: step,
         mode: "free",
       };
 
-      this.drainInjections();
+      // --- 执行当前发言人（带容错）---
+      let tag: ResponseTag;
 
-      // 本轮行动记录（包含 tool 操作摘要，供其他 persona 可见）
-      const roundActions: string[] = [];
-      const activePersonas = this.getPersonasForRound();
-
-      for (const persona of activePersonas) {
-        if (this.stopped) return;
-        yield* this.waitForPause();
-
+      try {
         yield {
           type: "persona_start",
           simId: this.simId,
-          persona: persona.name,
-          emoji: persona.emoji,
+          persona: currentSpeaker.name,
+          emoji: currentSpeaker.emoji,
         };
 
-        const tools = this.personaTools.get(persona.name);
+        // 如果 transcript 太长，摘要压缩
+        let transcriptForContext = this.transcript;
+        if (transcriptForContext.length > TRANSCRIPT_SUMMARY_THRESHOLD) {
+          transcriptForContext = await summarizeTranscript(
+            this.llmProvider,
+            transcriptForContext,
+          );
+        }
+
+        let userMessage = transcriptForContext
+          ? `Discussion so far:\n${transcriptForContext}\n\n---\n\n${scenarioPrompt}`
+          : scenarioPrompt;
+        userMessage += `\n\n${simulationRules}`;
+
+        const tools = this.personaTools.get(currentSpeaker.name);
 
         if (tools && tools.length > 0) {
-          // 行动型 Persona：使用 ReAct 循环执行工具调用
-          const actionsContext = roundActions.length > 0
-            ? roundActions.join("\n")
-            : "No actions yet this round.";
-          const userMessage =
-            `Current world state:\n${worldState}\n\nActions by others this round:\n${actionsContext}\n\nBased on the current situation and your character, decide what to do. You have tools available to take real actions (read files, write files, run commands). Use them to accomplish your goals. After taking actions, provide a brief public summary of what you did.`;
+          // 行动型 Persona：注入历史行动日志
+          const priorActions = this.personaActionLogs.get(currentSpeaker.name) ?? [];
+          let toolUserMessage = userMessage;
+          if (priorActions.length > 0) {
+            toolUserMessage += `\n\n--- YOUR PREVIOUS ACTIONS (do NOT redo these) ---\n${priorActions.join("\n")}\n--- END PREVIOUS ACTIONS ---`;
+          }
+          toolUserMessage += `\n\nYou have tools available to take real actions (read files, write files, run commands). Use them to accomplish your goals. After taking actions, provide a brief public summary of what you did.`;
 
           const { publicText, actionSummaries } = yield* this.executePersonaWithTools(
-            persona,
-            userMessage,
+            currentSpeaker,
+            toolUserMessage,
             tools,
           );
-          const allActions = actionSummaries.length > 0
+
+          // 累积行动日志
+          if (actionSummaries.length > 0) {
+            const existing = this.personaActionLogs.get(currentSpeaker.name) ?? [];
+            this.personaActionLogs.set(currentSpeaker.name, [...existing, ...actionSummaries]);
+          }
+
+          const fullText = actionSummaries.length > 0
             ? actionSummaries.join("\n")
             : publicText;
-          const actionEntry = `${persona.emoji} ${persona.name}:\n${allActions}`;
-          roundActions.push(actionEntry);
-          this.transcript += `\n\n${actionEntry}`;
+          const parsed = parseResponseTag(publicText);
+          tag = parsed.tag;
+
+          if (tag === "SKIP") {
+            this.transcript += `\n\n[${currentSpeaker.name}] Skipped — ${publicText}`;
+          } else {
+            this.transcript += `\n\n${currentSpeaker.emoji} **${currentSpeaker.name}**:\n${fullText}`;
+          }
+          if (tag === "DONE") {
+            this.donePersonas.add(currentSpeaker.name);
+          }
         } else {
-          // 纯对话 Persona：保持原有行为
-          yield* this.executePersonaTextOnly(
-            persona,
-            worldState,
-            roundActions,
+          // 纯文本 Persona：流式文本生成（复用 roundtable 的流式路径）
+          const systemPrompt = buildPersonaSystemPrompt(
+            currentSpeaker,
+            this.scenario.body,
+            this.scenario.language,
           );
+
+          const rawStream = llmChatStreaming(
+            this.llmProvider,
+            systemPrompt,
+            userMessage,
+          );
+          const filteredStream = streamWithThinkingFilter(rawStream);
+
+          let fullPublicText = "";
+          let fullThinking = "";
+
+          for await (const event of filteredStream) {
+            if (event.type === "public_delta") {
+              fullPublicText += event.text;
+              yield {
+                type: "persona_text_delta",
+                simId: this.simId,
+                persona: currentSpeaker.name,
+                text: event.text,
+              };
+            } else if (event.type === "thinking") {
+              fullThinking += event.text;
+            }
+          }
+
+          if (fullThinking) {
+            yield {
+              type: "persona_thinking",
+              simId: this.simId,
+              persona: currentSpeaker.name,
+              thinking: fullThinking.trim(),
+            };
+          }
+
+          const parsed = parseResponseTag(fullPublicText.trim());
+          tag = parsed.tag;
+
+          yield {
+            type: "persona_done",
+            simId: this.simId,
+            persona: currentSpeaker.name,
+            fullResponse: fullPublicText.trim(),
+          };
+
+          if (tag === "SKIP") {
+            this.transcript += `\n\n[${currentSpeaker.name}] Skipped — ${parsed.body}`;
+          } else {
+            this.transcript += `\n\n${currentSpeaker.emoji} **${currentSpeaker.name}**: ${fullPublicText.trim()}`;
+          }
+          if (tag === "DONE") {
+            this.donePersonas.add(currentSpeaker.name);
+          }
+        }
+      } catch (err) {
+        // LLM 超时或网络错误：标记为 SKIP，记录错误，继续模拟
+        const errMsg = err instanceof Error ? err.message : String(err);
+        log.warn(`[Free] Persona "${currentSpeaker.name}" failed, skipping`, errMsg);
+        tag = "SKIP";
+        const skipEntry = `[${currentSpeaker.name}] Skipped — (error: ${errMsg})`;
+        this.transcript += `\n\n${skipEntry}`;
+
+        yield {
+          type: "persona_done",
+          simId: this.simId,
+          persona: currentSpeaker.name,
+          fullResponse: `[SKIP] (error: ${errMsg})`,
+        };
+      }
+
+      // 记录发言
+      this.speakerSelector.recordSpoke(currentSpeaker.name);
+      const lastSpeaker = currentSpeaker.name;
+
+      // --- 检查是否所有人都 DONE ---
+      const activeCandidates = this.personas.filter((p) => !this.donePersonas.has(p.name));
+      if (activeCandidates.length === 0) {
+        log.step("[Free] All personas marked DONE, auto-ending");
+        return;
+      }
+
+      // --- 定期提取论点（每 3 步一次）---
+      if (step % 3 === 0) {
+        yield* this.extractAndYieldArguments();
+      }
+
+      // --- 轮次控制 ---
+      const maxRounds = this.scenario.rounds;
+
+      if (maxRounds != null && step < maxRounds) {
+        // 在预设轮数内，自动继续，不等待用户
+      } else {
+        // 已达到预设轮数或未设轮数，等待外部指令
+        const action = yield* this.waitForRoundAction(step);
+        if (action.type === "end") return;
+        if (action.type === "speak") {
+          yield* this.handleUserSpeak(action.message);
+          // 用户发言后，drain 注入并重新选下一个发言人
+          this.drainInjections();
         }
       }
 
-      // World LLM 更新 worldState
-      const allActionsText = roundActions.join("\n\n");
-      const previousWorldState = worldState;
-      log.step("[Free] World LLM updating world state", {
-        allActionsText,
-        previousWorldState,
-      });
-      const worldUpdatePrompt = this.scenario.worldUpdatePrompt
-        || "Update the world state based on all agents' actions this round. Be concise but comprehensive. Return ONLY the updated world state description.";
+      // --- 选择下一个发言人 ---
+      const candidates = this.personas.filter((p) => !this.donePersonas.has(p.name));
+      if (candidates.length === 0) {
+        log.step("[Free] All personas marked DONE after user interaction, auto-ending");
+        return;
+      }
 
-      worldState = await llmChat(
+      const { name: nextName, reason } = await this.speakerSelector.selectNextSpeaker(
         this.llmProvider,
-        "You are a neutral game moderator. " + worldUpdatePrompt,
-        `Current world state:\n${previousWorldState}\n\nActions this round:\n${allActionsText}\n\nProvide the updated world state.`,
+        this.transcript,
+        candidates,
+        lastSpeaker,
       );
 
-      await this.writeWorldState(worldState);
+      const nextPersona = candidates.find((p) => p.name === nextName) ?? candidates[0]!;
 
-      // 计算 changes 摘要
-      const changes = await llmChat(
-        this.llmProvider,
-        "You are a concise diff summarizer. List only the key changes between the old and new world state in 2-3 bullet points.",
-        `Old world state:\n${previousWorldState}\n\nNew world state:\n${worldState}\n\nWhat changed?`,
-      );
-
+      // yield speaker_selected 事件
       yield {
-        type: "world_state_update",
+        type: "speaker_selected",
         simId: this.simId,
-        worldState,
-        changes,
+        persona: nextPersona.name,
+        reason,
       };
 
-      yield* this.extractAndYieldArguments();
-      yield { type: "round_end", simId: this.simId, round };
-
-      // 等待外部指令
-      const action = yield* this.waitForRoundAction(round);
-      if (action.type === "end") return;
-      if (action.type === "speak") {
-        yield* this.handleUserSpeak(action.message);
-      }
+      log.step("[Free] Next speaker selected", { persona: nextPersona.name, reason });
+      currentSpeaker = nextPersona;
     }
   }
 
   /**
    * 纯文本 Persona 执行（无工具）
+   * 返回该 persona 的响应标记。
    */
   private async *executePersonaTextOnly(
     persona: ParsedPersona,
     worldState: string,
     roundActions: string[],
-  ): AsyncGenerator<SimulationEvent> {
+    simulationRules?: string,
+  ): AsyncGenerator<SimulationEvent, ResponseTag> {
     log.step(`Persona "${persona.name}" text-only execution`, {
       worldStateLength: worldState.length,
       roundActionsCount: roundActions.length,
@@ -1069,8 +1395,11 @@ export class SimulationRunner {
       ? roundActions.join("\n")
       : "No actions yet this round.";
 
-    const userMessage =
+    let userMessage =
       `Current world state:\n${worldState}\n\nActions by others this round:\n${actionsContext}\n\nBased on the current situation and your character, what do you do? Describe your action and reasoning.`;
+    if (simulationRules) {
+      userMessage += `\n\n${simulationRules}`;
+    }
 
     const fullText = await llmChat(
       this.llmProvider,
@@ -1104,9 +1433,25 @@ export class SimulationRunner {
       fullResponse: publicText,
     };
 
-    const actionEntry = `${persona.emoji} ${persona.name}: ${publicText}`;
-    roundActions.push(actionEntry);
-    this.transcript += `\n\n${actionEntry}`;
+    // 解析响应标记
+    const { tag, body: publicBody } = parseResponseTag(publicText);
+
+    if (tag === "SKIP") {
+      const skipEntry = `[${persona.name}] Skipped — ${publicBody}`;
+      roundActions.push(skipEntry);
+      this.transcript += `\n\n${skipEntry}`;
+    } else if (tag === "DONE") {
+      this.donePersonas.add(persona.name);
+      const actionEntry = `${persona.emoji} ${persona.name}: ${publicText}`;
+      roundActions.push(actionEntry);
+      this.transcript += `\n\n${actionEntry}`;
+    } else {
+      const actionEntry = `${persona.emoji} ${persona.name}: ${publicText}`;
+      roundActions.push(actionEntry);
+      this.transcript += `\n\n${actionEntry}`;
+    }
+
+    return tag;
   }
 
   /**
@@ -1372,12 +1717,15 @@ export class SimulationRunner {
    * 调用后自动清空目标。
    */
   private getPersonasForRound(): ParsedPersona[] {
+    let candidates: ParsedPersona[];
     if (this.nextRoundTargetPersonas.length > 0) {
-      const targets = this.nextRoundTargetPersonas;
+      candidates = this.nextRoundTargetPersonas;
       this.nextRoundTargetPersonas = [];
-      return targets;
+    } else {
+      candidates = this.personas;
     }
-    return this.personas;
+    // 过滤掉已标记 [DONE] 的 persona
+    return candidates.filter((p) => !this.donePersonas.has(p.name));
   }
 
   /**

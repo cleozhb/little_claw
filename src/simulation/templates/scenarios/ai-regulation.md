@@ -3,6 +3,7 @@ name: AI Regulation Response
 description: US government announces strict AI regulation. How do tech leaders respond?
 mode: parallel_then_roundtable
 rounds: 3
+response_style: formal
 language: zh-CN
 personas:
   required:
@@ -20,6 +21,13 @@ roundtable_prompt: >
   You've now seen how the other leaders responded.
   Address their points directly. Where do you agree?
   Where do you disagree? What are they missing?
+completion_hint: >
+  Say [DONE] only when ALL of these are true:
+  - You have stated your company's official position
+  - You have responded to other leaders' positions
+  - You have outlined your concrete next steps (legal, PR, product changes)
+  - The discussion has gone through at least 2 rounds
+  Do NOT say [DONE] in round 1 — initial reactions always need refinement.
 ---
 
 # Environment

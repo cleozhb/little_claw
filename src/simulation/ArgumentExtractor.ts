@@ -4,7 +4,7 @@ import type { Message } from "../types/message";
 
 // TODO 格式化输出，而不是依赖prompt
 const EXTRACT_PROMPT = (personaNames: string[]) =>
-  `Analyze this discussion transcript between ${personaNames.join(", ")}. Extract the key arguments as a JSON array. Each argument: { topic: short title, description: one sentence, supporters: [names who support], opposers: [names who oppose], consensusLevel: 0-1, status: consensus/conflict/open }. Return ONLY the JSON array, no other text.`;
+  `Analyze this discussion transcript between ${personaNames.join(", ")}. Extract the key arguments as a JSON array. Each argument: { topic: short title, description: one sentence, supporters: [names who support], opposers: [names who oppose], consensusLevel: 0-1, status: consensus/conflict/open }. IMPORTANT: The topic and description fields MUST be written in Chinese (简体中文). Return ONLY the JSON array, no other text.`;
 
 /**
  * 从讨论记录中提取论点和共识状态。

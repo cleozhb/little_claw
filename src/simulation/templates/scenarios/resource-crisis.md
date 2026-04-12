@@ -2,6 +2,7 @@
 name: Resource Crisis
 description: A community of 5 people faces severe resource shortage after a natural disaster
 mode: free
+response_style: rapid
 personas:
   required:
     - Mayor Chen
@@ -22,6 +23,15 @@ world_update_prompt: >
   - Weather gets colder each round (affects survival needs)
   - Record any trades, conflicts, or cooperation that occurred
   Write the updated state as structured markdown to shared/worldState.md
+completion_hint: >
+  Say [DONE] only when the community has achieved ALL of these:
+  - A rationing plan is agreed upon and written to shared/
+  - Water purification method is established
+  - Shelter is weatherproofed for the incoming rain
+  - A communication plan with the outside exists
+  Individual survival does not count — the GROUP must have a viable plan.
+  You may say [SKIP] if you're waiting for others to respond to your proposal.
+  Do NOT say [DONE] before round 3 — real crises take time to coordinate.
 ---
 
 # Environment

@@ -30,6 +30,8 @@ export type SimulationMode =
   | "parallel_then_roundtable"
   | "free";
 
+export type ResponseStyle = "conversational" | "formal" | "rapid";
+
 export interface ScenarioPersonas {
   /** 必选的 persona 文件名（不含 .md 后缀） */
   required: string[];
@@ -49,6 +51,8 @@ export interface ScenarioFrontmatter {
   roundtable_prompt: string;
   language: string;
   world_update_prompt?: string;
+  completion_hint?: string;
+  response_style?: ResponseStyle;
 }
 
 export interface ParsedScenario {
@@ -65,6 +69,10 @@ export interface ParsedScenario {
   language: string;
   /** 每轮结束后 World LLM 更新世界状态的 prompt（free 模式使用） */
   worldUpdatePrompt?: string;
+  /** 完成条件提示，追加到 SIMULATION RULES 末尾，指导 Agent 何时可以标记 [DONE] */
+  completionHint?: string;
+  /** 发言风格：conversational（默认）、formal、rapid */
+  responseStyle?: ResponseStyle;
   /** Markdown body（Environment, Constraints, Trigger event 等章节） */
   body: string;
   /** 原始 .md 文件完整内容（含 frontmatter），用于编辑回显 */
@@ -100,6 +108,7 @@ export type SimulationEvent =
   | UserSpokeEvent
   | ArgumentUpdateEvent
   | WorldStateUpdateEvent
+  | SpeakerSelectedEvent
   | SimEndEvent;
 
 export interface SimStartEvent {
@@ -189,6 +198,13 @@ export interface WorldStateUpdateEvent {
   simId: string;
   worldState: string;
   changes?: string;
+}
+
+export interface SpeakerSelectedEvent {
+  type: "speaker_selected";
+  simId: string;
+  persona: string;
+  reason: string;
 }
 
 export interface SimEndEvent {

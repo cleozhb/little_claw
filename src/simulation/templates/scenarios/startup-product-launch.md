@@ -1,7 +1,9 @@
 ---
 name: Startup Product Launch
 description: A 4-person startup team coordinates to ship a new feature in one day
-mode: roundtable
+mode: free
+response_style: rapid
+language: zh-CN
 personas:
   required:
     - Sarah (PM)
@@ -18,6 +20,14 @@ world_update_prompt: >
   Summarize current project state: what files exist in shared/,
   what's implemented, what's tested, what's deployed, what blockers remain.
   List each team member's latest contribution.
+completion_hint: >
+  Say [DONE] only when YOUR specific deliverable is complete:
+  - PM (Sarah): spec.md written AND all dev/QA feedback addressed
+  - Dev (Alex): code implements all spec endpoints AND passes all tests
+  - QA (Ming): all endpoints tested AND no open bugs remaining
+  - DevOps (Jordan): deployment script written AND service verified running
+  Say [SKIP] if you're waiting for someone else to finish their part first.
+  Do NOT say [DONE] if there are open bugs or failing tests.
 ---
 
 # Environment

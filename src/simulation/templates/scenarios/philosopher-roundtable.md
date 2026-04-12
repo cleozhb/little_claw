@@ -3,6 +3,7 @@ name: Philosopher's Roundtable
 description: Great thinkers debate the nature of consciousness, knowledge, and the good life.
 mode: roundtable
 rounds: 3
+response_style: conversational
 language: zh-CN
 personas:
   required:
@@ -20,6 +21,13 @@ roundtable_prompt: >
   Respond to their specific arguments. Where do you agree?
   Where do you see fundamental flaws in their reasoning?
   Build on the strongest points and challenge the weakest.
+completion_hint: >
+  Say [DONE] only when ALL of these are true:
+  - You have clearly stated your position on the topic
+  - You have directly responded to at least 2 other participants' arguments
+  - You have addressed the main counterarguments to your position
+  - The discussion has gone through at least 3 rounds
+  Do NOT say [DONE] before round 3. There is always more to explore.
 ---
 
 # Environment

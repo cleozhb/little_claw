@@ -1,7 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import { resolve, basename } from "node:path";
 import { homedir } from "node:os";
-import type { ParsedScenario, ScenarioPersonas, SimulationMode } from "./types";
+import type { ParsedScenario, ResponseStyle, ScenarioPersonas, SimulationMode } from "./types";
 
 const SCENARIOS_DIR = "~/.little_claw/scenarios";
 
@@ -10,6 +10,12 @@ const VALID_MODES: SimulationMode[] = [
   "parallel",
   "parallel_then_roundtable",
   "free",
+];
+
+const VALID_RESPONSE_STYLES: ResponseStyle[] = [
+  "conversational",
+  "formal",
+  "rapid",
 ];
 
 function expandHome(dir: string): string {
@@ -110,6 +116,17 @@ export class ScenarioLoader {
         ? parsed["world_update_prompt"]
         : undefined;
 
+    const completionHint =
+      typeof parsed["completion_hint"] === "string"
+        ? parsed["completion_hint"]
+        : undefined;
+
+    const rawResponseStyle = typeof parsed["response_style"] === "string" ? parsed["response_style"] : undefined;
+    const responseStyle: ResponseStyle | undefined =
+      rawResponseStyle && VALID_RESPONSE_STYLES.includes(rawResponseStyle as ResponseStyle)
+        ? (rawResponseStyle as ResponseStyle)
+        : undefined;
+
     // --- personas ---
     let personas: ScenarioPersonas | undefined;
     const rawPersonas = parsed["personas"];
@@ -135,6 +152,8 @@ export class ScenarioLoader {
       roundtablePrompt,
       language,
       worldUpdatePrompt,
+      completionHint,
+      responseStyle,
       body,
       rawContent: content,
       sourcePath: absolutePath,
