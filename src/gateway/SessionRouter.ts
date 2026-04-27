@@ -5,6 +5,7 @@ import type { ShellTool } from "../tools/types";
 import type { ServerMessage } from "./protocol";
 import type { SpawnAgentTool } from "../tools/builtin/SpawnAgentTool";
 import type { MemoryManager } from "../memory/MemoryManager";
+import type { ContextRetriever } from "../memory/ContextRetriever";
 import { AgentLoop } from "../core/AgentLoop";
 import { Conversation } from "../core/Conversation";
 import type { SkillManager } from "../skills/SkillManager";
@@ -24,6 +25,7 @@ export interface SessionRouterOptions {
   shellTool?: ShellTool;
   spawnAgentTool?: SpawnAgentTool;
   memoryManager?: MemoryManager;
+  contextRetriever?: ContextRetriever;
   /** session 空闲超时（ms），默认 30 分钟 */
   idleTimeoutMs?: number;
   /** 清理扫描间隔（ms），默认 5 分钟 */
@@ -50,6 +52,7 @@ export class SessionRouter {
   private shellTool?: ShellTool;
   private spawnAgentTool?: SpawnAgentTool;
   private memoryManager?: MemoryManager;
+  private contextRetriever?: ContextRetriever;
   private sessions = new Map<string, SessionEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimeoutMs: number;
@@ -62,6 +65,7 @@ export class SessionRouter {
     this.shellTool = options.shellTool;
     this.spawnAgentTool = options.spawnAgentTool;
     this.memoryManager = options.memoryManager;
+    this.contextRetriever = options.contextRetriever;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60 * 1000;
 
     const cleanupIntervalMs = options.cleanupIntervalMs ?? 5 * 60 * 1000;
@@ -169,6 +173,7 @@ export class SessionRouter {
       skillManager: this.skillManager,
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
+      contextRetriever: this.contextRetriever,
     });
 
     const entry: SessionEntry = {

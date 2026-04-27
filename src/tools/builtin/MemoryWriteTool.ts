@@ -77,6 +77,19 @@ export function createMemoryWriteTool(
         };
       }
 
+      // context-hub/ 路径必须走 context_write 工具
+      if (file.startsWith("context-hub/")) {
+        return {
+          success: false,
+          output: "",
+          error:
+            "memory_write does not handle context-hub/ paths. Call the context_write tool instead, " +
+            "passing the path WITHOUT the context-hub/ prefix (e.g. \"0-identity/profile.md\", " +
+            "\"1-inbox/inbox.md\", \"3-projects/{project}/notes.md\"). It enforces the directory " +
+            "rules and updates the overview index automatically.",
+        };
+      }
+
       // MEMORY.md 覆盖保护：强制改为追加，并先备份
       const isMemoryMd = file === "memory/MEMORY.md" || file === "MEMORY.md" || file.endsWith("/MEMORY.md");
       if (isMemoryMd && mode === "overwrite") {

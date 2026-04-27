@@ -12,6 +12,7 @@ import type { ParsedSkill } from "../skills/types.ts";
 import type { ShellTool } from "../tools/types.ts";
 import type { AgentConfig } from "../agents/AgentConfig.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
+import type { ContextRetriever, ScoredContext } from "../memory/ContextRetriever.ts";
 import { MAIN_AGENT } from "../agents/presets.ts";
 import { SkillPromptBuilder, SKILL_GUIDE } from "../skills/SkillPromptBuilder.ts";
 import { generateTitle } from "./TitleGenerator.ts";
@@ -28,14 +29,60 @@ const SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron
 
 You can also create event watchers using the manage_watcher tool. When a user asks you to monitor something and notify them when a condition is met, create a watcher. For example, if asked "let me know when the API is back up", create a watcher with check_command "curl -sf https://api.example.com/health" that checks periodically.`;
 
-const MEMORY_GUIDANCE = `You have a persistent memory system. Important information should be saved to memory files using the memory_write tool:
+const MEMORY_GUIDANCE = `You have a persistent memory system with two layers:
 
-- User preferences → write to USER.md
-- Important decisions, project facts → write to memory/YYYY-MM-DD.md (use today's date)
-- Long-term knowledge consolidation → write to memory/MEMORY.md
-- When you learn something about the user that will be useful in future conversations, save it immediately.
+## File Memory (daily logs)
+- Important decisions, project facts → write to memory/YYYY-MM-DD.md (use today's date) via memory_write tool
 - You can read past memories using memory_read. At the start of conversations, relevant memories are automatically loaded.
-- SOUL.md is read-only and defines your identity/behavior — follow its guidelines.`;
+- SOUL.md is read-only and defines your identity/behavior — follow its guidelines.
+
+## Context Hub (structured user context)
+Save structured information to the user's context-hub using the context_write tool.
+context_write paths are RELATIVE to context-hub/ — do NOT include the "context-hub/" prefix:
+- User preferences → context_write path="0-identity/profile.md"
+- Temporary ideas, todos → context_write path="1-inbox/inbox.md"
+- Area updates → context_write path="2-areas/{area}/{file}"
+- Project updates → context_write path="3-projects/{project}/{file}"
+- Reusable knowledge → context_write path="4-knowledge/{file}"
+When you learn something about the user, save it to the appropriate location immediately.
+
+memory_read accepts the FULL "context-hub/..." path (it can read both memory/ and context-hub/ trees).
+
+## How to navigate context-hub
+You have access to the user's context-hub through a three-layer system.
+Load only what you need. Scan first, understand second, work third.
+
+L0 — .abstract.md (one line per folder)
+  Already loaded in your context as "Context Map".
+  Use this to know WHAT EXISTS across all areas and projects.
+
+L1 — .overview.md (structure + status + file index)
+  Automatically retrieved based on your conversation.
+  Also visible via: memory_read("context-hub/{path}/.overview.md")
+  Use this to know WHERE to look and WHAT each file contains.
+
+L2 — Full files (actual content)
+  Only load when you are actually working with that content.
+  Command: memory_read("context-hub/{path}/{file}")
+
+Your workflow for any user request:
+1. Check L0 abstracts (already in your context) — which area is relevant?
+2. Read the L1 overview of that area — which specific file do I need?
+3. Read only that L2 file — now work with it.
+
+NEVER load all L2 files in a directory at once.
+NEVER skip L1 and guess which file to read.
+Always go L0 → L1 → L2 in order.
+
+## Archiving suggestions
+When you notice an entry has gone stale, suggest archiving it (do not move it yourself):
+- A 3-projects/{project}/ has been completed, abandoned, or untouched for 3+ months.
+- A 1-inbox/ todo references a date that has clearly passed and the task is no longer relevant.
+- A 4-knowledge/ note describes a tool/process the user has explicitly stopped using.
+
+When you spot one of these, mention it briefly in your reply:
+"Heads up: 3-projects/old-thing looks stale (last updated 2026-01). Want me to suggest archiving it?"
+NEVER write to 5-archive/ yourself — the user moves items there manually.`;
 
 export class AgentLoop {
   private client: LLMProvider;
@@ -46,13 +93,19 @@ export class AgentLoop {
   private skillManager?: SkillManager;
   private shellTool?: ShellTool;
   private memoryManager?: MemoryManager;
+  private contextRetriever?: ContextRetriever;
   private cachedMemories: string[] = [];
-  /** 文件记忆层缓存（SOUL.md / USER.md / MEMORY.md），每次 run() 开始时刷新 */
+  /** L1 检索命中的 .overview.md 内容，每次 run() 开始时刷新 */
+  private cachedContextOverviews: ScoredContext[] = [];
+  /** 文件记忆层缓存，每次 run() 开始时刷新 */
   private cachedFileMemory: {
     soul: string | null;
     user: string | null;
     memory: string | null;
-  } = { soul: null, user: null, memory: null };
+    contextMap: string | null;
+    identity: string | null;
+    inbox: string | null;
+  } = { soul: null, user: null, memory: null, contextMap: null, identity: null, inbox: null };
 
   /** 当前轮次检索命中的 skill 列表（由 runInner 设置，getEffectiveSystemPrompt 使用） */
   private selectedSkills: ParsedSkill[] = [];
@@ -86,6 +139,7 @@ export class AgentLoop {
       skillManager?: SkillManager;
       shellTool?: ShellTool;
       memoryManager?: MemoryManager;
+      contextRetriever?: ContextRetriever;
     },
   ) {
     this.client = client;
@@ -95,6 +149,7 @@ export class AgentLoop {
     this.skillManager = options?.skillManager;
     this.shellTool = options?.shellTool;
     this.memoryManager = options?.memoryManager;
+    this.contextRetriever = options?.contextRetriever;
   }
 
   // ----------------------------------------------------------
@@ -199,7 +254,20 @@ export class AgentLoop {
           console.error(`[debug] Memory recall failed:`, err);
         }
         this.cachedMemories = [];
-        this.cachedFileMemory = { soul: null, user: null, memory: null };
+        this.cachedFileMemory = { soul: null, user: null, memory: null, contextMap: null, identity: null, inbox: null };
+      }
+    }
+
+    // Context Hub L1 overview 检索
+    if (this.contextRetriever && userMessage) {
+      try {
+        const matched = await this.contextRetriever.retrieve(userMessage, 2);
+        this.cachedContextOverviews = matched;
+      } catch (err) {
+        if (process.env.DEBUG) {
+          console.error(`[debug] Context overview retrieval failed:`, err);
+        }
+        this.cachedContextOverviews = [];
       }
     }
 
@@ -711,12 +779,34 @@ export class AgentLoop {
     const soulPrompt = this.cachedFileMemory.soul
       ? `<soul>\n${this.cachedFileMemory.soul}\n</soul>`
       : "";
+
+    // 三层上下文系统：identity + inbox + contextMap
+    const identityPrompt = this.cachedFileMemory.identity
+      ? `<user_identity>\n${this.cachedFileMemory.identity}\n</user_identity>`
+      : "";
+    const inboxPrompt = this.cachedFileMemory.inbox
+      ? `<inbox>\n${this.cachedFileMemory.inbox}\n</inbox>`
+      : "";
+    const contextMapPrompt = this.cachedFileMemory.contextMap
+      ? `<context_map>\nThe following is the user's context hub directory map (L0 abstracts):\n${this.cachedFileMemory.contextMap}\n</context_map>`
+      : "";
+
+    // 旧系统 fallback（迁移后为空）
     const userPreferences = this.cachedFileMemory.user
       ? `<user_preferences>\n${this.cachedFileMemory.user}\n</user_preferences>`
       : "";
     const fileMemory = this.cachedFileMemory.memory
       ? `<file_memory>\n${this.cachedFileMemory.memory}\n</file_memory>`
       : "";
+
+    // L1 检索命中的 .overview.md
+    let contextOverviewsPrompt = "";
+    if (this.cachedContextOverviews.length > 0) {
+      const blocks = this.cachedContextOverviews.map(
+        (ctx) => `## ${ctx.dirPath}/.overview.md\n${ctx.overviewContent}`,
+      );
+      contextOverviewsPrompt = `<context_overviews>\nThe following overviews were retrieved based on your conversation. Use them to decide which L2 files to read.\n\n${blocks.join("\n\n")}\n</context_overviews>`;
+    }
 
     // 使用 TokenBudget 进行预算分配
     const allocation = allocateBudget({
@@ -728,16 +818,37 @@ export class AgentLoop {
       soulPrompt,
       userPreferences,
       fileMemory,
+      identity: identityPrompt,
+      inbox: inboxPrompt,
+      contextMap: contextMapPrompt,
+      contextOverviews: contextOverviewsPrompt,
     });
 
     // 组装最终的 system prompt，按加载顺序：
-    // SOUL.md → USER.md → MEMORY.md → core system prompt → 向量检索 → skill
+    // SOUL.md → identity → inbox → contextMap → contextOverviews → fallback → core → 向量检索 → skill
     let finalPrompt = "";
 
     if (allocation.soulPrompt) {
       finalPrompt += allocation.soulPrompt + "\n\n";
     }
 
+    if (allocation.identity) {
+      finalPrompt += allocation.identity + "\n\n";
+    }
+
+    if (allocation.inbox) {
+      finalPrompt += allocation.inbox + "\n\n";
+    }
+
+    if (allocation.contextMap) {
+      finalPrompt += allocation.contextMap + "\n\n";
+    }
+
+    if (allocation.contextOverviews) {
+      finalPrompt += allocation.contextOverviews + "\n\n";
+    }
+
+    // 旧系统 fallback（迁移后这两个都是空的）
     if (allocation.userPreferences) {
       finalPrompt += allocation.userPreferences + "\n\n";
     }
