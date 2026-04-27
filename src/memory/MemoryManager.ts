@@ -90,25 +90,36 @@ export class MemoryManager {
   }
 
   /**
-   * 加载文件记忆上下文（SOUL.md / USER.md / MEMORY.md）。
-   * 每次对话开始时调用，按优先级加载到 system prompt。
+   * 加载文件记忆上下文。
+   * 三层加载系统：
+   *   - SOUL.md（Agent 身份，必定加载）
+   *   - identity（0-identity/profile.md，必定加载）
+   *   - inbox（1-inbox/inbox.md，必定加载）
+   *   - contextMap（所有 .abstract.md 拼接的 L0 全局地图，必定加载）
+   *   - user / memory（旧系统 fallback，迁移后为 null）
    */
   async loadFileMemoryContext(): Promise<{
     soul: string | null;
     user: string | null;
     memory: string | null;
+    contextMap: string | null;
+    identity: string | null;
+    inbox: string | null;
   }> {
     if (!this.fileMemory) {
-      return { soul: null, user: null, memory: null };
+      return { soul: null, user: null, memory: null, contextMap: null, identity: null, inbox: null };
     }
 
-    const [soul, user, memory] = await Promise.all([
+    const [soul, user, memory, contextMap, identity, inbox] = await Promise.all([
       this.fileMemory.readSoul(),
       this.fileMemory.readUser(),
       this.fileMemory.readMemory(),
+      this.fileMemory.readContextMap(),
+      this.fileMemory.readIdentity(),
+      this.fileMemory.readInbox(),
     ]);
 
-    return { soul, user, memory };
+    return { soul, user, memory, contextMap, identity, inbox };
   }
 
   /** 获取 VectorStore 实例（供 Gateway 直接查询统计/搜索） */

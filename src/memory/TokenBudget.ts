@@ -20,10 +20,18 @@ export interface BudgetAllocation {
   skillPrompt: string;
   /** 文件记忆层：SOUL.md 内容 */
   soulPrompt: string;
-  /** 文件记忆层：USER.md 内容 */
+  /** 旧系统 fallback：USER.md 内容（迁移后为空） */
   userPreferences: string;
-  /** 文件记忆层：MEMORY.md 内容 */
+  /** 旧系统 fallback：MEMORY.md 内容（迁移后为空） */
   fileMemory: string;
+  /** 三层上下文：用户身份（0-identity/profile.md） */
+  identity: string;
+  /** 三层上下文：收件箱（1-inbox/inbox.md） */
+  inbox: string;
+  /** 三层上下文：L0 全局地图（所有 .abstract.md 拼接） */
+  contextMap: string;
+  /** 三层上下文：L1 检索命中的 .overview.md 内容 */
+  contextOverviews: string;
 }
 
 export interface BudgetInput {
@@ -38,10 +46,18 @@ export interface BudgetInput {
   contextRatio?: number;
   /** 文件记忆层：SOUL.md 内容 */
   soulPrompt?: string;
-  /** 文件记忆层：USER.md 内容 */
+  /** 旧系统 fallback：USER.md 内容（迁移后为空） */
   userPreferences?: string;
-  /** 文件记忆层：MEMORY.md 内容 */
+  /** 旧系统 fallback：MEMORY.md 内容（迁移后为空） */
   fileMemory?: string;
+  /** 三层上下文：用户身份（0-identity/profile.md） */
+  identity?: string;
+  /** 三层上下文：收件箱（1-inbox/inbox.md） */
+  inbox?: string;
+  /** 三层上下文：L0 全局地图（所有 .abstract.md 拼接） */
+  contextMap?: string;
+  /** 三层上下文：L1 检索命中的 .overview.md 内容 */
+  contextOverviews?: string;
 }
 
 /**
@@ -50,31 +66,43 @@ export interface BudgetInput {
  * 优先级（从高到低）：
  *   1. System prompt（必须保留）
  *   2. SOUL.md — Agent 身份准则（必须保留）
- *   3. USER.md — 用户偏好（必须保留）
- *   4. MEMORY.md — 长期知识（必须保留）
- *   5. 用户新消息（必须保留）
- *   6. 最近对话历史（尽量保留）
- *   7. 向量检索结果 — 长期记忆（有预算就加）
- *   8. Skill 指令（有预算就加）
+ *   3. identity — 用户身份 profile.md（必须保留）
+ *   4. inbox — 收件箱 inbox.md（必须保留）
+ *   5. contextMap — L0 全局地图（必须保留，~500 tokens）
+ *   6. USER.md / MEMORY.md fallback（必须保留，迁移后为空）
+ *   7. 用户新消息（必须保留）
+ *   8. 最近对话历史（尽量保留）
+ *   9. contextOverviews — L1 检索命中的 overview（有预算就加）
+ *   10. 向量检索结果 — 长期记忆（有预算就加）
+ *   11. Skill 指令（有预算就加）
  */
 export function allocateBudget(input: BudgetInput): BudgetAllocation {
   const modelMax = input.modelMaxTokens ?? 128_000;
   const ratio = input.contextRatio ?? 0.5;
   const totalBudget = Math.floor(modelMax * ratio);
 
-  // 第 1~5 优先级：system prompt + 文件记忆 + 用户消息（必须保留）
+  // 必须保留项
   const systemTokens = estimateTokens(input.systemPrompt);
   const userTokens = estimateTokens(input.userMessage);
 
   const soulPrompt = input.soulPrompt ?? "";
+  const identity = input.identity ?? "";
+  const inbox = input.inbox ?? "";
+  const contextMap = input.contextMap ?? "";
   const userPreferences = input.userPreferences ?? "";
   const fileMemory = input.fileMemory ?? "";
 
-  const soulTokens = estimateTokens(soulPrompt);
-  const userPrefTokens = estimateTokens(userPreferences);
-  const fileMemTokens = estimateTokens(fileMemory);
+  const mustKeepTokens =
+    systemTokens +
+    estimateTokens(soulPrompt) +
+    estimateTokens(identity) +
+    estimateTokens(inbox) +
+    estimateTokens(contextMap) +
+    estimateTokens(userPreferences) +
+    estimateTokens(fileMemory) +
+    userTokens;
 
-  let remaining = totalBudget - systemTokens - soulTokens - userPrefTokens - fileMemTokens - userTokens;
+  let remaining = totalBudget - mustKeepTokens;
 
   if (remaining <= 0) {
     // 预算极端紧张，只保留必须项
@@ -87,10 +115,14 @@ export function allocateBudget(input: BudgetInput): BudgetAllocation {
       soulPrompt,
       userPreferences,
       fileMemory,
+      identity,
+      inbox,
+      contextMap,
+      contextOverviews: "",
     };
   }
 
-  // 第 6 优先级：对话历史（从最新开始倒着保留）
+  // 对话历史（从最新开始倒着保留）
   const keptHistory: Message[] = [];
   for (let i = input.conversationHistory.length - 1; i >= 0; i--) {
     const msg = input.conversationHistory[i]!;
@@ -100,7 +132,16 @@ export function allocateBudget(input: BudgetInput): BudgetAllocation {
     keptHistory.unshift(msg);
   }
 
-  // 第 7 优先级：向量检索长期记忆
+  // L1 检索命中的 overview
+  let keptOverviews = "";
+  const overviewsInput = input.contextOverviews ?? "";
+  const overviewTokens = estimateTokens(overviewsInput);
+  if (overviewsInput && overviewTokens <= remaining) {
+    keptOverviews = overviewsInput;
+    remaining -= overviewTokens;
+  }
+
+  // 向量检索长期记忆
   const keptMemory: string[] = [];
   for (const mem of input.longTermMemory) {
     const memTokens = estimateTokens(mem);
@@ -109,7 +150,7 @@ export function allocateBudget(input: BudgetInput): BudgetAllocation {
     keptMemory.push(mem);
   }
 
-  // 第 8 优先级：Skill 指令
+  // Skill 指令
   let keptSkillPrompt = "";
   const skillTokens = estimateTokens(input.skillPrompt);
   if (input.skillPrompt && skillTokens <= remaining) {
@@ -126,6 +167,10 @@ export function allocateBudget(input: BudgetInput): BudgetAllocation {
     soulPrompt,
     userPreferences,
     fileMemory,
+    identity,
+    inbox,
+    contextMap,
+    contextOverviews: keptOverviews,
   };
 }
 

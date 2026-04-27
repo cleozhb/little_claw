@@ -50,6 +50,15 @@ export interface SkillIndexRow {
   updated_at: string;
 }
 
+export interface ContextIndexRow {
+  dir_path: string;           // e.g. "2-areas/content"
+  overview_content: string;   // the .overview.md content
+  content_hash: string;       // for change detection
+  keywords: string;           // tokenized keywords for BM25
+  embedding: string;          // JSON-serialized number[]
+  updated_at: string;
+}
+
 // --- Database Class ---
 
 export class Database {
@@ -74,6 +83,10 @@ export class Database {
   private stmtGetAllSkillIndex;
   private stmtDeleteSkillIndex;
   private stmtClearSkillIndex;
+  private stmtUpsertContextIndex;
+  private stmtGetAllContextIndex;
+  private stmtDeleteContextIndex;
+  private stmtClearContextIndex;
 
   constructor(dbPath: string) {
     this.db = new SQLiteDatabase(dbPath);
@@ -160,6 +173,23 @@ export class Database {
     this.stmtClearSkillIndex = this.db.prepare(
       `DELETE FROM skill_index`
     );
+
+    this.stmtUpsertContextIndex = this.db.prepare(
+      `INSERT OR REPLACE INTO context_index (dir_path, overview_content, content_hash, keywords, embedding, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+    );
+
+    this.stmtGetAllContextIndex = this.db.prepare(
+      `SELECT * FROM context_index`
+    );
+
+    this.stmtDeleteContextIndex = this.db.prepare(
+      `DELETE FROM context_index WHERE dir_path = ?1`
+    );
+
+    this.stmtClearContextIndex = this.db.prepare(
+      `DELETE FROM context_index`
+    );
   }
 
   private initTables(): void {
@@ -221,6 +251,17 @@ export class Database {
         keywords            TEXT NOT NULL,
         embedding           TEXT NOT NULL,
         updated_at          TEXT NOT NULL
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS context_index (
+        dir_path         TEXT PRIMARY KEY,
+        overview_content TEXT NOT NULL,
+        content_hash     TEXT NOT NULL,
+        keywords         TEXT NOT NULL,
+        embedding        TEXT NOT NULL,
+        updated_at       TEXT NOT NULL
       )
     `);
   }
@@ -362,6 +403,31 @@ export class Database {
 
   clearSkillIndex(): void {
     this.stmtClearSkillIndex.run();
+  }
+
+  // --- Context Index CRUD ---
+
+  upsertContextIndex(row: ContextIndexRow): void {
+    this.stmtUpsertContextIndex.run(
+      row.dir_path,
+      row.overview_content,
+      row.content_hash,
+      row.keywords,
+      row.embedding,
+      row.updated_at,
+    );
+  }
+
+  getAllContextIndex(): ContextIndexRow[] {
+    return this.stmtGetAllContextIndex.all() as ContextIndexRow[];
+  }
+
+  deleteContextIndex(dirPath: string): void {
+    this.stmtDeleteContextIndex.run(dirPath);
+  }
+
+  clearContextIndex(): void {
+    this.stmtClearContextIndex.run();
   }
 
   // --- Lifecycle ---

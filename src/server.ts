@@ -27,6 +27,10 @@ import { createEmbeddingProvider } from "./memory/EmbeddingProvider.ts";
 import { FileMemoryManager } from "./memory/FileMemoryManager.ts";
 import { createMemoryWriteTool } from "./tools/builtin/MemoryWriteTool.ts";
 import { createMemoryReadTool } from "./tools/builtin/MemoryReadTool.ts";
+import { createContextWriteTool } from "./tools/builtin/ContextWriteTool.ts";
+import { ContextIndexer } from "./memory/ContextIndexer.ts";
+import { ContextRetriever } from "./memory/ContextRetriever.ts";
+import { ContextMetaGenerator } from "./memory/ContextMetaGenerator.ts";
 import { SimulationManager } from "./simulation/SimulationManager.ts";
 import { FeishuAdapter } from "./gateway/adapters/FeishuAdapter.ts";
 import { mkdirSync } from "node:fs";
@@ -76,6 +80,29 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
 
   const memoryManager = new MemoryManager(vectorStore, llmProvider, db, fileMemory);
 
+  // --- Context Hub: 自动补全元文件 + 索引 + 检索 ---
+  const contextHub = fileMemory.getContextHub();
+  const contextMetaGenerator = new ContextMetaGenerator(contextHub, llmProvider);
+  const contextIndexer = new ContextIndexer(db, embeddingProvider, contextHub);
+  const contextRetriever = new ContextRetriever(db, embeddingProvider);
+
+  // 启动时补全缺失的 .abstract.md / .overview.md（fire-and-forget），随后建索引
+  contextMetaGenerator
+    .scanAndGenerate()
+    .then(({ generated }) => {
+      if (generated > 0) {
+        console.log(`Context Hub: generated ${generated} meta file(s)`);
+      }
+      return contextIndexer.indexAll();
+    })
+    .then(() => {
+      const count = db.getAllContextIndex().length;
+      console.log(`Context Hub: ${count} overview(s) indexed`);
+    })
+    .catch((err) => {
+      console.error("Context Hub init failed:", err instanceof Error ? err.message : String(err));
+    });
+
   // --- Scheduler 系统初始化 ---
   const cronScheduler = new CronScheduler(db);
   const eventWatcher = new EventWatcher(db);
@@ -104,6 +131,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   // --- 记忆工具注册 ---
   toolRegistry.register(createMemoryWriteTool(fileMemory, vectorStore));
   toolRegistry.register(createMemoryReadTool(fileMemory));
+  toolRegistry.register(createContextWriteTool(fileMemory, contextIndexer));
 
   // --- SpawnAgentTool 注册（只有 Main Agent 会在工具列表中看到它） ---
   const spawnAgentTool = createSpawnAgentTool({
@@ -198,6 +226,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     shellTool: builtinTools.shellTool,
     spawnAgentTool,
     memoryManager,
+    contextRetriever,
   });
 
   const gateway = new GatewayServer({
@@ -211,6 +240,9 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     cronScheduler,
     eventWatcher,
     memoryManager,
+    contextRetriever,
+    contextIndexer,
+    contextMetaGenerator,
     simulationManager,
     feishuAdapter,
     onSessionSwitch: (oldSessionId) => {

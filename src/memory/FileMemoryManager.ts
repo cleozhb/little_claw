@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
+import { ContextHub } from "./ContextHub.ts";
 
 // ---------------------------------------------------------------------------
 // FileMemoryManager — 基于文件的记忆层（OpenClaw 风格）
@@ -7,9 +8,8 @@ import { mkdirSync, existsSync } from "node:fs";
 //
 // 管理 ~/.little_claw/ 下的文件记忆：
 //   SOUL.md    — Agent 身份和行为准则（用户手动编辑，只读）
-//   USER.md    — 用户偏好（Agent 可写入，用户可编辑）
+//   context-hub/  — 三层上下文系统（L0 abstract / L1 overview / L2 files）
 //   memory/
-//     MEMORY.md      — 长期知识（Agent 定期整理）
 //     YYYY-MM-DD.md  — 每日日志
 // ---------------------------------------------------------------------------
 
@@ -18,56 +18,96 @@ const SOUL_TEMPLATE = `# Soul
 Describe your agent's personality and behavior guidelines here.
 `;
 
-const USER_TEMPLATE = `# User Preferences
-
-Your agent will update this file as it learns about you.
-`;
-
-const MEMORY_TEMPLATE = `# Long-term Memory
-
-Important knowledge and decisions are recorded here.
-`;
-
 export class FileMemoryManager {
   private baseDir: string;
   private memoryDir: string;
+  private contextHub: ContextHub;
 
   constructor(baseDir?: string) {
     this.baseDir = baseDir ?? join(process.env.HOME ?? "~", ".little_claw");
     this.memoryDir = join(this.baseDir, "memory");
+    this.contextHub = new ContextHub(this.baseDir);
   }
 
   /**
    * 首次启动时创建目录结构和模板文件。
    * 已存在的文件不会被覆盖。
+   * 自动检测旧 USER.md/MEMORY.md 并迁移到 context-hub。
    */
   async initialize(): Promise<void> {
     mkdirSync(this.memoryDir, { recursive: true });
-
     await this.ensureFile(join(this.baseDir, "SOUL.md"), SOUL_TEMPLATE);
-    await this.ensureFile(join(this.baseDir, "USER.md"), USER_TEMPLATE);
-    await this.ensureFile(join(this.memoryDir, "MEMORY.md"), MEMORY_TEMPLATE);
+
+    // 初始化 context-hub（含迁移检测）
+    const { migrated } = await this.contextHub.initialize();
+    if (migrated) {
+      console.log("Migrated USER.md and MEMORY.md to context-hub/");
+    }
   }
 
-  // --- 读取接口 ---
+  // --- Context Hub 读取接口 ---
+
+  /** 获取 ContextHub 实例 */
+  getContextHub(): ContextHub {
+    return this.contextHub;
+  }
+
+  /**
+   * 读取 L0 全局地图（所有 .abstract.md 拼接）。
+   * 每次对话自动加载，不走检索。
+   */
+  async readContextMap(): Promise<string | null> {
+    const map = await this.contextHub.scanAbstracts();
+    return map || null;
+  }
+
+  /**
+   * 读取用户身份（0-identity/profile.md）。
+   * 每次对话自动加载，不走检索。
+   */
+  async readIdentity(): Promise<string | null> {
+    return this.contextHub.readFile("0-identity/profile.md");
+  }
+
+  /**
+   * 读取 inbox（1-inbox/inbox.md）。
+   * 每次对话自动加载，不走检索。
+   */
+  async readInbox(): Promise<string | null> {
+    return this.contextHub.readFile("1-inbox/inbox.md");
+  }
+
+  // --- 原有读取接口 ---
 
   /** 读取 SOUL.md（Agent 身份准则），不存在返回 null */
   async readSoul(): Promise<string | null> {
     return this.readFileIfExists(join(this.baseDir, "SOUL.md"));
   }
 
-  /** 读取 USER.md（用户偏好），不存在返回 null */
+  /**
+   * 读取 USER.md（用户偏好）。
+   * 迁移后 USER.md 已重命名为 .bak，此方法返回 null，
+   * 实际内容从 readIdentity() 获取。
+   */
   async readUser(): Promise<string | null> {
     return this.readFileIfExists(join(this.baseDir, "USER.md"));
   }
 
-  /** 读取 memory/MEMORY.md（长期知识），不存在返回 null */
+  /**
+   * 读取 memory/MEMORY.md（长期知识）。
+   * 迁移后 MEMORY.md 已重命名为 .bak，此方法返回 null，
+   * 实际内容从 context-hub/4-knowledge/ 获取。
+   */
   async readMemory(): Promise<string | null> {
     return this.readFileIfExists(join(this.memoryDir, "MEMORY.md"));
   }
 
   /** 读取指定的记忆文件（支持相对路径和绝对路径） */
   async readFile(filePath: string): Promise<string | null> {
+    // 支持 context-hub/ 路径
+    if (filePath.startsWith("context-hub/")) {
+      return this.contextHub.readFile(filePath);
+    }
     const resolved = this.resolveMemoryPath(filePath);
     return this.readFileIfExists(resolved);
   }
@@ -76,8 +116,12 @@ export class FileMemoryManager {
 
   /** 写入指定的记忆文件 */
   async writeFile(filePath: string, content: string): Promise<void> {
+    // 支持 context-hub/ 路径
+    if (filePath.startsWith("context-hub/")) {
+      await this.contextHub.writeFile(filePath, content, "overwrite");
+      return;
+    }
     const resolved = this.resolveMemoryPath(filePath);
-    // 确保父目录存在
     const dir = resolved.substring(0, resolved.lastIndexOf("/"));
     mkdirSync(dir, { recursive: true });
     await Bun.write(resolved, content);
@@ -85,6 +129,11 @@ export class FileMemoryManager {
 
   /** 追加内容到指定的记忆文件 */
   async appendToFile(filePath: string, content: string): Promise<void> {
+    // 支持 context-hub/ 路径
+    if (filePath.startsWith("context-hub/")) {
+      await this.contextHub.writeFile(filePath, content, "append");
+      return;
+    }
     const resolved = this.resolveMemoryPath(filePath);
     const dir = resolved.substring(0, resolved.lastIndexOf("/"));
     mkdirSync(dir, { recursive: true });
@@ -133,7 +182,7 @@ export class FileMemoryManager {
 
   /**
    * 解析记忆文件路径。支持：
-   * - "USER.md" → ~/.little_claw/USER.md
+   * - "SOUL.md" → ~/.little_claw/SOUL.md
    * - "memory/2026-04-04.md" → ~/.little_claw/memory/2026-04-04.md
    * - "memory/MEMORY.md" → ~/.little_claw/memory/MEMORY.md
    * - 绝对路径但必须在 baseDir 下

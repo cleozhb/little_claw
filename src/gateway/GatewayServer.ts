@@ -25,6 +25,9 @@ import type { McpManager } from "../mcp/McpManager.ts";
 import type { CronScheduler } from "../scheduler/CronScheduler.ts";
 import type { EventWatcher } from "../scheduler/EventWatcher.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
+import type { ContextRetriever } from "../memory/ContextRetriever.ts";
+import type { ContextIndexer } from "../memory/ContextIndexer.ts";
+import type { ContextMetaGenerator } from "../memory/ContextMetaGenerator.ts";
 import type { SimulationManager } from "../simulation/SimulationManager.ts";
 import { getAllAgentConfigs } from "../agents/presets.ts";
 import type { FeishuAdapter } from "./adapters/FeishuAdapter.ts";
@@ -49,6 +52,12 @@ export interface GatewayOptions {
   eventWatcher?: EventWatcher;
   /** MemoryManager，用于 memory_search */
   memoryManager?: MemoryManager;
+  /** ContextRetriever，用于 /context search */
+  contextRetriever?: ContextRetriever;
+  /** ContextIndexer，用于 /context rebuild */
+  contextIndexer?: ContextIndexer;
+  /** ContextMetaGenerator，用于 /context rebuild */
+  contextMetaGenerator?: ContextMetaGenerator;
   /** SimulationManager，用于 simulation 相关命令 */
   simulationManager?: SimulationManager;
   /** 飞书适配器，启用后接收 POST /webhook/feishu */
@@ -90,6 +99,9 @@ export class GatewayServer {
   private cronScheduler?: CronScheduler;
   private eventWatcher?: EventWatcher;
   private memoryManager?: MemoryManager;
+  private contextRetriever?: ContextRetriever;
+  private contextIndexer?: ContextIndexer;
+  private contextMetaGenerator?: ContextMetaGenerator;
   private simulationManager?: SimulationManager;
   private feishuAdapter?: FeishuAdapter;
   private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
@@ -123,6 +135,9 @@ export class GatewayServer {
     this.cronScheduler = options.cronScheduler;
     this.eventWatcher = options.eventWatcher;
     this.memoryManager = options.memoryManager;
+    this.contextRetriever = options.contextRetriever;
+    this.contextIndexer = options.contextIndexer;
+    this.contextMetaGenerator = options.contextMetaGenerator;
     this.simulationManager = options.simulationManager;
     this.feishuAdapter = options.feishuAdapter;
     this.onSessionSwitch = options.onSessionSwitch;
@@ -403,6 +418,18 @@ export class GatewayServer {
         return this.handleUpdateScenario(connectionId, msg.name, msg.content);
       case "generate_content":
         return this.handleGenerateContent(connectionId, msg.target, msg.prompt);
+      case "context_map":
+        return this.handleContextMap(connectionId);
+      case "context_overview":
+        return this.handleContextOverview(connectionId, msg.path);
+      case "context_search":
+        return this.handleContextSearch(connectionId, msg.query, msg.topK);
+      case "context_rebuild":
+        return this.handleContextRebuild(connectionId);
+      case "inbox_get":
+        return this.handleInboxGet(connectionId);
+      case "inbox_add":
+        return this.handleInboxAdd(connectionId, msg.content);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -828,6 +855,184 @@ export class GatewayServer {
     const count = vs.getCount();
     vs.deleteAll();
     this.sendToConnection(connectionId, { type: "memory_cleared", deletedCount: count });
+  }
+
+  // ----------------------------------------------------------
+  // Context Hub 命令
+  // ----------------------------------------------------------
+
+  private handleContextMap(connectionId: string): void {
+    const fileMemory = this.memoryManager?.getFileMemory();
+    if (!fileMemory) {
+      this.sendToConnection(connectionId, {
+        type: "context_map_result",
+        map: "",
+        entryCount: 0,
+      });
+      return;
+    }
+    fileMemory
+      .readContextMap()
+      .then((map) => {
+        const text = map ?? "";
+        const entryCount = text ? text.split("\n").filter((l) => l.trim()).length : 0;
+        this.sendToConnection(connectionId, {
+          type: "context_map_result",
+          map: text,
+          entryCount,
+        });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Context map failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleContextOverview(connectionId: string, path: string): void {
+    const fileMemory = this.memoryManager?.getFileMemory();
+    if (!fileMemory) {
+      this.sendToConnection(connectionId, {
+        type: "context_overview_result",
+        path,
+        overview: null,
+      });
+      return;
+    }
+    fileMemory
+      .getContextHub()
+      .readOverview(path)
+      .then((overview) => {
+        this.sendToConnection(connectionId, {
+          type: "context_overview_result",
+          path,
+          overview,
+        });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Context overview failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleContextSearch(connectionId: string, query: string, topK?: number): void {
+    if (!this.contextRetriever) {
+      this.sendToConnection(connectionId, {
+        type: "context_search_result",
+        query,
+        results: [],
+      });
+      return;
+    }
+    this.contextRetriever
+      .retrieve(query, topK ?? 5)
+      .then((scored) => {
+        this.sendToConnection(connectionId, {
+          type: "context_search_result",
+          query,
+          results: scored.map((s) => ({
+            dirPath: s.dirPath,
+            score: s.score,
+            bm25Score: s.bm25Score,
+            vectorScore: s.vectorScore,
+            matchReason: s.matchReason,
+            overviewPreview:
+              s.overviewContent.length > 200
+                ? s.overviewContent.slice(0, 200) + "..."
+                : s.overviewContent,
+          })),
+        });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Context search failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleContextRebuild(connectionId: string): void {
+    if (!this.contextIndexer) {
+      this.sendToConnection(connectionId, {
+        type: "context_rebuild_result",
+        generated: 0,
+        indexed: 0,
+      });
+      return;
+    }
+    const generator = this.contextMetaGenerator;
+    const indexer = this.contextIndexer;
+    const db = this.db;
+    (async () => {
+      let generated = 0;
+      if (generator) {
+        const r = await generator.scanAndGenerate();
+        generated = r.generated;
+      }
+      await indexer.indexAll();
+      const indexed = db.getAllContextIndex().length;
+      this.sendToConnection(connectionId, {
+        type: "context_rebuild_result",
+        generated,
+        indexed,
+      });
+    })().catch((err) => {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Context rebuild failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    });
+  }
+
+  private handleInboxGet(connectionId: string): void {
+    const fileMemory = this.memoryManager?.getFileMemory();
+    if (!fileMemory) {
+      this.sendToConnection(connectionId, { type: "inbox_result", content: null });
+      return;
+    }
+    fileMemory
+      .readInbox()
+      .then((content) => {
+        this.sendToConnection(connectionId, { type: "inbox_result", content });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Inbox read failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }
+
+  private handleInboxAdd(connectionId: string, content: string): void {
+    const fileMemory = this.memoryManager?.getFileMemory();
+    if (!fileMemory) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: "Inbox not available",
+      });
+      return;
+    }
+    const trimmed = content.trim();
+    const date = new Date().toISOString().slice(0, 10);
+    const looksLikeTodo = /^(todo|todo:|\[ \]|- \[ \])/i.test(trimmed);
+    const line = looksLikeTodo
+      ? `- [ ] ${trimmed.replace(/^(todo:?\s*|- \[ \]\s*|\[ \]\s*)/i, "")} (${date})`
+      : `- ${trimmed} (${date})`;
+    fileMemory
+      .getContextHub()
+      .writeFile("1-inbox/inbox.md", line, "append")
+      .then(() => {
+        this.sendToConnection(connectionId, { type: "inbox_appended", line });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Inbox add failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
   }
 
   // ----------------------------------------------------------

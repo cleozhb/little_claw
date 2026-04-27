@@ -136,6 +136,12 @@ const COMMANDS = [
   "/memory",
   "/memory search ",
   "/memory clear",
+  "/context map",
+  "/context overview ",
+  "/context search ",
+  "/context rebuild",
+  "/inbox",
+  "/inbox add ",
   "/status",
   "/quit",
   "/exit",
@@ -587,6 +593,67 @@ export class GatewayClient {
     return (resp as { deletedCount: number }).deletedCount;
   }
 
+  // --- Context Hub ---
+
+  async contextMap(): Promise<{ map: string; entryCount: number }> {
+    const resp = await this.request({ type: "context_map" } as ClientMessage, "context_map_result");
+    const data = resp as { map: string; entryCount: number };
+    return { map: data.map, entryCount: data.entryCount };
+  }
+
+  async contextOverview(path: string): Promise<string | null> {
+    const resp = await this.request(
+      { type: "context_overview", path } as ClientMessage,
+      "context_overview_result",
+    );
+    return (resp as { overview: string | null }).overview;
+  }
+
+  async contextSearch(query: string): Promise<Array<{
+    dirPath: string;
+    score: number;
+    bm25Score: number;
+    vectorScore: number;
+    matchReason: string;
+    overviewPreview: string;
+  }>> {
+    const resp = await this.request(
+      { type: "context_search", query } as ClientMessage,
+      "context_search_result",
+    );
+    return (resp as { results: Array<{
+      dirPath: string;
+      score: number;
+      bm25Score: number;
+      vectorScore: number;
+      matchReason: string;
+      overviewPreview: string;
+    }> }).results;
+  }
+
+  async contextRebuild(): Promise<{ generated: number; indexed: number }> {
+    const resp = await this.request(
+      { type: "context_rebuild" } as ClientMessage,
+      "context_rebuild_result",
+      60_000,
+    );
+    const data = resp as { generated: number; indexed: number };
+    return { generated: data.generated, indexed: data.indexed };
+  }
+
+  async inboxGet(): Promise<string | null> {
+    const resp = await this.request({ type: "inbox_get" } as ClientMessage, "inbox_result");
+    return (resp as { content: string | null }).content;
+  }
+
+  async inboxAdd(content: string): Promise<string> {
+    const resp = await this.request(
+      { type: "inbox_add", content } as ClientMessage,
+      "inbox_appended",
+    );
+    return (resp as { line: string }).line;
+  }
+
   async getStatus(): Promise<{ activeSessions: number; connections: number }> {
     const resp = await this.request({ type: "get_status" }, "status_info");
     const data = resp as { activeSessions: number; connections: number };
@@ -749,6 +816,12 @@ export class ClientRepl {
   /memory                Show memory statistics
   /memory search <query> Search memories by query
   /memory clear          Clear all memories (requires confirmation)
+  /context map           Show the L0 context-hub map (one line per folder)
+  /context overview <p>  Show the .overview.md of a directory (path under context-hub/)
+  /context search <q>    Test context-hub overview retrieval
+  /context rebuild       Regenerate missing meta files and re-index overviews
+  /inbox                 Show 1-inbox/inbox.md
+  /inbox add <text>      Append a quick item to inbox.md
   /status                Show server status
   /quit                  Exit the chat
   /exit                  Exit the chat
@@ -1326,6 +1399,124 @@ Type ${CYAN}/help${RESET} for available commands.
     }
   }
 
+  // --- Context Hub commands ---
+
+  private async handleContextMap(): Promise<void> {
+    try {
+      const { map, entryCount } = await this.client.contextMap();
+      if (!map) {
+        console.log("Context hub map is empty.\n");
+        return;
+      }
+      console.log(`${BOLD}Context Hub Map${RESET} ${DIM}(${entryCount} entries)${RESET}`);
+      for (const line of map.split("\n")) {
+        if (!line.trim()) continue;
+        const idx = line.indexOf(" — ");
+        if (idx > 0) {
+          console.log(`  ${YELLOW}${line.slice(0, idx)}${RESET} ${DIM}—${RESET} ${line.slice(idx + 3)}`);
+        } else {
+          console.log(`  ${line}`);
+        }
+      }
+      console.log();
+    } catch (err) {
+      console.log(`${RED}Failed to read context map: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleContextOverview(path: string): Promise<void> {
+    if (!path) {
+      console.log("Usage: /context overview <path>\n");
+      return;
+    }
+    try {
+      const overview = await this.client.contextOverview(path);
+      if (overview === null) {
+        console.log(`${YELLOW}No .overview.md at ${path}${RESET}\n`);
+        return;
+      }
+      console.log(`${BOLD}context-hub/${path}/.overview.md${RESET}`);
+      console.log(`${DIM}---${RESET}`);
+      console.log(overview);
+      console.log(`${DIM}---${RESET}\n`);
+    } catch (err) {
+      console.log(`${RED}Failed to read overview: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleContextSearch(query: string): Promise<void> {
+    if (!query) {
+      console.log("Usage: /context search <query>\n");
+      return;
+    }
+    try {
+      const results = await this.client.contextSearch(query);
+      if (results.length === 0) {
+        console.log("No matches.\n");
+        return;
+      }
+      console.log(`${BOLD}Context search results (${results.length}):${RESET}`);
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]!;
+        const score = r.score.toFixed(3);
+        const bm25 = r.bm25Score.toFixed(2);
+        const vec = r.vectorScore.toFixed(2);
+        console.log(
+          `  ${YELLOW}${i + 1}${RESET}. ${YELLOW}${r.dirPath}${RESET} ${DIM}[score=${score} bm25=${bm25} vec=${vec}]${RESET}`,
+        );
+        if (r.matchReason) {
+          console.log(`     ${DIM}${r.matchReason}${RESET}`);
+        }
+        const preview = r.overviewPreview.replace(/\n/g, " ").slice(0, 120);
+        if (preview) {
+          console.log(`     ${DIM}${preview}${RESET}`);
+        }
+      }
+      console.log();
+    } catch (err) {
+      console.log(`${RED}Context search failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleContextRebuild(): Promise<void> {
+    console.log(`${DIM}Rebuilding context hub meta files and index...${RESET}`);
+    try {
+      const { generated, indexed } = await this.client.contextRebuild();
+      console.log(`${GREEN}Done.${RESET} Generated ${generated} meta file(s), indexed ${indexed} overview(s).\n`);
+    } catch (err) {
+      console.log(`${RED}Rebuild failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleInbox(): Promise<void> {
+    try {
+      const content = await this.client.inboxGet();
+      if (!content) {
+        console.log("Inbox is empty.\n");
+        return;
+      }
+      console.log(`${BOLD}1-inbox/inbox.md${RESET}`);
+      console.log(`${DIM}---${RESET}`);
+      console.log(content);
+      console.log(`${DIM}---${RESET}\n`);
+    } catch (err) {
+      console.log(`${RED}Failed to read inbox: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleInboxAdd(text: string): Promise<void> {
+    if (!text) {
+      console.log("Usage: /inbox add <text>\n");
+      return;
+    }
+    try {
+      const line = await this.client.inboxAdd(text);
+      console.log(`${GREEN}Added:${RESET} ${line}\n`);
+    } catch (err) {
+      console.log(`${RED}Inbox add failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
   private formatSkillStatus(skill: SkillInfo): string {
     switch (skill.status) {
       case "loaded":
@@ -1741,6 +1932,36 @@ Type ${CYAN}/help${RESET} for available commands.
 
         if (input === "/memory") {
           await this.handleMemory();
+          continue;
+        }
+
+        if (input === "/context map") {
+          await this.handleContextMap();
+          continue;
+        }
+
+        if (input.startsWith("/context overview")) {
+          await this.handleContextOverview(input.slice("/context overview".length).trim());
+          continue;
+        }
+
+        if (input.startsWith("/context search")) {
+          await this.handleContextSearch(input.slice("/context search".length).trim());
+          continue;
+        }
+
+        if (input === "/context rebuild") {
+          await this.handleContextRebuild();
+          continue;
+        }
+
+        if (input.startsWith("/inbox add")) {
+          await this.handleInboxAdd(input.slice("/inbox add".length).trim());
+          continue;
+        }
+
+        if (input === "/inbox") {
+          await this.handleInbox();
           continue;
         }
 

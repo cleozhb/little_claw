@@ -226,6 +226,38 @@ export interface MatchSkillsMessage {
   query: string;
 }
 
+// --- Context Hub Client Messages ---
+
+export interface ContextMapMessage {
+  type: "context_map";
+}
+
+export interface ContextOverviewMessage {
+  type: "context_overview";
+  /** 相对 context-hub/ 的目录路径，如 "3-projects/little-claw" */
+  path: string;
+}
+
+export interface ContextSearchMessage {
+  type: "context_search";
+  query: string;
+  topK?: number;
+}
+
+export interface ContextRebuildMessage {
+  type: "context_rebuild";
+}
+
+export interface InboxGetMessage {
+  type: "inbox_get";
+}
+
+export interface InboxAddMessage {
+  type: "inbox_add";
+  /** 单行内容；服务端会自动加上日期前缀和 markdown 项符号 */
+  content: string;
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -262,6 +294,12 @@ export type ClientMessage =
   | UpdatePersonaMessage
   | UpdateScenarioMessage
   | GenerateContentMessage
+  | ContextMapMessage
+  | ContextOverviewMessage
+  | ContextSearchMessage
+  | ContextRebuildMessage
+  | InboxGetMessage
+  | InboxAddMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -573,6 +611,57 @@ export interface SkillsMatchResultMessage {
   skills: Array<{ name: string; score: number; matchReason: string }>;
 }
 
+// --- Context Hub Server Messages ---
+
+/** L0 全景视图 */
+export interface ContextMapResultMessage {
+  type: "context_map_result";
+  /** 拼接后的文本（每行 "path/ — abstract"） */
+  map: string;
+  /** 条目数 */
+  entryCount: number;
+}
+
+/** 目录的 .overview.md 内容 */
+export interface ContextOverviewResultMessage {
+  type: "context_overview_result";
+  path: string;
+  overview: string | null;
+}
+
+/** 检索结果 */
+export interface ContextSearchResultMessage {
+  type: "context_search_result";
+  query: string;
+  results: Array<{
+    dirPath: string;
+    score: number;
+    bm25Score: number;
+    vectorScore: number;
+    matchReason: string;
+    overviewPreview: string;
+  }>;
+}
+
+/** 重建索引结果 */
+export interface ContextRebuildResultMessage {
+  type: "context_rebuild_result";
+  generated: number;
+  indexed: number;
+}
+
+/** inbox 内容 */
+export interface InboxResultMessage {
+  type: "inbox_result";
+  content: string | null;
+}
+
+/** inbox 追加确认 */
+export interface InboxAppendedMessage {
+  type: "inbox_appended";
+  line: string;
+}
+
 export type ServerMessage =
   | TextDeltaMessage
   | ToolCallMessage
@@ -612,7 +701,13 @@ export type ServerMessage =
   | SimulationEventMessage
   | PersonaUpdatedMessage
   | ScenarioUpdatedMessage
-  | GeneratedContentMessage;
+  | GeneratedContentMessage
+  | ContextMapResultMessage
+  | ContextOverviewResultMessage
+  | ContextSearchResultMessage
+  | ContextRebuildResultMessage
+  | InboxResultMessage
+  | InboxAppendedMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -654,6 +749,12 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "update_persona",
   "update_scenario",
   "generate_content",
+  "context_map",
+  "context_overview",
+  "context_search",
+  "context_rebuild",
+  "inbox_get",
+  "inbox_add",
   "ping",
   "health_check",
 ]);
@@ -796,6 +897,21 @@ export function parseClientMessage(raw: string): ClientMessage {
         throw new Error("'target' must be 'persona' or 'scenario'");
       }
       requireString(msg, "prompt");
+      break;
+    case "context_map":
+      break;
+    case "context_overview":
+      requireString(msg, "path");
+      break;
+    case "context_search":
+      requireString(msg, "query");
+      break;
+    case "context_rebuild":
+      break;
+    case "inbox_get":
+      break;
+    case "inbox_add":
+      requireString(msg, "content");
       break;
     case "ping":
       break;
