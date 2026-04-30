@@ -72,6 +72,8 @@ export interface ListTasksFilter {
   limit?: number;
 }
 
+export type TaskUpdateListener = (task: Task, eventType: string) => void;
+
 interface TaskRow {
   id: string;
   title: string;
@@ -119,6 +121,7 @@ export class TaskQueue {
   private stmtInsertLog;
   private stmtGetLogs;
   private stmtCountActiveForAgent;
+  private updateListeners = new Set<TaskUpdateListener>();
 
   constructor(db: Database) {
     this.db = db;
@@ -224,6 +227,7 @@ export class TaskQueue {
       });
     }
 
+    this.emitTaskUpdated(task, "created");
     return task;
   }
 
@@ -262,6 +266,11 @@ export class TaskQueue {
     }));
   }
 
+  onTaskUpdated(listener: TaskUpdateListener): () => void {
+    this.updateListeners.add(listener);
+    return () => this.updateListeners.delete(listener);
+  }
+
   assignTask(taskId: string, agentName: string): Task {
     const task = this.requireTask(taskId);
     this.assertStatus(task, ["pending"], "assign");
@@ -275,6 +284,7 @@ export class TaskQueue {
       agentName,
       content: `Task assigned to ${agentName}.`,
     });
+    this.emitTaskUpdated(task, "assigned");
     return task;
   }
 
@@ -290,6 +300,7 @@ export class TaskQueue {
       agentName: task.assignedTo,
       content: "Task started.",
     });
+    this.emitTaskUpdated(task, "started");
     return task;
   }
 
@@ -307,6 +318,7 @@ export class TaskQueue {
       agentName: params.agentName ?? task.assignedTo,
       content: params.prompt,
     });
+    this.emitTaskUpdated(task, "approval_requested");
     return task;
   }
 
@@ -321,6 +333,7 @@ export class TaskQueue {
       agentName,
       content: response,
     });
+    this.emitTaskUpdated(task, "approved");
     return task;
   }
 
@@ -336,6 +349,7 @@ export class TaskQueue {
       agentName,
       content: response,
     });
+    this.emitTaskUpdated(task, "rejected");
     return task;
   }
 
@@ -351,6 +365,7 @@ export class TaskQueue {
       agentName: agentName ?? task.assignedTo,
       content: result,
     });
+    this.emitTaskUpdated(task, "completed");
     return task;
   }
 
@@ -382,6 +397,7 @@ export class TaskQueue {
       });
     }
 
+    this.emitTaskUpdated(task, "failed");
     return task;
   }
 
@@ -401,6 +417,7 @@ export class TaskQueue {
       agentName: agentName ?? task.assignedTo,
       content: reason,
     });
+    this.emitTaskUpdated(task, "cancelled");
     return task;
   }
 
@@ -421,6 +438,7 @@ export class TaskQueue {
       agentName: parent.assignedTo,
       content: `Delegated child task ${child.id}.`,
     });
+    this.emitTaskUpdated(parent, "delegated");
     return child;
   }
 
@@ -430,6 +448,7 @@ export class TaskQueue {
       agentName: agentName ?? task.assignedTo,
       content,
     });
+    this.emitTaskUpdated(task, "progress");
   }
 
   getPendingForAgent(agent: RegisteredAgent, limit?: number): Task[] {
@@ -621,6 +640,18 @@ export class TaskQueue {
   private countActiveForAgent(agentName: string): number {
     const row = this.stmtCountActiveForAgent.get(agentName) as { count: number };
     return row.count;
+  }
+
+  private emitTaskUpdated(task: Task, eventType: string): void {
+    const snapshot: Task = {
+      ...task,
+      dependsOn: [...task.dependsOn],
+      blocks: [...task.blocks],
+      tags: [...task.tags],
+    };
+    for (const listener of this.updateListeners) {
+      listener(snapshot, eventType);
+    }
   }
 }
 

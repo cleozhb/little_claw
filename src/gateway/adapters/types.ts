@@ -6,6 +6,8 @@ export interface WebhookMessage {
   channelType: string;
   /** 会话 ID（群聊 ID 或私聊 ID） */
   chatId: string;
+  /** 外部平台消息或事件 ID，用于去重 */
+  externalMessageId?: string;
   /** 发送者 ID */
   userId: string;
   /** 消息文本内容 */

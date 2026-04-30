@@ -1,0 +1,206 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Database } from "../../src/db/Database.ts";
+import { GatewayServer } from "../../src/gateway/GatewayServer.ts";
+import { parseClientMessage } from "../../src/gateway/protocol.ts";
+import type { LLMProvider } from "../../src/llm/types.ts";
+import { AgentRegistry } from "../../src/team/AgentRegistry.ts";
+import { ProjectChannelStore } from "../../src/team/ProjectChannelStore.ts";
+import { TaskQueue } from "../../src/team/TaskQueue.ts";
+import { TeamMessageStore } from "../../src/team/TeamMessageStore.ts";
+import { TeamRouter } from "../../src/team/TeamRouter.ts";
+import { ToolRegistry } from "../../src/tools/ToolRegistry.ts";
+
+const TEST_DB = "/tmp/little_claw_gateway_team_test.db";
+
+let db: Database;
+let agentDir: string;
+let registry: AgentRegistry;
+let messages: TeamMessageStore;
+let channels: ProjectChannelStore;
+let tasks: TaskQueue;
+let router: TeamRouter;
+let gateway: GatewayServer;
+let sent: any[];
+
+const llmProvider: LLMProvider = {
+  async *chat() {},
+  getModel() {
+    return "test-model";
+  },
+  setModel() {},
+};
+
+beforeEach(() => {
+  db = new Database(TEST_DB);
+  agentDir = mkdtempSync(join(tmpdir(), "little-claw-gateway-agents-"));
+  registry = new AgentRegistry(agentDir);
+  registry.create("coder", {
+    config: {
+      name: "coder",
+      role: "Writes code",
+      aliases: ["dev"],
+      direct_message: true,
+      task_tags: ["code"],
+      tools: [],
+    },
+  });
+  registry.loadAll();
+  messages = new TeamMessageStore(db);
+  channels = new ProjectChannelStore(db, messages);
+  tasks = new TaskQueue(db);
+  router = new TeamRouter({
+    agentRegistry: registry,
+    taskQueue: tasks,
+    messages,
+    projectChannels: channels,
+  });
+  gateway = new GatewayServer({
+    db,
+    toolRegistry: new ToolRegistry(),
+    llmProvider,
+    teamRouter: router,
+    teamMessages: messages,
+    projectChannels: channels,
+    taskQueue: tasks,
+  });
+  sent = [];
+  (gateway as any).connections.set("conn-1", {
+    send(raw: string) {
+      sent.push(JSON.parse(raw));
+    },
+  });
+});
+
+afterEach(() => {
+  db.close();
+  rmSync(agentDir, { recursive: true, force: true });
+  try {
+    unlinkSync(TEST_DB);
+    unlinkSync(TEST_DB + "-wal");
+    unlinkSync(TEST_DB + "-shm");
+  } catch {}
+});
+
+describe("Gateway team protocol", () => {
+  test("parses new team client messages", () => {
+    expect(parseClientMessage(JSON.stringify({
+      type: "route_human_message",
+      text: "@dev 修复 bug",
+      externalChannel: "websocket",
+      externalChatId: "conn-1",
+    })).type).toBe("route_human_message");
+
+    expect(parseClientMessage(JSON.stringify({
+      type: "list_tasks",
+      status: "awaiting_approval",
+      tags: ["code"],
+    })).type).toBe("list_tasks");
+
+    expect(() => parseClientMessage(JSON.stringify({
+      type: "approve_task",
+    }))).toThrow("'taskId' must be a non-empty string");
+  });
+
+  test("routes websocket human messages through TeamRouter", () => {
+    (gateway as any).dispatch("conn-1", {
+      type: "route_human_message",
+      text: "@dev 修复 TeamRouter",
+      userId: "ceo",
+    });
+
+    const routed = sent.find((msg) => msg.type === "human_message_routed");
+    const pushed = sent.find((msg) => msg.type === "team_message_added");
+
+    expect(routed?.result.routedTo).toEqual({ type: "agent", id: "coder" });
+    expect(routed?.message.channelType).toBe("agent_dm");
+    expect(routed?.message.channelId).toBe("coder");
+    expect(pushed?.message.id).toBe(routed?.message.id);
+  });
+
+  test("lists project channels and messages", () => {
+    (gateway as any).dispatch("conn-1", {
+      type: "send_project_message",
+      project: "lovely-octopus",
+      content: "推进 Gateway 集成",
+      userId: "ceo",
+    });
+    (gateway as any).dispatch("conn-1", {
+      type: "list_project_channels",
+    });
+    (gateway as any).dispatch("conn-1", {
+      type: "get_project_channel",
+      project: "lovely-octopus",
+    });
+
+    const channelsList = sent.find((msg) => msg.type === "project_channels_list");
+    const loaded = sent.find((msg) => msg.type === "project_channel_loaded");
+
+    expect(channelsList?.channels.map((channel: any) => channel.slug)).toContain("lovely-octopus");
+    expect(loaded?.channel.slug).toBe("lovely-octopus");
+    expect(loaded?.messages[0].content).toBe("推进 Gateway 集成");
+  });
+
+  test("updates tasks through gateway approval handlers", () => {
+    const task = tasks.createTask({
+      title: "Publish",
+      description: "Needs approval",
+      createdBy: "ceo",
+      assignedTo: "coder",
+    });
+    tasks.startTask(task.id);
+    tasks.requestApproval(task.id, { prompt: "Publish?" });
+    sent = [];
+
+    (gateway as any).dispatch("conn-1", {
+      type: "approve_task",
+      taskId: task.id,
+      response: "可以发",
+      userId: "ceo",
+    });
+
+    expect(tasks.getTask(task.id)?.status).toBe("approved");
+    expect(sent.some((msg) => msg.type === "task_updated" && msg.task.status === "approved")).toBe(true);
+  });
+
+  test("feishu webhook enters TeamRouter and sends ack without running session chat", async () => {
+    const acks: string[] = [];
+    (gateway as any).feishuAdapter = {
+      decryptBody(body: Record<string, unknown>) {
+        return body;
+      },
+      handleChallenge() {
+        return null;
+      },
+      verifyToken() {
+        return true;
+      },
+      parseToInternal() {
+        return {
+          channelType: "feishu",
+          chatId: "chat-1",
+          externalMessageId: "event-1",
+          userId: "open-1",
+          text: "@dev 修复飞书入口",
+        };
+      },
+      async sendToChannel(_chatId: string, content: string) {
+        acks.push(content);
+      },
+    };
+
+    const response = await (gateway as any).handleFeishuWebhook(
+      new Request("http://localhost/webhook/feishu", {
+        method: "POST",
+        body: JSON.stringify({ ok: true }),
+      }),
+    );
+    await Bun.sleep(0);
+
+    expect(response.status).toBe(200);
+    expect(acks[0]).toContain("@coder");
+    expect(messages.listMessages({ channelType: "agent_dm", channelId: "coder" }).length).toBe(1);
+  });
+});

@@ -33,6 +33,13 @@ import { ContextRetriever } from "./memory/ContextRetriever.ts";
 import { ContextMetaGenerator } from "./memory/ContextMetaGenerator.ts";
 import { SimulationManager } from "./simulation/SimulationManager.ts";
 import { FeishuAdapter } from "./gateway/adapters/FeishuAdapter.ts";
+import { AgentRegistry } from "./team/AgentRegistry.ts";
+import { TaskQueue } from "./team/TaskQueue.ts";
+import { TeamMessageStore } from "./team/TeamMessageStore.ts";
+import { ProjectChannelStore } from "./team/ProjectChannelStore.ts";
+import { createAgentWorkers } from "./team/AgentWorker.ts";
+import { CoordinatorLoop } from "./team/CoordinatorLoop.ts";
+import { TeamRouter } from "./team/TeamRouter.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -229,6 +236,80 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     contextRetriever,
   });
 
+  // --- Lovely Octopus 团队模式初始化 ---
+  const agentRegistry = new AgentRegistry();
+  let registeredAgents = agentRegistry.loadAll();
+  if (registeredAgents.length === 0) {
+    console.log("Lovely Octopus: no agents found, creating default coordinator and coder templates");
+    for (const name of ["coordinator", "coder"]) {
+      try {
+        agentRegistry.createFromTemplate(name);
+      } catch (err) {
+        console.error(
+          `Lovely Octopus: failed to create default agent ${name}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    registeredAgents = agentRegistry.loadAll();
+  }
+
+  const agentLoadErrors = agentRegistry.getLoadErrors();
+  if (agentLoadErrors.length > 0) {
+    console.warn(`Lovely Octopus: ${agentLoadErrors.length} agent config error(s) isolated`);
+    for (const error of agentLoadErrors) {
+      console.warn(`  ${error.name}: ${error.message}`);
+    }
+  }
+
+  const teamMessages = new TeamMessageStore(db);
+  const projectChannels = new ProjectChannelStore(db, teamMessages);
+  const taskQueue = new TaskQueue(db);
+  const agentWorkers = createAgentWorkers(agentRegistry.listActive(), {
+    tasks: taskQueue,
+    messages: teamMessages,
+    llmProvider,
+    toolRegistry,
+    skillManager,
+    shellTool: builtinTools.shellTool,
+    memoryManager,
+    contextRetriever,
+  });
+  const coordinatorLoop = new CoordinatorLoop({
+    agents: agentRegistry,
+    tasks: taskQueue,
+    messages: teamMessages,
+    channels: projectChannels,
+    llmProvider,
+    toolRegistry,
+    skillManager,
+    shellTool: builtinTools.shellTool,
+    memoryManager,
+    contextRetriever,
+  });
+  const teamRouter = new TeamRouter({
+    agentRegistry,
+    taskQueue,
+    messages: teamMessages,
+    projectChannels,
+  });
+
+  for (const worker of agentWorkers) {
+    worker.start();
+  }
+  coordinatorLoop.start();
+
+  const taskCounts = {
+    pending: taskQueue.listTasks({ status: "pending" }).length,
+    running: taskQueue.listTasks({ status: "running" }).length,
+    awaitingApproval: taskQueue.listTasks({ status: "awaiting_approval" }).length,
+  };
+  console.log(
+    `Lovely Octopus: ${agentRegistry.listActive().length}/${registeredAgents.length} active agents, ` +
+      `${projectChannels.listChannels().length} project channels, ` +
+      `tasks pending=${taskCounts.pending} running=${taskCounts.running} awaiting_approval=${taskCounts.awaitingApproval}`,
+  );
+
   const gateway = new GatewayServer({
     port,
     hostname: host,
@@ -245,6 +326,10 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     contextMetaGenerator,
     simulationManager,
     feishuAdapter,
+    teamRouter,
+    teamMessages,
+    projectChannels,
+    taskQueue,
     onSessionSwitch: (oldSessionId) => {
       sessionRouter.saveMemoryForSession(oldSessionId);
     },
@@ -357,6 +442,8 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const cleanup = async () => {
     cronScheduler.stop();
     eventWatcher.stop();
+    await Promise.all(agentWorkers.map((worker) => worker.stop()));
+    await coordinatorLoop.stop();
     feishuAdapter?.dispose();
     await mcpManager.disconnectAll();
     // 关闭前保存所有活跃 session 的记忆

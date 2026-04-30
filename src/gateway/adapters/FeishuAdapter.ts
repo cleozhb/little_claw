@@ -209,6 +209,7 @@ export class FeishuAdapter {
     return {
       channelType: "feishu",
       chatId: message.chat_id,
+      externalMessageId: header.event_id,
       userId: sender.sender_id.open_id,
       text,
     };

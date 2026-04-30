@@ -15,6 +15,10 @@ import {
   type WatcherInfo,
   type AgentInfo,
   type MemoryResultEntry,
+  type TeamMessageInfo,
+  type ProjectChannelInfo,
+  type TaskInfo,
+  type TeamMessagePriority,
 } from "./protocol";
 import { HealthChecker, type HealthStatus } from "./HealthChecker.ts";
 import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
@@ -31,6 +35,11 @@ import type { ContextMetaGenerator } from "../memory/ContextMetaGenerator.ts";
 import type { SimulationManager } from "../simulation/SimulationManager.ts";
 import { getAllAgentConfigs } from "../agents/presets.ts";
 import type { FeishuAdapter } from "./adapters/FeishuAdapter.ts";
+import type { TeamRouter } from "../team/TeamRouter.ts";
+import type { TeamMessageStore, TeamMessage } from "../team/TeamMessageStore.ts";
+import type { ProjectChannelStore, ProjectChannel } from "../team/ProjectChannelStore.ts";
+import type { TaskQueue, Task } from "../team/TaskQueue.ts";
+import type { WebhookMessage } from "./adapters/types.ts";
 
 // ============================================================
 // Types
@@ -62,6 +71,14 @@ export interface GatewayOptions {
   simulationManager?: SimulationManager;
   /** 飞书适配器，启用后接收 POST /webhook/feishu */
   feishuAdapter?: FeishuAdapter;
+  /** Lovely Octopus 团队模式路由器 */
+  teamRouter?: TeamRouter;
+  /** Lovely Octopus 团队消息存储 */
+  teamMessages?: TeamMessageStore;
+  /** Lovely Octopus 项目频道存储 */
+  projectChannels?: ProjectChannelStore;
+  /** Lovely Octopus 任务队列 */
+  taskQueue?: TaskQueue;
   /** session 切换时的回调（用于触发旧 session 的记忆保存） */
   onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
@@ -104,6 +121,10 @@ export class GatewayServer {
   private contextMetaGenerator?: ContextMetaGenerator;
   private simulationManager?: SimulationManager;
   private feishuAdapter?: FeishuAdapter;
+  private teamRouter?: TeamRouter;
+  private teamMessages?: TeamMessageStore;
+  private projectChannels?: ProjectChannelStore;
+  private taskQueue?: TaskQueue;
   private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   private port: number;
   private hostname: string;
@@ -140,7 +161,24 @@ export class GatewayServer {
     this.contextMetaGenerator = options.contextMetaGenerator;
     this.simulationManager = options.simulationManager;
     this.feishuAdapter = options.feishuAdapter;
+    this.teamRouter = options.teamRouter;
+    this.teamMessages = options.teamMessages;
+    this.projectChannels = options.projectChannels;
+    this.taskQueue = options.taskQueue;
     this.onSessionSwitch = options.onSessionSwitch;
+
+    this.taskQueue?.onTaskUpdated((task, eventType) => {
+      this.broadcastToAll({ type: "task_updated", task: serializeTask(task), eventType });
+      if (task.status === "awaiting_approval") {
+        this.broadcastToAll({ type: "approval_needed", task: serializeTask(task) });
+        this.notifyFeishuApprovalNeeded(task).catch((err) => {
+          console.error(
+            `[Gateway] Failed to push Feishu approval for task ${task.id}:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+      }
+    });
 
     // 初始化健康检查
     this.healthChecker = new HealthChecker();
@@ -259,6 +297,12 @@ export class GatewayServer {
     } catch {
       // 连接可能已断开
       this.connections.delete(connectionId);
+    }
+  }
+
+  private broadcastToAll(msg: ServerMessage): void {
+    for (const [connectionId] of this.connections) {
+      this.sendToConnection(connectionId, msg);
     }
   }
 
@@ -430,6 +474,40 @@ export class GatewayServer {
         return this.handleInboxGet(connectionId);
       case "inbox_add":
         return this.handleInboxAdd(connectionId, msg.content);
+      case "route_human_message":
+        return this.handleRouteHumanMessage(connectionId, msg);
+      case "send_agent_dm":
+        return this.handleSendAgentDm(connectionId, msg.agentName, msg.content, {
+          userId: msg.userId,
+          priority: msg.priority,
+          taskId: msg.taskId,
+        });
+      case "send_project_message":
+        return this.handleSendProjectMessage(connectionId, msg.project, msg.content, {
+          userId: msg.userId,
+          priority: msg.priority,
+          taskId: msg.taskId,
+        });
+      case "bind_project_channel":
+        return this.handleBindProjectChannel(connectionId, msg.project, {
+          externalChannel: msg.externalChannel,
+          externalChatId: msg.externalChatId,
+          userId: msg.userId,
+        });
+      case "list_project_channels":
+        return this.handleListProjectChannels(connectionId, msg.status, msg.limit);
+      case "get_project_channel":
+        return this.handleGetProjectChannel(connectionId, msg.project, msg.limit);
+      case "get_team_messages":
+        return this.handleGetTeamMessages(connectionId, msg);
+      case "list_tasks":
+        return this.handleListTasks(connectionId, msg);
+      case "approve_task":
+        return this.handleApproveTask(connectionId, msg.taskId, msg.response, msg.userId);
+      case "reject_task":
+        return this.handleRejectTask(connectionId, msg.taskId, msg.response, msg.userId);
+      case "cancel_task":
+        return this.handleCancelTask(connectionId, msg.taskId, msg.reason, msg.userId);
       case "ping":
         return this.sendToConnection(connectionId, { type: "pong" });
       case "health_check":
@@ -796,6 +874,298 @@ export class GatewayServer {
       canSpawnSubAgent: c.canSpawnSubAgent,
     }));
     this.sendToConnection(connectionId, { type: "agents_list", agents });
+  }
+
+  // ----------------------------------------------------------
+  // Lovely Octopus Team 命令
+  // ----------------------------------------------------------
+
+  private handleRouteHumanMessage(
+    connectionId: string,
+    msg: Extract<ClientMessage, { type: "route_human_message" }>,
+  ): void {
+    if (!this.teamRouter || !this.teamMessages) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team mode not configured" });
+      return;
+    }
+
+    try {
+      const result = this.teamRouter.routeHumanMessage({
+        externalChannel: msg.externalChannel ?? "websocket",
+        externalChatId: msg.externalChatId ?? connectionId,
+        externalMessageId: msg.externalMessageId ?? crypto.randomUUID(),
+        userId: msg.userId ?? connectionId,
+        text: msg.text,
+      });
+      const routed = this.teamMessages.getMessage(result.messageId);
+      if (!routed) throw new Error(`Routed message not found: ${result.messageId}`);
+      const message = serializeTeamMessage(routed);
+      this.sendToConnection(connectionId, {
+        type: "human_message_routed",
+        result,
+        message,
+      });
+      this.broadcastToAll({ type: "team_message_added", message });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to route human message: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private handleSendAgentDm(
+    connectionId: string,
+    agentName: string,
+    content: string,
+    options: { userId?: string; priority?: TeamMessagePriority; taskId?: string },
+  ): void {
+    if (!this.teamMessages) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team mode not configured" });
+      return;
+    }
+
+    try {
+      const message = this.teamMessages.createMessage({
+        channelType: "agent_dm",
+        channelId: agentName,
+        taskId: options.taskId,
+        senderType: "human",
+        senderId: options.userId ?? connectionId,
+        content,
+        priority: options.priority,
+        externalChannel: "websocket",
+        externalChatId: connectionId,
+        externalMessageId: crypto.randomUUID(),
+      });
+      const info = serializeTeamMessage(message);
+      this.sendToConnection(connectionId, {
+        type: "human_message_routed",
+        result: {
+          messageId: message.id,
+          ack: `已转给 @${agentName}。`,
+          routedTo: { type: "agent", id: agentName },
+          asyncWorkStarted: false,
+        },
+        message: info,
+      });
+      this.broadcastToAll({ type: "team_message_added", message: info });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to send agent DM: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private handleSendProjectMessage(
+    connectionId: string,
+    project: string,
+    content: string,
+    options: { userId?: string; priority?: TeamMessagePriority; taskId?: string },
+  ): void {
+    if (!this.projectChannels) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team mode not configured" });
+      return;
+    }
+
+    try {
+      this.ensureProjectChannel(project);
+      const message = this.projectChannels.postMessage(project, {
+        taskId: options.taskId,
+        senderType: "human",
+        senderId: options.userId ?? connectionId,
+        content,
+        priority: options.priority,
+        externalChannel: "websocket",
+        externalChatId: connectionId,
+        externalMessageId: crypto.randomUUID(),
+      });
+      const info = serializeTeamMessage(message);
+      this.sendToConnection(connectionId, {
+        type: "human_message_routed",
+        result: {
+          messageId: message.id,
+          ack: `已发到 #${project}。`,
+          routedTo: { type: "project", id: project },
+          asyncWorkStarted: false,
+        },
+        message: info,
+      });
+      this.broadcastToAll({ type: "team_message_added", message: info });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to send project message: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private handleBindProjectChannel(
+    connectionId: string,
+    project: string,
+    options: { externalChannel?: string; externalChatId?: string; userId?: string },
+  ): void {
+    if (!this.projectChannels) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team mode not configured" });
+      return;
+    }
+
+    try {
+      const channel = this.ensureProjectChannel(project);
+      this.projectChannels.bindExternalChat({
+        externalChannel: options.externalChannel ?? "websocket",
+        externalChatId: options.externalChatId ?? connectionId,
+        channelType: "project",
+        channelId: channel.id,
+        createdBy: options.userId ?? connectionId,
+      });
+      this.sendToConnection(connectionId, {
+        type: "project_channel_loaded",
+        channel: serializeProjectChannel(channel),
+        messages: this.projectChannels.listMessages(channel.slug).map(serializeTeamMessage),
+      });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to bind project channel: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private handleListProjectChannels(
+    connectionId: string,
+    status?: "active" | "paused" | "archived",
+    limit?: number,
+  ): void {
+    if (!this.projectChannels) {
+      this.sendToConnection(connectionId, { type: "project_channels_list", channels: [] });
+      return;
+    }
+    this.sendToConnection(connectionId, {
+      type: "project_channels_list",
+      channels: this.projectChannels.listChannels({ status, limit }).map(serializeProjectChannel),
+    });
+  }
+
+  private handleGetProjectChannel(connectionId: string, project: string, limit?: number): void {
+    if (!this.projectChannels) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team mode not configured" });
+      return;
+    }
+
+    try {
+      const channel = this.projectChannels.getChannel(project);
+      if (!channel) {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Project channel not found: ${project}`,
+        });
+        return;
+      }
+      this.sendToConnection(connectionId, {
+        type: "project_channel_loaded",
+        channel: serializeProjectChannel(channel),
+        messages: this.projectChannels.listMessages(channel.slug, limit ?? 50).map(serializeTeamMessage),
+      });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to load project channel: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private handleGetTeamMessages(
+    connectionId: string,
+    msg: Extract<ClientMessage, { type: "get_team_messages" }>,
+  ): void {
+    if (!this.teamMessages) {
+      this.sendToConnection(connectionId, { type: "team_messages_loaded", messages: [] });
+      return;
+    }
+
+    this.sendToConnection(connectionId, {
+      type: "team_messages_loaded",
+      messages: this.teamMessages.listMessages({
+        channelType: msg.channelType,
+        channelId: msg.channelId,
+        project: msg.project,
+        taskId: msg.taskId,
+        senderId: msg.senderId,
+        status: msg.status,
+        statuses: msg.statuses,
+        limit: msg.limit,
+      }).map(serializeTeamMessage),
+    });
+  }
+
+  private handleListTasks(connectionId: string, msg: Extract<ClientMessage, { type: "list_tasks" }>): void {
+    if (!this.taskQueue) {
+      this.sendToConnection(connectionId, { type: "tasks_list", tasks: [] });
+      return;
+    }
+
+    this.sendToConnection(connectionId, {
+      type: "tasks_list",
+      tasks: this.taskQueue.listTasks({
+        status: msg.status,
+        assignedTo: msg.assignedTo,
+        project: msg.project,
+        tags: msg.tags,
+        limit: msg.limit,
+      }).map(serializeTask),
+    });
+  }
+
+  private handleApproveTask(connectionId: string, taskId: string, response?: string, userId?: string): void {
+    this.updateTaskFromGateway(connectionId, () =>
+      this.requireTaskQueue().approveTask(taskId, response ?? "Approved.", userId ?? connectionId),
+    );
+  }
+
+  private handleRejectTask(connectionId: string, taskId: string, response?: string, userId?: string): void {
+    this.updateTaskFromGateway(connectionId, () =>
+      this.requireTaskQueue().rejectTask(taskId, response ?? "Rejected.", userId ?? connectionId),
+    );
+  }
+
+  private handleCancelTask(connectionId: string, taskId: string, reason?: string, userId?: string): void {
+    this.updateTaskFromGateway(connectionId, () =>
+      this.requireTaskQueue().cancelTask(taskId, reason, userId ?? connectionId),
+    );
+  }
+
+  private updateTaskFromGateway(connectionId: string, update: () => Task): void {
+    try {
+      const task = update();
+      this.sendToConnection(connectionId, { type: "task_updated", task: serializeTask(task) });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to update task: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private requireTaskQueue(): TaskQueue {
+    if (!this.taskQueue) {
+      throw new Error("Team mode not configured");
+    }
+    return this.taskQueue;
+  }
+
+  private ensureProjectChannel(project: string): ProjectChannel {
+    if (!this.projectChannels) {
+      throw new Error("Team mode not configured");
+    }
+    return (
+      this.projectChannels.getChannel(project) ??
+      this.projectChannels.createChannel({
+        slug: project,
+        title: titleFromSlug(project),
+      })
+    );
   }
 
   // ----------------------------------------------------------
@@ -1406,11 +1776,13 @@ Output ONLY the markdown content, starting with --- for the frontmatter. No extr
       });
     }
 
-    // 4. 先返回 200（飞书要求 1s 内响应），异步处理消息
-    const { chatId, text } = message;
+    // 4. 先返回 200（飞书要求 1s 内响应），异步处理消息并主动发送 ack。
+    const { chatId } = message;
 
-    // 异步处理：映射 session → 调 Agent → 发送回复
-    this.processWebhookMessage(chatId, text).catch((err) => {
+    const processor = this.teamRouter
+      ? this.processFeishuTeamMessage(message)
+      : this.processWebhookMessage(chatId, message.text);
+    processor.catch((err) => {
       console.error(
         `[Feishu] Error processing message from chat ${chatId}:`,
         err instanceof Error ? err.message : String(err),
@@ -1454,6 +1826,47 @@ Output ONLY the markdown content, starting with --- for the frontmatter. No extr
       // 发送错误提示给用户
       await this.feishuAdapter.sendToChannel(chatId, "抱歉，处理消息时出现了错误，请稍后重试。");
     }
+  }
+
+  /**
+   * 异步处理飞书团队消息：只进入 TeamRouter，立即通过飞书发确定性 ack。
+   * 后台 Worker/Coordinator 的后续进展通过任务和消息推送继续发送。
+   */
+  private async processFeishuTeamMessage(message: WebhookMessage): Promise<void> {
+    if (!this.feishuAdapter || !this.teamRouter || !this.teamMessages) return;
+
+    try {
+      const result = this.teamRouter.routeHumanMessage({
+        externalChannel: message.channelType,
+        externalChatId: message.chatId,
+        externalMessageId: message.externalMessageId ?? crypto.randomUUID(),
+        userId: message.userId,
+        text: message.text,
+      });
+      const routed = this.teamMessages.getMessage(result.messageId);
+      if (routed) {
+        this.broadcastToAll({ type: "team_message_added", message: serializeTeamMessage(routed) });
+      }
+      await this.feishuAdapter.sendToChannel(message.chatId, result.ack);
+    } catch (err) {
+      console.error(
+        `[Feishu] TeamRouter error for chat ${message.chatId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      await this.feishuAdapter.sendToChannel(message.chatId, "消息已收到，但团队路由失败，请稍后重试。");
+    }
+  }
+
+  private async notifyFeishuApprovalNeeded(task: Task): Promise<void> {
+    if (!this.feishuAdapter || !this.teamMessages || !task.sourceMessageId) return;
+    const source = this.teamMessages.getMessage(task.sourceMessageId);
+    if (!source || source.externalChannel !== "feishu" || !source.externalChatId) return;
+
+    const prompt = task.approvalPrompt ?? "请审批该任务。";
+    await this.feishuAdapter.sendToChannel(
+      source.externalChatId,
+      `任务需要审批：${task.title}\n任务 ID：${task.id}\n${prompt}\n\n回复：/task ${task.id} approve 或 /task ${task.id} reject <原因>`,
+    );
   }
 
   // ----------------------------------------------------------
@@ -1530,4 +1943,80 @@ Output ONLY the markdown content, starting with --- for the frontmatter. No extr
     }
     return targets;
   }
+}
+
+function serializeTeamMessage(message: TeamMessage): TeamMessageInfo {
+  return {
+    id: message.id,
+    channelType: message.channelType,
+    channelId: message.channelId,
+    project: message.project,
+    taskId: message.taskId,
+    senderType: message.senderType,
+    senderId: message.senderId,
+    content: message.content,
+    priority: message.priority,
+    status: message.status,
+    handledBy: message.handledBy,
+    externalChannel: message.externalChannel,
+    externalChatId: message.externalChatId,
+    externalMessageId: message.externalMessageId,
+    createdAt: message.createdAt,
+    handledAt: message.handledAt,
+  };
+}
+
+function serializeProjectChannel(channel: ProjectChannel): ProjectChannelInfo {
+  return {
+    id: channel.id,
+    slug: channel.slug,
+    title: channel.title,
+    description: channel.description,
+    status: channel.status,
+    contextPath: channel.contextPath,
+    createdAt: channel.createdAt,
+    updatedAt: channel.updatedAt,
+  };
+}
+
+function serializeTask(task: Task): TaskInfo {
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    status: task.status,
+    priority: task.priority,
+    assignedTo: task.assignedTo,
+    createdBy: task.createdBy,
+    dependsOn: task.dependsOn,
+    blocks: task.blocks,
+    approvalPrompt: task.approvalPrompt,
+    approvalData: task.approvalData,
+    approvalResponse: task.approvalResponse,
+    result: task.result,
+    error: task.error,
+    retryCount: task.retryCount,
+    maxRetries: task.maxRetries,
+    tags: task.tags,
+    project: task.project,
+    channelId: task.channelId,
+    sourceMessageId: task.sourceMessageId,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    startedAt: task.startedAt,
+    completedAt: task.completedAt,
+    dueAt: task.dueAt,
+  };
+}
+
+function titleFromSlug(slug: string): string {
+  return slug
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part[0]!.toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

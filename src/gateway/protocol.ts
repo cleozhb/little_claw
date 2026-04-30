@@ -34,6 +34,93 @@ export interface SkillInfo {
   instructionCount?: number;
 }
 
+export type TeamChannelType = "project" | "agent_dm" | "coordinator" | "system";
+export type TeamSenderType = "human" | "agent" | "coordinator" | "system";
+export type TeamMessagePriority = "low" | "normal" | "high" | "urgent";
+export type TeamMessageStatus = "new" | "routed" | "acked" | "injected" | "resolved";
+export type TaskStatus =
+  | "pending"
+  | "assigned"
+  | "running"
+  | "awaiting_approval"
+  | "approved"
+  | "rejected"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface TeamMessageInfo {
+  id: string;
+  channelType: TeamChannelType;
+  channelId: string;
+  project?: string;
+  taskId?: string;
+  senderType: TeamSenderType;
+  senderId: string;
+  content: string;
+  priority: TeamMessagePriority;
+  status: TeamMessageStatus;
+  handledBy?: string;
+  externalChannel?: string;
+  externalChatId?: string;
+  externalMessageId?: string;
+  createdAt: string;
+  handledAt?: string;
+}
+
+export interface ProjectChannelInfo {
+  id: string;
+  slug: string;
+  title: string;
+  description?: string;
+  status: "active" | "paused" | "archived";
+  contextPath?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskInfo {
+  id: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  priority: number;
+  assignedTo?: string;
+  createdBy: string;
+  dependsOn: string[];
+  blocks: string[];
+  approvalPrompt?: string;
+  approvalData?: unknown;
+  approvalResponse?: string;
+  result?: string;
+  error?: string;
+  retryCount: number;
+  maxRetries: number;
+  tags: string[];
+  project?: string;
+  channelId?: string;
+  sourceMessageId?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  dueAt?: string;
+}
+
+export type RouteTarget =
+  | { type: "agent"; id: string }
+  | { type: "project"; id: string }
+  | { type: "task"; id: string }
+  | { type: "coordinator"; id: string }
+  | { type: "system"; id: string };
+
+export interface RouteResultInfo {
+  messageId: string;
+  ack: string;
+  routedTo: RouteTarget;
+  asyncWorkStarted: boolean;
+}
+
 // ============================================================
 // Client → Server Messages
 // ============================================================
@@ -83,6 +170,97 @@ export interface PingMessage {
 
 export interface HealthCheckMessage {
   type: "health_check";
+}
+
+// --- Lovely Octopus Team Client Messages ---
+
+export interface RouteHumanMessage {
+  type: "route_human_message";
+  text: string;
+  externalChannel?: string;
+  externalChatId?: string;
+  externalMessageId?: string;
+  userId?: string;
+}
+
+export interface SendAgentDmMessage {
+  type: "send_agent_dm";
+  agentName: string;
+  content: string;
+  userId?: string;
+  priority?: TeamMessagePriority;
+  taskId?: string;
+}
+
+export interface SendProjectMessage {
+  type: "send_project_message";
+  project: string;
+  content: string;
+  userId?: string;
+  priority?: TeamMessagePriority;
+  taskId?: string;
+}
+
+export interface BindProjectChannelMessage {
+  type: "bind_project_channel";
+  project: string;
+  externalChannel?: string;
+  externalChatId?: string;
+  userId?: string;
+}
+
+export interface ListProjectChannelsMessage {
+  type: "list_project_channels";
+  status?: "active" | "paused" | "archived";
+  limit?: number;
+}
+
+export interface GetProjectChannelMessage {
+  type: "get_project_channel";
+  project: string;
+  limit?: number;
+}
+
+export interface GetTeamMessagesMessage {
+  type: "get_team_messages";
+  channelType?: TeamChannelType;
+  channelId?: string;
+  project?: string;
+  taskId?: string;
+  senderId?: string;
+  status?: TeamMessageStatus;
+  statuses?: TeamMessageStatus[];
+  limit?: number;
+}
+
+export interface ListTasksMessage {
+  type: "list_tasks";
+  status?: TaskStatus;
+  assignedTo?: string;
+  project?: string;
+  tags?: string[];
+  limit?: number;
+}
+
+export interface ApproveTaskMessage {
+  type: "approve_task";
+  taskId: string;
+  response?: string;
+  userId?: string;
+}
+
+export interface RejectTaskMessage {
+  type: "reject_task";
+  taskId: string;
+  response?: string;
+  userId?: string;
+}
+
+export interface CancelTaskMessage {
+  type: "cancel_task";
+  taskId: string;
+  reason?: string;
+  userId?: string;
 }
 
 export interface ListSkillsMessage {
@@ -300,6 +478,17 @@ export type ClientMessage =
   | ContextRebuildMessage
   | InboxGetMessage
   | InboxAddMessage
+  | RouteHumanMessage
+  | SendAgentDmMessage
+  | SendProjectMessage
+  | BindProjectChannelMessage
+  | ListProjectChannelsMessage
+  | GetProjectChannelMessage
+  | GetTeamMessagesMessage
+  | ListTasksMessage
+  | ApproveTaskMessage
+  | RejectTaskMessage
+  | CancelTaskMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -662,6 +851,51 @@ export interface InboxAppendedMessage {
   line: string;
 }
 
+// --- Lovely Octopus Team Server Messages ---
+
+export interface HumanMessageRoutedMessage {
+  type: "human_message_routed";
+  result: RouteResultInfo;
+  message: TeamMessageInfo;
+}
+
+export interface TeamMessageAddedMessage {
+  type: "team_message_added";
+  message: TeamMessageInfo;
+}
+
+export interface ProjectChannelsListMessage {
+  type: "project_channels_list";
+  channels: ProjectChannelInfo[];
+}
+
+export interface ProjectChannelLoadedMessage {
+  type: "project_channel_loaded";
+  channel: ProjectChannelInfo;
+  messages: TeamMessageInfo[];
+}
+
+export interface TeamMessagesLoadedMessage {
+  type: "team_messages_loaded";
+  messages: TeamMessageInfo[];
+}
+
+export interface TasksListMessage {
+  type: "tasks_list";
+  tasks: TaskInfo[];
+}
+
+export interface TaskUpdatedMessage {
+  type: "task_updated";
+  task: TaskInfo;
+  eventType?: string;
+}
+
+export interface ApprovalNeededMessage {
+  type: "approval_needed";
+  task: TaskInfo;
+}
+
 export type ServerMessage =
   | TextDeltaMessage
   | ToolCallMessage
@@ -707,7 +941,15 @@ export type ServerMessage =
   | ContextSearchResultMessage
   | ContextRebuildResultMessage
   | InboxResultMessage
-  | InboxAppendedMessage;
+  | InboxAppendedMessage
+  | HumanMessageRoutedMessage
+  | TeamMessageAddedMessage
+  | ProjectChannelsListMessage
+  | ProjectChannelLoadedMessage
+  | TeamMessagesLoadedMessage
+  | TasksListMessage
+  | TaskUpdatedMessage
+  | ApprovalNeededMessage;
 
 // ============================================================
 // 所有合法的 client message type 值
@@ -755,6 +997,17 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "context_rebuild",
   "inbox_get",
   "inbox_add",
+  "route_human_message",
+  "send_agent_dm",
+  "send_project_message",
+  "bind_project_channel",
+  "list_project_channels",
+  "get_project_channel",
+  "get_team_messages",
+  "list_tasks",
+  "approve_task",
+  "reject_task",
+  "cancel_task",
   "ping",
   "health_check",
 ]);
@@ -913,6 +1166,73 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "inbox_add":
       requireString(msg, "content");
       break;
+    case "route_human_message":
+      requireString(msg, "text");
+      requireOptionalString(msg, "externalChannel");
+      requireOptionalString(msg, "externalChatId");
+      requireOptionalString(msg, "externalMessageId");
+      requireOptionalString(msg, "userId");
+      break;
+    case "send_agent_dm":
+      requireString(msg, "agentName");
+      requireString(msg, "content");
+      requireOptionalString(msg, "userId");
+      requireOptionalString(msg, "taskId");
+      requireOptionalPriority(msg.priority);
+      break;
+    case "send_project_message":
+      requireString(msg, "project");
+      requireString(msg, "content");
+      requireOptionalString(msg, "userId");
+      requireOptionalString(msg, "taskId");
+      requireOptionalPriority(msg.priority);
+      break;
+    case "bind_project_channel":
+      requireString(msg, "project");
+      requireOptionalString(msg, "externalChannel");
+      requireOptionalString(msg, "externalChatId");
+      requireOptionalString(msg, "userId");
+      break;
+    case "list_project_channels":
+      requireOptionalProjectStatus(msg.status);
+      requireOptionalNumber(msg, "limit");
+      break;
+    case "get_project_channel":
+      requireString(msg, "project");
+      requireOptionalNumber(msg, "limit");
+      break;
+    case "get_team_messages":
+      requireOptionalChannelType(msg.channelType);
+      requireOptionalString(msg, "channelId");
+      requireOptionalString(msg, "project");
+      requireOptionalString(msg, "taskId");
+      requireOptionalString(msg, "senderId");
+      requireOptionalMessageStatus(msg.status);
+      requireOptionalMessageStatuses(msg.statuses);
+      requireOptionalNumber(msg, "limit");
+      break;
+    case "list_tasks":
+      requireOptionalTaskStatus(msg.status);
+      requireOptionalString(msg, "assignedTo");
+      requireOptionalString(msg, "project");
+      requireOptionalStringArray(msg.tags, "tags");
+      requireOptionalNumber(msg, "limit");
+      break;
+    case "approve_task":
+      requireString(msg, "taskId");
+      requireOptionalString(msg, "response");
+      requireOptionalString(msg, "userId");
+      break;
+    case "reject_task":
+      requireString(msg, "taskId");
+      requireOptionalString(msg, "response");
+      requireOptionalString(msg, "userId");
+      break;
+    case "cancel_task":
+      requireString(msg, "taskId");
+      requireOptionalString(msg, "reason");
+      requireOptionalString(msg, "userId");
+      break;
     case "ping":
       break;
     case "health_check":
@@ -936,5 +1256,101 @@ export function serializeServerMessage(msg: ServerMessage): string {
 function requireString(obj: Record<string, unknown>, field: string): void {
   if (typeof obj[field] !== "string" || (obj[field] as string).length === 0) {
     throw new Error(`'${field}' must be a non-empty string`);
+  }
+}
+
+function requireOptionalString(obj: Record<string, unknown>, field: string): void {
+  const value = obj[field];
+  if (value !== undefined && typeof value !== "string") {
+    throw new Error(`'${field}' must be a string if provided`);
+  }
+}
+
+function requireOptionalNumber(obj: Record<string, unknown>, field: string): void {
+  const value = obj[field];
+  if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+    throw new Error(`'${field}' must be a finite number if provided`);
+  }
+}
+
+function requireOptionalStringArray(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(`'${field}' must be an array of strings if provided`);
+  }
+}
+
+function requireOptionalPriority(value: unknown): void {
+  if (
+    value !== undefined &&
+    value !== "low" &&
+    value !== "normal" &&
+    value !== "high" &&
+    value !== "urgent"
+  ) {
+    throw new Error("'priority' must be low, normal, high, or urgent if provided");
+  }
+}
+
+function requireOptionalProjectStatus(value: unknown): void {
+  if (
+    value !== undefined &&
+    value !== "active" &&
+    value !== "paused" &&
+    value !== "archived"
+  ) {
+    throw new Error("'status' must be active, paused, or archived if provided");
+  }
+}
+
+function requireOptionalChannelType(value: unknown): void {
+  if (
+    value !== undefined &&
+    value !== "project" &&
+    value !== "agent_dm" &&
+    value !== "coordinator" &&
+    value !== "system"
+  ) {
+    throw new Error("'channelType' must be project, agent_dm, coordinator, or system if provided");
+  }
+}
+
+function requireOptionalMessageStatus(value: unknown): void {
+  if (
+    value !== undefined &&
+    value !== "new" &&
+    value !== "routed" &&
+    value !== "acked" &&
+    value !== "injected" &&
+    value !== "resolved"
+  ) {
+    throw new Error("'status' must be a valid team message status if provided");
+  }
+}
+
+function requireOptionalMessageStatuses(value: unknown): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new Error("'statuses' must be an array if provided");
+  }
+  for (const status of value) {
+    requireOptionalMessageStatus(status);
+  }
+}
+
+function requireOptionalTaskStatus(value: unknown): void {
+  if (
+    value !== undefined &&
+    value !== "pending" &&
+    value !== "assigned" &&
+    value !== "running" &&
+    value !== "awaiting_approval" &&
+    value !== "approved" &&
+    value !== "rejected" &&
+    value !== "completed" &&
+    value !== "failed" &&
+    value !== "cancelled"
+  ) {
+    throw new Error("'status' must be a valid task status if provided");
   }
 }

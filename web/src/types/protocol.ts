@@ -37,6 +37,93 @@ export interface SkillInfo {
   instructionCount?: number;
 }
 
+export type TeamChannelType = "project" | "agent_dm" | "coordinator" | "system";
+export type TeamSenderType = "human" | "agent" | "coordinator" | "system";
+export type TeamMessagePriority = "low" | "normal" | "high" | "urgent";
+export type TeamMessageStatus = "new" | "routed" | "acked" | "injected" | "resolved";
+export type TaskStatus =
+  | "pending"
+  | "assigned"
+  | "running"
+  | "awaiting_approval"
+  | "approved"
+  | "rejected"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface TeamMessageInfo {
+  id: string;
+  channelType: TeamChannelType;
+  channelId: string;
+  project?: string;
+  taskId?: string;
+  senderType: TeamSenderType;
+  senderId: string;
+  content: string;
+  priority: TeamMessagePriority;
+  status: TeamMessageStatus;
+  handledBy?: string;
+  externalChannel?: string;
+  externalChatId?: string;
+  externalMessageId?: string;
+  createdAt: string;
+  handledAt?: string;
+}
+
+export interface ProjectChannelInfo {
+  id: string;
+  slug: string;
+  title: string;
+  description?: string;
+  status: "active" | "paused" | "archived";
+  contextPath?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskInfo {
+  id: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  priority: number;
+  assignedTo?: string;
+  createdBy: string;
+  dependsOn: string[];
+  blocks: string[];
+  approvalPrompt?: string;
+  approvalData?: unknown;
+  approvalResponse?: string;
+  result?: string;
+  error?: string;
+  retryCount: number;
+  maxRetries: number;
+  tags: string[];
+  project?: string;
+  channelId?: string;
+  sourceMessageId?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  dueAt?: string;
+}
+
+export type RouteTarget =
+  | { type: "agent"; id: string }
+  | { type: "project"; id: string }
+  | { type: "task"; id: string }
+  | { type: "coordinator"; id: string }
+  | { type: "system"; id: string };
+
+export interface RouteResultInfo {
+  messageId: string;
+  ack: string;
+  routedTo: RouteTarget;
+  asyncWorkStarted: boolean;
+}
+
 // ============================================================
 // Client → Server Messages
 // ============================================================
@@ -141,6 +228,95 @@ export interface HealthCheckMessage {
   type: "health_check";
 }
 
+export interface RouteHumanMessage {
+  type: "route_human_message";
+  text: string;
+  externalChannel?: string;
+  externalChatId?: string;
+  externalMessageId?: string;
+  userId?: string;
+}
+
+export interface SendAgentDmMessage {
+  type: "send_agent_dm";
+  agentName: string;
+  content: string;
+  userId?: string;
+  priority?: TeamMessagePriority;
+  taskId?: string;
+}
+
+export interface SendProjectMessage {
+  type: "send_project_message";
+  project: string;
+  content: string;
+  userId?: string;
+  priority?: TeamMessagePriority;
+  taskId?: string;
+}
+
+export interface BindProjectChannelMessage {
+  type: "bind_project_channel";
+  project: string;
+  externalChannel?: string;
+  externalChatId?: string;
+  userId?: string;
+}
+
+export interface ListProjectChannelsMessage {
+  type: "list_project_channels";
+  status?: "active" | "paused" | "archived";
+  limit?: number;
+}
+
+export interface GetProjectChannelMessage {
+  type: "get_project_channel";
+  project: string;
+  limit?: number;
+}
+
+export interface GetTeamMessagesMessage {
+  type: "get_team_messages";
+  channelType?: TeamChannelType;
+  channelId?: string;
+  project?: string;
+  taskId?: string;
+  senderId?: string;
+  status?: TeamMessageStatus;
+  statuses?: TeamMessageStatus[];
+  limit?: number;
+}
+
+export interface ListTasksMessage {
+  type: "list_tasks";
+  status?: TaskStatus;
+  assignedTo?: string;
+  project?: string;
+  tags?: string[];
+  limit?: number;
+}
+
+export interface ApproveTaskMessage {
+  type: "approve_task";
+  taskId: string;
+  response?: string;
+  userId?: string;
+}
+
+export interface RejectTaskMessage {
+  type: "reject_task";
+  taskId: string;
+  response?: string;
+  userId?: string;
+}
+
+export interface CancelTaskMessage {
+  type: "cancel_task";
+  taskId: string;
+  reason?: string;
+  userId?: string;
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -176,6 +352,17 @@ export type ClientMessage =
   | UpdatePersonaMessage
   | UpdateScenarioMessage
   | GenerateContentMessage
+  | RouteHumanMessage
+  | SendAgentDmMessage
+  | SendProjectMessage
+  | BindProjectChannelMessage
+  | ListProjectChannelsMessage
+  | GetProjectChannelMessage
+  | GetTeamMessagesMessage
+  | ListTasksMessage
+  | ApproveTaskMessage
+  | RejectTaskMessage
+  | CancelTaskMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -540,6 +727,49 @@ export interface SkillsMatchedMessage {
   skills: Array<{ name: string; score: number; matchReason: string }>;
 }
 
+export interface HumanMessageRoutedMessage {
+  type: "human_message_routed";
+  result: RouteResultInfo;
+  message: TeamMessageInfo;
+}
+
+export interface TeamMessageAddedMessage {
+  type: "team_message_added";
+  message: TeamMessageInfo;
+}
+
+export interface ProjectChannelsListMessage {
+  type: "project_channels_list";
+  channels: ProjectChannelInfo[];
+}
+
+export interface ProjectChannelLoadedMessage {
+  type: "project_channel_loaded";
+  channel: ProjectChannelInfo;
+  messages: TeamMessageInfo[];
+}
+
+export interface TeamMessagesLoadedMessage {
+  type: "team_messages_loaded";
+  messages: TeamMessageInfo[];
+}
+
+export interface TasksListMessage {
+  type: "tasks_list";
+  tasks: TaskInfo[];
+}
+
+export interface TaskUpdatedMessage {
+  type: "task_updated";
+  task: TaskInfo;
+  eventType?: string;
+}
+
+export interface ApprovalNeededMessage {
+  type: "approval_needed";
+  task: TaskInfo;
+}
+
 // --- Simulation Domain Types ---
 
 export interface ArgumentNode {
@@ -589,4 +819,12 @@ export type ServerMessage =
   | PersonaUpdatedMessage
   | ScenarioUpdatedMessage
   | GeneratedContentMessage
-  | SkillsMatchedMessage;
+  | SkillsMatchedMessage
+  | HumanMessageRoutedMessage
+  | TeamMessageAddedMessage
+  | ProjectChannelsListMessage
+  | ProjectChannelLoadedMessage
+  | TeamMessagesLoadedMessage
+  | TasksListMessage
+  | TaskUpdatedMessage
+  | ApprovalNeededMessage;
