@@ -740,7 +740,7 @@ Feishu webhook -> parse message -> TeamRouter.routeHumanMessage()
 
 把 Lovely Octopus 模块接入 server 启动、停止和清理流程。
 
-新增启动顺序：
+实际启动装配顺序：
 
 ```text
 1. Database
@@ -749,23 +749,26 @@ Feishu webhook -> parse message -> TeamRouter.routeHumanMessage()
 4. McpManager
 5. SessionRouter + AgentLoop
 6. CronScheduler + EventWatcher
-7. HealthChecker
-8. GatewayServer
-9. AgentRegistry
-10. TaskQueue
-11. TeamMessageStore
-12. ProjectChannelStore
-13. AgentWorkers
-14. CoordinatorLoop
-15. TeamRouter
-16. FeishuAdapter -> TeamRouter
+7. AgentRegistry
+8. TaskQueue
+9. TeamMessageStore
+10. ProjectChannelStore
+11. AgentWorkers（只创建，不启动）
+12. CoordinatorLoop（只创建，不启动）
+13. TeamRouter
+14. GatewayServer（注入 TeamRouter / stores / TaskQueue，并注册任务更新广播）
+15. AgentWorkers + CoordinatorLoop start()
+16. CronScheduler + EventWatcher start()
+17. FeishuAdapter webhook -> GatewayServer -> TeamRouter
 ```
 
 依赖注入边界：
 
 - `ToolRegistry`、LLM provider、SkillManager、McpManager 只能初始化一次，并注入给 `SessionRouter`、`AgentWorkers`、`CoordinatorLoop` 复用。
 - `AgentWorkers` 和 `CoordinatorLoop` 不应该在内部自己创建新的全局执行依赖。
-- server.ts 负责组装生命周期，模块本身只暴露 start/stop/dispose，不偷偷启动后台循环。
+- `TeamRouter` 只接收 `AgentRegistry`、`TaskQueue`、`TeamMessageStore`、`ProjectChannelStore`；不要注入或直接调用 `AgentWorkers` / `CoordinatorLoop`，避免确定性入口层变成调度层。
+- server.ts 通过 `createLovelyOctopusRuntime()` 统一创建 Lovely Octopus runtime，并负责显式 start/stop。模块本身只暴露 start/stop/dispose，不偷偷启动后台循环。
+- `GatewayServer` 必须在 AgentWorkers / CoordinatorLoop 启动前完成构造和 `TaskQueue.onTaskUpdated()` 监听注册，避免启动瞬间的任务状态更新丢失 Web UI / 飞书推送。
 
 ### 给 Codex 做任务的 prompt
 
@@ -773,16 +776,18 @@ Feishu webhook -> parse message -> TeamRouter.routeHumanMessage()
 请把 Lovely Octopus 的服务生命周期接入 server.ts。
 
 要求：
-1. server.ts 初始化 AgentRegistry、TaskQueue、TeamMessageStore、ProjectChannelStore。
-2. 为每个 active Agent 创建 AgentWorker。
-3. 启动 CoordinatorLoop。
-4. AgentWorkers 和 CoordinatorLoop 必须复用 server 已创建的 LLM provider、ToolRegistry、SkillManager、McpManager。
-5. 创建 TeamRouter，并注入 AgentRegistry、TaskQueue、TeamMessageStore、ProjectChannelStore、AgentWorkers、CoordinatorLoop。
-6. GatewayServer 和 FeishuAdapter 使用 TeamRouter。
-7. cleanup 时停止 AgentWorkers 和 CoordinatorLoop。
-8. 启动日志打印 Lovely Octopus 团队状态、任务统计、项目频道数量。
-9. 如果 agents 目录不存在，创建默认 coordinator 和 coder 模板。
-10. 如果某个 Agent 配置错误，不能导致整个服务崩溃；标记 unavailable 并打印原因。
+1. 在 server.ts 中抽出 createLovelyOctopusRuntime()，统一初始化 AgentRegistry、TaskQueue、TeamMessageStore、ProjectChannelStore、AgentWorkers、CoordinatorLoop、TeamRouter。
+2. 为每个 active Agent 创建 AgentWorker，但由 runtime.start() 显式启动。
+3. 创建 CoordinatorLoop，但由 runtime.start() 显式启动。
+4. AgentWorkers 和 CoordinatorLoop 必须复用 server 已创建的 LLM provider、ToolRegistry、SkillManager、McpManager 以及 memory/context 依赖。
+5. 创建 TeamRouter，并只注入 AgentRegistry、TaskQueue、TeamMessageStore、ProjectChannelStore；TeamRouter 不持有 AgentWorkers 或 CoordinatorLoop。
+6. GatewayServer 注入 TeamRouter、TeamMessageStore、ProjectChannelStore、TaskQueue；Feishu webhook 经 GatewayServer 进入 TeamRouter。
+7. GatewayServer 构造完成后再调用 runtime.start()，确保任务更新监听和广播先就位。
+8. cleanup 时调用 runtime.stop()，停止 AgentWorkers 和 CoordinatorLoop；cleanup 必须幂等。
+9. 启动日志打印 Lovely Octopus 团队状态、任务统计、项目频道数量和配置加载错误数量。
+10. 如果 agents 目录不存在或为空，创建默认 coordinator 和 coder 模板。
+11. 如果某个 Agent 配置错误，不能导致整个服务崩溃；隔离错误并打印原因，其他合法 Agent 继续启动。
+12. 补充 lifecycle 测试，覆盖默认模板创建、坏 Agent 配置隔离、start/stop 和状态统计。
 ```
 
 ### 验收标准
@@ -793,6 +798,8 @@ Feishu webhook -> parse message -> TeamRouter.routeHumanMessage()
 - 启动日志能看到 active Agent、任务统计、项目频道统计
 - Feishu enabled 时 webhook 接到 TeamRouter
 - Feishu disabled 时本地 Web UI 仍可用
+- GatewayServer 的任务更新监听在 Worker/CoordinatorLoop 启动前注册完成
+- lifecycle 测试能证明默认模板、坏配置隔离、start/stop 都可用
 
 ### 我需要理解的重点技术和设计
 
@@ -801,6 +808,8 @@ Feishu webhook -> parse message -> TeamRouter.routeHumanMessage()
 - Agent 配置错误要隔离，不能拖垮整个系统
 - 默认模板能降低首次使用门槛
 - server.ts 是唯一的执行依赖装配层，避免 Team 模式悄悄长出第二套运行时
+- TeamRouter 是确定性路由入口，不是 runtime coordinator；它不应该知道 Worker/Loop 实例
+- 启动顺序要保证“广播监听先注册，后台循环后启动”，否则重启恢复任务时可能产生不可见状态变化
 
 ---
 

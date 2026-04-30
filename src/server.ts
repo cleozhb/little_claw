@@ -33,19 +33,181 @@ import { ContextRetriever } from "./memory/ContextRetriever.ts";
 import { ContextMetaGenerator } from "./memory/ContextMetaGenerator.ts";
 import { SimulationManager } from "./simulation/SimulationManager.ts";
 import { FeishuAdapter } from "./gateway/adapters/FeishuAdapter.ts";
-import { AgentRegistry } from "./team/AgentRegistry.ts";
+import { AgentRegistry, type RegisteredAgent } from "./team/AgentRegistry.ts";
 import { TaskQueue } from "./team/TaskQueue.ts";
 import { TeamMessageStore } from "./team/TeamMessageStore.ts";
 import { ProjectChannelStore } from "./team/ProjectChannelStore.ts";
-import { createAgentWorkers } from "./team/AgentWorker.ts";
+import { createAgentWorkers, type AgentWorker } from "./team/AgentWorker.ts";
 import { CoordinatorLoop } from "./team/CoordinatorLoop.ts";
 import { TeamRouter } from "./team/TeamRouter.ts";
+import type { LLMProvider } from "./llm/types.ts";
+import type { ShellTool } from "./tools/types.ts";
+import type { MemoryManager as MemoryManagerType } from "./memory/MemoryManager.ts";
+import type { ContextRetriever as ContextRetrieverType } from "./memory/ContextRetriever.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 /** 用 AsyncLocalStorage 传递当前 sessionId，避免跨 session 并发时共享变量竞态 */
 const sessionIdStorage = new AsyncLocalStorage<string>();
+
+export interface LovelyOctopusRuntimeOptions {
+  db: Database;
+  llmProvider: LLMProvider;
+  toolRegistry: ToolRegistry;
+  skillManager?: SkillManager;
+  shellTool?: ShellTool;
+  memoryManager?: MemoryManagerType;
+  contextRetriever?: ContextRetrieverType;
+  agentDir?: string;
+  workerPollIntervalMs?: number;
+  coordinatorPollIntervalMs?: number;
+}
+
+export interface LovelyOctopusRuntimeStatus {
+  registeredAgents: number;
+  activeAgents: number;
+  projectChannels: number;
+  tasks: {
+    pending: number;
+    running: number;
+    awaitingApproval: number;
+  };
+  loadErrors: number;
+}
+
+export interface LovelyOctopusRuntime {
+  agentRegistry: AgentRegistry;
+  registeredAgents: RegisteredAgent[];
+  teamMessages: TeamMessageStore;
+  projectChannels: ProjectChannelStore;
+  taskQueue: TaskQueue;
+  agentWorkers: AgentWorker[];
+  coordinatorLoop: CoordinatorLoop;
+  teamRouter: TeamRouter;
+  start(): void;
+  stop(): Promise<void>;
+  getStatus(): LovelyOctopusRuntimeStatus;
+}
+
+export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions): LovelyOctopusRuntime {
+  const agentRegistry = new AgentRegistry(options.agentDir);
+  let registeredAgents = agentRegistry.loadAll();
+  if (registeredAgents.length === 0) {
+    console.log("Lovely Octopus: no agents found, creating default coordinator and coder templates");
+    for (const name of ["coordinator", "coder"]) {
+      try {
+        agentRegistry.createFromTemplate(name);
+      } catch (err) {
+        console.error(
+          `Lovely Octopus: failed to create default agent ${name}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    registeredAgents = agentRegistry.loadAll();
+  }
+
+  const teamMessages = new TeamMessageStore(options.db);
+  const projectChannels = new ProjectChannelStore(options.db, teamMessages);
+  const taskQueue = new TaskQueue(options.db);
+  const agentWorkers = createAgentWorkers(agentRegistry.listActive(), {
+    tasks: taskQueue,
+    messages: teamMessages,
+    llmProvider: options.llmProvider,
+    toolRegistry: options.toolRegistry,
+    skillManager: options.skillManager,
+    shellTool: options.shellTool,
+    memoryManager: options.memoryManager,
+    contextRetriever: options.contextRetriever,
+    pollIntervalMs: options.workerPollIntervalMs,
+  });
+  const coordinatorLoop = new CoordinatorLoop({
+    agents: agentRegistry,
+    tasks: taskQueue,
+    messages: teamMessages,
+    channels: projectChannels,
+    llmProvider: options.llmProvider,
+    toolRegistry: options.toolRegistry,
+    skillManager: options.skillManager,
+    shellTool: options.shellTool,
+    memoryManager: options.memoryManager,
+    contextRetriever: options.contextRetriever,
+    pollIntervalMs: options.coordinatorPollIntervalMs,
+  });
+  const teamRouter = new TeamRouter({
+    agentRegistry,
+    taskQueue,
+    messages: teamMessages,
+    projectChannels,
+  });
+
+  let started = false;
+
+  return {
+    agentRegistry,
+    registeredAgents,
+    teamMessages,
+    projectChannels,
+    taskQueue,
+    agentWorkers,
+    coordinatorLoop,
+    teamRouter,
+    start() {
+      if (started) return;
+      started = true;
+      for (const worker of agentWorkers) {
+        worker.start();
+      }
+      coordinatorLoop.start();
+    },
+    async stop() {
+      if (!started) return;
+      started = false;
+      await Promise.all(agentWorkers.map((worker) => worker.stop()));
+      await coordinatorLoop.stop();
+    },
+    getStatus() {
+      return getLovelyOctopusRuntimeStatus(
+        agentRegistry,
+        registeredAgents,
+        projectChannels,
+        taskQueue,
+      );
+    },
+  };
+}
+
+export function formatLovelyOctopusStatus(status: LovelyOctopusRuntimeStatus): string {
+  const loadErrorText = status.loadErrors > 0
+    ? `, load_errors=${status.loadErrors}`
+    : "";
+  return (
+    `Lovely Octopus: ${status.activeAgents}/${status.registeredAgents} active agents, ` +
+    `${status.projectChannels} project channels, ` +
+    `tasks pending=${status.tasks.pending} running=${status.tasks.running} awaiting_approval=${status.tasks.awaitingApproval}` +
+    loadErrorText
+  );
+}
+
+function getLovelyOctopusRuntimeStatus(
+  agentRegistry: AgentRegistry,
+  registeredAgents: RegisteredAgent[],
+  projectChannels: ProjectChannelStore,
+  taskQueue: TaskQueue,
+): LovelyOctopusRuntimeStatus {
+  return {
+    registeredAgents: registeredAgents.length,
+    activeAgents: agentRegistry.listActive().length,
+    projectChannels: projectChannels.listChannels().length,
+    tasks: {
+      pending: taskQueue.listTasks({ status: "pending" }).length,
+      running: taskQueue.listTasks({ status: "running" }).length,
+      awaitingApproval: taskQueue.listTasks({ status: "awaiting_approval" }).length,
+    },
+    loadErrors: agentRegistry.getLoadErrors().length,
+  };
+}
 
 export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: () => Promise<void> }> {
   const config = loadConfig();
@@ -236,25 +398,17 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     contextRetriever,
   });
 
-  // --- Lovely Octopus 团队模式初始化 ---
-  const agentRegistry = new AgentRegistry();
-  let registeredAgents = agentRegistry.loadAll();
-  if (registeredAgents.length === 0) {
-    console.log("Lovely Octopus: no agents found, creating default coordinator and coder templates");
-    for (const name of ["coordinator", "coder"]) {
-      try {
-        agentRegistry.createFromTemplate(name);
-      } catch (err) {
-        console.error(
-          `Lovely Octopus: failed to create default agent ${name}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
-    registeredAgents = agentRegistry.loadAll();
-  }
+  const lovelyOctopus = createLovelyOctopusRuntime({
+    db,
+    llmProvider,
+    toolRegistry,
+    skillManager,
+    shellTool: builtinTools.shellTool,
+    memoryManager,
+    contextRetriever,
+  });
 
-  const agentLoadErrors = agentRegistry.getLoadErrors();
+  const agentLoadErrors = lovelyOctopus.agentRegistry.getLoadErrors();
   if (agentLoadErrors.length > 0) {
     console.warn(`Lovely Octopus: ${agentLoadErrors.length} agent config error(s) isolated`);
     for (const error of agentLoadErrors) {
@@ -262,53 +416,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     }
   }
 
-  const teamMessages = new TeamMessageStore(db);
-  const projectChannels = new ProjectChannelStore(db, teamMessages);
-  const taskQueue = new TaskQueue(db);
-  const agentWorkers = createAgentWorkers(agentRegistry.listActive(), {
-    tasks: taskQueue,
-    messages: teamMessages,
-    llmProvider,
-    toolRegistry,
-    skillManager,
-    shellTool: builtinTools.shellTool,
-    memoryManager,
-    contextRetriever,
-  });
-  const coordinatorLoop = new CoordinatorLoop({
-    agents: agentRegistry,
-    tasks: taskQueue,
-    messages: teamMessages,
-    channels: projectChannels,
-    llmProvider,
-    toolRegistry,
-    skillManager,
-    shellTool: builtinTools.shellTool,
-    memoryManager,
-    contextRetriever,
-  });
-  const teamRouter = new TeamRouter({
-    agentRegistry,
-    taskQueue,
-    messages: teamMessages,
-    projectChannels,
-  });
-
-  for (const worker of agentWorkers) {
-    worker.start();
-  }
-  coordinatorLoop.start();
-
-  const taskCounts = {
-    pending: taskQueue.listTasks({ status: "pending" }).length,
-    running: taskQueue.listTasks({ status: "running" }).length,
-    awaitingApproval: taskQueue.listTasks({ status: "awaiting_approval" }).length,
-  };
-  console.log(
-    `Lovely Octopus: ${agentRegistry.listActive().length}/${registeredAgents.length} active agents, ` +
-      `${projectChannels.listChannels().length} project channels, ` +
-      `tasks pending=${taskCounts.pending} running=${taskCounts.running} awaiting_approval=${taskCounts.awaitingApproval}`,
-  );
+  console.log(formatLovelyOctopusStatus(lovelyOctopus.getStatus()));
 
   const gateway = new GatewayServer({
     port,
@@ -326,10 +434,10 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     contextMetaGenerator,
     simulationManager,
     feishuAdapter,
-    teamRouter,
-    teamMessages,
-    projectChannels,
-    taskQueue,
+    teamRouter: lovelyOctopus.teamRouter,
+    teamMessages: lovelyOctopus.teamMessages,
+    projectChannels: lovelyOctopus.projectChannels,
+    taskQueue: lovelyOctopus.taskQueue,
     onSessionSwitch: (oldSessionId) => {
       sessionRouter.saveMemoryForSession(oldSessionId);
     },
@@ -372,6 +480,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     getActiveSessionCount: () => sessionRouter.getActiveSessionCount(),
   });
 
+  lovelyOctopus.start();
   gateway.start();
 
   // --- Scheduler → Agent 触发回调 ---
@@ -439,18 +548,21 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
 
   console.log(`little_claw server running on ws://${host}:${port}`);
 
+  let cleanupPromise: Promise<void> | null = null;
   const cleanup = async () => {
-    cronScheduler.stop();
-    eventWatcher.stop();
-    await Promise.all(agentWorkers.map((worker) => worker.stop()));
-    await coordinatorLoop.stop();
-    feishuAdapter?.dispose();
-    await mcpManager.disconnectAll();
-    // 关闭前保存所有活跃 session 的记忆
-    await sessionRouter.saveAllMemories();
-    sessionRouter.dispose();
-    gateway.stop();
-    vectorStore.close();
+    cleanupPromise ??= (async () => {
+      cronScheduler.stop();
+      eventWatcher.stop();
+      await lovelyOctopus.stop();
+      feishuAdapter?.dispose();
+      await mcpManager.disconnectAll();
+      // 关闭前保存所有活跃 session 的记忆
+      await sessionRouter.saveAllMemories();
+      sessionRouter.dispose();
+      await gateway.stop();
+      vectorStore.close();
+    })();
+    return cleanupPromise;
   };
 
   process.on("SIGINT", async () => {
