@@ -526,8 +526,9 @@ AGENTS.md
 
 Coordinator 的执行边界：
 
-- Coordinator 如果需要 LLM，也必须作为一个特殊 agent 通过现有 `AgentLoop` 执行。
-- CoordinatorLoop 只负责扫描状态、确定性分配、组装 coordinator 上下文、调用 AgentLoop。
+- Coordinator 的复杂多轮推理、工具调用、任务拆解和对外沟通，默认作为一个特殊 agent 通过现有 `AgentLoop` 执行。
+- CoordinatorLoop 只负责扫描状态、确定性分配、组装 coordinator 上下文，并在需要时调用 AgentLoop。
+- 允许非常轻量的直接 LLM 调用，例如无工具、无状态、单轮的分类、摘要标题、优先级判断；这类调用必须集中封装、可测试，并且不能持有对话状态。
 - CoordinatorTools 是普通工具集合，不能绕过 `TaskQueue` / `TeamMessageStore` 直接改事实。
 - 能靠规则完成的分配、状态查询、ack、消息转发不调用 LLM。
 
@@ -560,9 +561,10 @@ Coordinator 不负责：
 7. pending 任务优先用 tags 和 Agent task_tags 做确定性匹配。
 8. 只有复杂拆解、冲突处理、总结才调用 LLM。
 9. Coordinator 也使用 agent.yaml + SOUL.md + AGENTS.md。
-10. Coordinator 调用 LLM 时必须复用现有 AgentLoop、ToolRegistry、LLM provider。
-11. CoordinatorLoop 不允许实现第二套工具调用循环。
-12. 补充工具测试和基础 loop 测试。
+10. Coordinator 需要多轮推理或工具调用时必须复用现有 AgentLoop、ToolRegistry、LLM provider。
+11. Coordinator 可以有轻量直接 LLM helper，但只能用于无工具、无状态、单轮判断/摘要，不能替代 AgentLoop。
+12. CoordinatorLoop 不允许实现第二套工具调用循环。
+13. 补充工具测试和基础 loop 测试。
 ```
 
 ### 验收标准
@@ -581,7 +583,8 @@ Coordinator 不负责：
 - 跨 Agent 协调要留下消息记录，方便追踪和复盘
 - 自动分配可以先用 tags，后续再加 LLM 判断
 - Coordinator 的存在是为了减少管理成本，不是增加一个沟通瓶颈
-- CoordinatorLoop 是调度层；Coordinator 的智能执行仍然是 AgentLoop
+- CoordinatorLoop 是调度层；Coordinator 的完整智能执行仍然优先走 AgentLoop
+- 轻量 LLM helper 是例外，不是第二套 agent 运行时
 
 ---
 
