@@ -49,6 +49,14 @@ export interface ListTeamMessagesFilter {
   limit?: number;
 }
 
+export interface RouteTeamMessageParams {
+  channelType: TeamChannelType;
+  channelId: string;
+  project?: string;
+  taskId?: string;
+  routedBy?: string;
+}
+
 interface TeamMessageRow {
   id: string;
   channel_type: TeamChannelType;
@@ -85,6 +93,7 @@ export class TeamMessageStore {
   private stmtGetByExternalMessage;
   private stmtListMessages;
   private stmtUpdateStatus;
+  private stmtUpdateRoute;
 
   constructor(db: Database) {
     this.db = db;
@@ -111,6 +120,16 @@ export class TeamMessageStore {
     this.stmtUpdateStatus = sqlite.prepare(`
       UPDATE team_messages
       SET status = ?2, handled_by = ?3, handled_at = ?4
+      WHERE id = ?1
+    `);
+    this.stmtUpdateRoute = sqlite.prepare(`
+      UPDATE team_messages
+      SET channel_type = ?2,
+          channel_id = ?3,
+          project = ?4,
+          task_id = ?5,
+          status = 'routed',
+          handled_by = ?6
       WHERE id = ?1
     `);
   }
@@ -205,6 +224,25 @@ export class TeamMessageStore {
 
   markRouted(id: string, routedBy?: string): TeamMessage {
     return this.markStatus(id, "routed", routedBy, false);
+  }
+
+  /**
+   * TeamRouter 使用的原地改路由入口。
+   *
+   * 人类消息必须先写入事实表，再根据确定性规则补齐最终 channel/project/task，
+   * 这样外部平台重试时仍能靠 external_message_id 去重，避免重复执行控制命令。
+   */
+  routeMessage(id: string, params: RouteTeamMessageParams): TeamMessage {
+    this.requireMessage(id);
+    this.stmtUpdateRoute.run(
+      id,
+      params.channelType,
+      params.channelId,
+      params.project ?? null,
+      params.taskId ?? null,
+      params.routedBy ?? "team-router",
+    );
+    return this.requireMessage(id);
   }
 
   markAcked(id: string, ackedBy?: string): TeamMessage {
