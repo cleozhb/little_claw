@@ -143,6 +143,156 @@ describe("CoordinatorLoop", () => {
     ).toBe("I will coordinate this.");
   });
 
+  test("routes coordinator replies for project task escalations back to the project channel", async () => {
+    const channel = channels.createChannel({ slug: "research-project", title: "Research Project" });
+    const task = tasks.createTask({
+      title: "Research long-running agents",
+      description: "This failed while coder was working.",
+      createdBy: "coordinator",
+      assignedTo: "coder",
+      project: channel.slug,
+      channelId: channel.id,
+      maxRetries: 1,
+    });
+    tasks.startTask(task.id, "coder");
+    tasks.failTask(task.id, "429 TPM limit", "coder");
+    const llm = new ScriptedLLM([{ type: "text", text: "团队状态汇报：研究任务失败，需要错峰重试。" }]);
+    const loop = coordinatorLoop(llm);
+
+    await loop.tick();
+
+    expect(messages.listMessages({ channelType: "coordinator", channelId: "default" })[0]?.status).toBe(
+      "injected",
+    );
+    expect(
+      channels
+        .listMessages(channel.slug)
+        .some((message) =>
+          message.senderId === "coordinator" && message.content.includes("团队状态汇报"),
+        ),
+    ).toBe(true);
+  });
+
+  test("processes project channel messages when the project has no open task", async () => {
+    const channel = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
+    const inbound = channels.postMessage(channel.slug, {
+      senderType: "human",
+      senderId: "ceo",
+      content: "请创建一个任务来调查 pending 状态卡住的问题。",
+    });
+    const llm = new ScriptedLLM([
+      {
+        type: "tool",
+        name: "create_task",
+        input: {
+          title: "调查 pending 状态卡住",
+          description: "复现项目频道任务失败后 pending 且后续消息无响应的问题。",
+          tags: ["code"],
+          project: channel.slug,
+          channel_id: channel.id,
+          source_message_id: inbound.id,
+        },
+      },
+      { type: "text", text: "已创建调查任务。" },
+    ]);
+    const loop = coordinatorLoop(llm);
+
+    await loop.tick();
+
+    const createdTask = tasks.listTasks({ project: channel.slug })[0];
+    expect(createdTask?.status).toBe("pending");
+    expect(createdTask?.sourceMessageId).toBe(inbound.id);
+    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
+    expect(JSON.stringify(llm.calls[0]?.messages ?? [])).toContain(inbound.content);
+    expect(
+      channels
+        .listMessages(channel.slug)
+        .some((message) => message.senderId === "coordinator" && message.content === "已创建调查任务。"),
+    ).toBe(true);
+  });
+
+  test("leaves project channel messages pending when an open project task can consume them", async () => {
+    const channel = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
+    const task = tasks.createTask({
+      title: "Existing project task",
+      description: "Worker should consume project updates.",
+      createdBy: "coordinator",
+      project: channel.slug,
+      tags: ["code"],
+    });
+    const inbound = channels.postMessage(channel.slug, {
+      senderType: "human",
+      senderId: "ceo",
+      content: "补充：这个信息应该给 worker。",
+    });
+    const llm = new ScriptedLLM([]);
+    const loop = coordinatorLoop(llm);
+
+    await loop.tick();
+
+    expect(tasks.getTask(task.id)?.status).toBe("assigned");
+    expect(messages.getMessage(inbound.id)?.status).toBe("new");
+    expect(llm.calls).toHaveLength(0);
+  });
+
+  test("handles project channel messages when existing pending tasks are unassigned", async () => {
+    const channel = channels.createChannel({ slug: "research-project", title: "Research Project" });
+    const task = tasks.createTask({
+      title: "Research long-running agents",
+      description: "No active agent currently matches this research-only task.",
+      createdBy: "coordinator",
+      project: channel.slug,
+      tags: ["research", "long-running-tasks"],
+    });
+    const inbound = channels.postMessage(channel.slug, {
+      senderType: "human",
+      senderId: "ceo",
+      content: "刚刚那个任务做到哪儿了？",
+    });
+    const llm = new ScriptedLLM([{ type: "text", text: "当前任务还在 pending，尚未分配给执行 agent。" }]);
+    const loop = coordinatorLoop(llm);
+
+    await loop.tick();
+
+    expect(tasks.getTask(task.id)?.status).toBe("pending");
+    expect(tasks.getTask(task.id)?.assignedTo).toBeUndefined();
+    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
+    expect(
+      channels
+        .listMessages(channel.slug)
+        .some((message) => message.senderId === "coordinator" && message.content.includes("还在 pending")),
+    ).toBe(true);
+  });
+
+  test("rejected tasks do not block project channel message processing", async () => {
+    const channel = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
+    const task = tasks.createTask({
+      title: "Task awaiting approval",
+      description: "Human rejected this step.",
+      createdBy: "coordinator",
+      project: channel.slug,
+      assignedTo: "coder",
+    });
+    tasks.startTask(task.id, "coder");
+    tasks.requestApproval(task.id, { prompt: "May I proceed?", agentName: "coder" });
+    tasks.rejectTask(task.id, "No, try a different approach.", "ceo");
+    expect(tasks.getTask(task.id)?.status).toBe("rejected");
+
+    const inbound = channels.postMessage(channel.slug, {
+      senderType: "human",
+      senderId: "ceo",
+      content: "换一种方案来做吧。",
+    });
+    const llm = new ScriptedLLM([{ type: "text", text: "好的，我来调整方案。" }]);
+    const loop = coordinatorLoop(llm);
+
+    await loop.tick();
+
+    // rejected 任务不应阻塞项目频道，coordinator 应能处理新消息
+    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
+    expect(llm.calls).toHaveLength(1);
+  });
+
   test("end-to-end: coordinator message creates a task via tool call, then next tick assigns it to coder", async () => {
     channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
     const inbound = messages.createMessage({

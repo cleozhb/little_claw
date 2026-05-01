@@ -209,6 +209,15 @@ export interface BindProjectChannelMessage {
   userId?: string;
 }
 
+export interface CreateProjectChannelMessage {
+  type: "create_project_channel";
+  slug: string;
+  title?: string;
+  description?: string;
+  contextPath?: string;
+  initializeContext?: boolean;
+}
+
 export interface ListProjectChannelsMessage {
   type: "list_project_channels";
   status?: "active" | "paused" | "archived";
@@ -290,6 +299,11 @@ export interface ListWatchersMessage {
 
 export interface ListAgentsMessage {
   type: "list_agents";
+}
+
+export interface GetAgentDetailMessage {
+  type: "get_agent_detail";
+  name: string;
 }
 
 export interface MemorySearchMessage {
@@ -452,6 +466,7 @@ export type ClientMessage =
   | ListCronMessage
   | ListWatchersMessage
   | ListAgentsMessage
+  | GetAgentDetailMessage
   | MemorySearchMessage
   | MemoryStatsMessage
   | MemoryClearMessage
@@ -482,6 +497,7 @@ export type ClientMessage =
   | SendAgentDmMessage
   | SendProjectMessage
   | BindProjectChannelMessage
+  | CreateProjectChannelMessage
   | ListProjectChannelsMessage
   | GetProjectChannelMessage
   | GetTeamMessagesMessage
@@ -683,12 +699,42 @@ export interface AgentInfo {
   allowedTools: string[];
   maxTurns: number;
   canSpawnSubAgent: boolean;
+  displayName?: string;
+  role?: string;
+  status?: string;
+  aliases?: string[];
+  directMessage?: boolean;
+  skills?: string[];
+  taskTags?: string[];
+  source?: "preset" | "team";
 }
 
 /** Server → Client: agent 配置列表 */
 export interface AgentsListMessage {
   type: "agents_list";
   agents: AgentInfo[];
+}
+
+export interface AgentDetailInfo {
+  name: string;
+  displayName: string;
+  role: string;
+  status: string;
+  aliases: string[];
+  directMessage: boolean;
+  tools: string[];
+  skills: string[];
+  taskTags: string[];
+  currentTasks: string[];
+  runtimeStatus: string;
+  agentYaml: string;
+  soul: string;
+  agentsMd: string;
+}
+
+export interface AgentDetailLoadedMessage {
+  type: "agent_detail_loaded";
+  agent: AgentDetailInfo;
 }
 
 /** 记忆搜索结果条目 */
@@ -875,6 +921,11 @@ export interface ProjectChannelLoadedMessage {
   messages: TeamMessageInfo[];
 }
 
+export interface ProjectChannelCreatedMessage {
+  type: "project_channel_created";
+  channel: ProjectChannelInfo;
+}
+
 export interface TeamMessagesLoadedMessage {
   type: "team_messages_loaded";
   messages: TeamMessageInfo[];
@@ -922,6 +973,7 @@ export type ServerMessage =
   | SubAgentProgressMessage
   | SubAgentDoneMessage
   | AgentsListMessage
+  | AgentDetailLoadedMessage
   | MemoryResultsMessage
   | MemoryStatsResultMessage
   | MemoryClearedMessage
@@ -944,6 +996,7 @@ export type ServerMessage =
   | InboxAppendedMessage
   | HumanMessageRoutedMessage
   | TeamMessageAddedMessage
+  | ProjectChannelCreatedMessage
   | ProjectChannelsListMessage
   | ProjectChannelLoadedMessage
   | TeamMessagesLoadedMessage
@@ -971,6 +1024,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "list_cron",
   "list_watchers",
   "list_agents",
+  "get_agent_detail",
   "memory_search",
   "memory_stats",
   "memory_clear",
@@ -1001,6 +1055,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "send_agent_dm",
   "send_project_message",
   "bind_project_channel",
+  "create_project_channel",
   "list_project_channels",
   "get_project_channel",
   "get_team_messages",
@@ -1084,6 +1139,9 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "list_watchers":
       break;
     case "list_agents":
+      break;
+    case "get_agent_detail":
+      requireString(msg, "name");
       break;
     case "memory_search":
       requireString(msg, "query");
@@ -1193,6 +1251,13 @@ export function parseClientMessage(raw: string): ClientMessage {
       requireOptionalString(msg, "externalChatId");
       requireOptionalString(msg, "userId");
       break;
+    case "create_project_channel":
+      requireString(msg, "slug");
+      requireOptionalString(msg, "title");
+      requireOptionalString(msg, "description");
+      requireOptionalString(msg, "contextPath");
+      requireOptionalBoolean(msg, "initializeContext");
+      break;
     case "list_project_channels":
       requireOptionalProjectStatus(msg.status);
       requireOptionalNumber(msg, "limit");
@@ -1270,6 +1335,13 @@ function requireOptionalNumber(obj: Record<string, unknown>, field: string): voi
   const value = obj[field];
   if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
     throw new Error(`'${field}' must be a finite number if provided`);
+  }
+}
+
+function requireOptionalBoolean(obj: Record<string, unknown>, field: string): void {
+  const value = obj[field];
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new Error(`'${field}' must be a boolean if provided`);
   }
 }
 

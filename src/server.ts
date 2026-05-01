@@ -44,6 +44,8 @@ import type { LLMProvider } from "./llm/types.ts";
 import type { ShellTool } from "./tools/types.ts";
 import type { MemoryManager as MemoryManagerType } from "./memory/MemoryManager.ts";
 import type { ContextRetriever as ContextRetrieverType } from "./memory/ContextRetriever.ts";
+import type { ContextHub } from "./memory/ContextHub.ts";
+import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -59,6 +61,7 @@ export interface LovelyOctopusRuntimeOptions {
   shellTool?: ShellTool;
   memoryManager?: MemoryManagerType;
   contextRetriever?: ContextRetrieverType;
+  contextHub?: ContextHub;
   agentDir?: string;
   workerPollIntervalMs?: number;
   coordinatorPollIntervalMs?: number;
@@ -120,6 +123,7 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     shellTool: options.shellTool,
     memoryManager: options.memoryManager,
     contextRetriever: options.contextRetriever,
+    contextHub: options.contextHub,
     pollIntervalMs: options.workerPollIntervalMs,
   });
   const coordinatorLoop = new CoordinatorLoop({
@@ -277,7 +281,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const eventWatcher = new EventWatcher(db);
 
   const toolRegistry = new ToolRegistry();
-  const workspaceRoot = join(process.cwd(), "workspace");
+  const workspaceRoot = join(homedir(), ".little_claw");
   mkdirSync(workspaceRoot, { recursive: true });
 
   /** 从 AsyncLocalStorage 读取当前 sessionId，跨 session 并发安全 */
@@ -406,6 +410,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     shellTool: builtinTools.shellTool,
     memoryManager,
     contextRetriever,
+    contextHub,
   });
 
   const agentLoadErrors = lovelyOctopus.agentRegistry.getLoadErrors();
@@ -438,6 +443,8 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     teamMessages: lovelyOctopus.teamMessages,
     projectChannels: lovelyOctopus.projectChannels,
     taskQueue: lovelyOctopus.taskQueue,
+    agentRegistry: lovelyOctopus.agentRegistry,
+    contextHub,
     onSessionSwitch: (oldSessionId) => {
       sessionRouter.saveMemoryForSession(oldSessionId);
     },

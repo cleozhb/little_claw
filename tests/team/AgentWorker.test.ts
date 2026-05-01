@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Database } from "../../src/db/Database.ts";
 import type { ChatOptions, LLMProvider } from "../../src/llm/types.ts";
+import { ContextHub } from "../../src/memory/ContextHub.ts";
 import type { RegisteredAgent } from "../../src/team/AgentRegistry.ts";
 import {
   AgentWorker,
@@ -38,6 +41,44 @@ afterEach(() => {
 });
 
 describe("AgentWorker", () => {
+  test("writes Agent DM replies back without consuming its own reply", async () => {
+    const llm = new ScriptedLLM([
+      { type: "text", text: "hello from coder" },
+      { type: "text", text: "this should not run" },
+    ]);
+    const worker = new AgentWorker({
+      agent: agent("coder", []),
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 2,
+    });
+    const inbound = messages.createMessage({
+      channelType: "agent_dm",
+      channelId: "coder",
+      senderType: "human",
+      senderId: "ceo",
+      content: "hello",
+    });
+
+    await worker.tick();
+
+    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
+    const timeline = messages.listMessages({ channelType: "agent_dm", channelId: "coder" });
+    const reply = timeline.find((message) => message.senderType === "agent");
+    expect(reply?.senderId).toBe("coder");
+    expect(reply?.content).toBe("hello from coder");
+    expect(reply?.status).toBe("resolved");
+    expect(messages.getPendingForAgent("coder")).toEqual([]);
+
+    await worker.tick();
+
+    const afterSecondTick = messages.listMessages({ channelType: "agent_dm", channelId: "coder" });
+    expect(afterSecondTick.filter((message) => message.senderType === "agent")).toHaveLength(1);
+    expect(llm.calls).toHaveLength(1);
+  });
+
   test("runs an assigned task through AgentLoop with team prompt and filtered tools", async () => {
     toolRegistry.register(fakeTool("allowed_tool"));
     toolRegistry.register(fakeTool("blocked_tool"));
@@ -95,6 +136,43 @@ describe("AgentWorker", () => {
     ]);
     expect(messages.getMessage(projectMessage.id)?.status).toBe("injected");
     expect(messages.getMessage(dmMessage.id)?.status).toBe("injected");
+  });
+
+  test("archives completed project task results to project status.md", async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), "little-claw-agent-worker-context-"));
+    const contextHub = new ContextHub(baseDir);
+    await contextHub.initialize();
+    await contextHub.writeFile("3-projects/lovely-octopus/status.md", "# Lovely Octopus\n", "overwrite");
+
+    try {
+      const task = tasks.createTask({
+        title: "Write research summary",
+        description: "Persist the result in project context.",
+        createdBy: "human",
+        assignedTo: "coder",
+        project: "lovely-octopus",
+        tags: ["research"],
+      });
+      const llm = new ScriptedLLM([{ type: "text", text: "research result goes here" }]);
+      const worker = new AgentWorker({
+        agent: agent("coder", []),
+        tasks,
+        messages,
+        llmProvider: llm,
+        toolRegistry,
+        contextHub,
+        maxTurns: 2,
+      });
+
+      await worker.tick();
+
+      const status = await contextHub.readFile("3-projects/lovely-octopus/status.md");
+      expect(status).toContain("## Task Completed: Write research summary");
+      expect(status).toContain(task.id);
+      expect(status).toContain("research result goes here");
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
   });
 
   test("report_progress writes task logs while the AgentLoop owns tool execution", async () => {
@@ -278,6 +356,86 @@ describe("AgentWorker", () => {
 
     expect(tasks.getTask(task.id)?.status).toBe("cancelled");
     expect(messages.getMessage(cancel.id)?.status).toBe("resolved");
+  });
+
+  test("retryable task errors stay assigned and post retry/completion messages to the project", async () => {
+    toolRegistry.register(fakeTool("allowed_tool"));
+    const task = tasks.createTask({
+      title: "Retry task",
+      description: "First run exceeds max turns, second run completes.",
+      createdBy: "human",
+      assignedTo: "coder",
+      project: "lovely-octopus",
+      channelId: "project-channel-1",
+      tags: ["code"],
+    });
+    const llm = new ScriptedLLM([
+      { type: "tool", name: "allowed_tool", input: {} },
+      { type: "text", text: "completed after retry" },
+    ]);
+    const worker = new AgentWorker({
+      agent: agent("coder", ["allowed_tool"]),
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 1,
+    });
+
+    await worker.tick();
+
+    const retry = tasks.getTask(task.id);
+    expect(retry?.status).toBe("assigned");
+    expect(retry?.assignedTo).toBe("coder");
+    expect(retry?.retryCount).toBe(1);
+    expect(
+      messages.listMessages({ channelType: "project", channelId: "project-channel-1" })[0]?.content,
+    ).toContain("scheduled for retry");
+
+    await worker.tick();
+
+    expect(tasks.getTask(task.id)?.status).toBe("completed");
+    expect(tasks.getTask(task.id)?.result).toBe("completed after retry");
+    expect(
+      messages
+        .listMessages({ channelType: "project", channelId: "project-channel-1" })
+        .some((message) => message.content === "completed after retry"),
+    ).toBe(true);
+  });
+
+  test("source messages remain in the initial task prompt after coordinator injection", async () => {
+    const source = messages.createMessage({
+      channelType: "project",
+      channelId: "lovely-octopus",
+      project: "lovely-octopus",
+      senderType: "human",
+      senderId: "ceo",
+      content: "原始项目任务：修复 pending 卡住的问题。",
+    });
+    messages.markInjected(source.id, "coordinator");
+    const task = tasks.createTask({
+      title: "Fix pending task",
+      description: "Use source message context.",
+      createdBy: "coordinator",
+      assignedTo: "coder",
+      project: "lovely-octopus",
+      sourceMessageId: source.id,
+      tags: ["code"],
+    });
+    const llm = new ScriptedLLM([{ type: "text", text: "done" }]);
+    const worker = new AgentWorker({
+      agent: agent("coder", []),
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 2,
+    });
+
+    await worker.tick();
+
+    expect(tasks.getTask(task.id)?.status).toBe("completed");
+    expect(String(llm.lastMessages[0]?.content)).toContain(source.content);
   });
 });
 

@@ -6,6 +6,7 @@ import { Database } from "../../src/db/Database.ts";
 import { GatewayServer } from "../../src/gateway/GatewayServer.ts";
 import { parseClientMessage } from "../../src/gateway/protocol.ts";
 import type { LLMProvider } from "../../src/llm/types.ts";
+import { ContextHub } from "../../src/memory/ContextHub.ts";
 import { AgentRegistry } from "../../src/team/AgentRegistry.ts";
 import { ProjectChannelStore } from "../../src/team/ProjectChannelStore.ts";
 import { TaskQueue } from "../../src/team/TaskQueue.ts";
@@ -17,6 +18,7 @@ const TEST_DB = "/tmp/little_claw_gateway_team_test.db";
 
 let db: Database;
 let agentDir: string;
+let contextDir: string;
 let registry: AgentRegistry;
 let messages: TeamMessageStore;
 let channels: ProjectChannelStore;
@@ -33,9 +35,14 @@ const llmProvider: LLMProvider = {
   setModel() {},
 };
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 beforeEach(() => {
   db = new Database(TEST_DB);
   agentDir = mkdtempSync(join(tmpdir(), "little-claw-gateway-agents-"));
+  contextDir = mkdtempSync(join(tmpdir(), "little-claw-gateway-context-"));
   registry = new AgentRegistry(agentDir);
   registry.create("coder", {
     config: {
@@ -65,6 +72,8 @@ beforeEach(() => {
     teamMessages: messages,
     projectChannels: channels,
     taskQueue: tasks,
+    agentRegistry: registry,
+    contextHub: new ContextHub(contextDir),
   });
   sent = [];
   (gateway as any).connections.set("conn-1", {
@@ -77,6 +86,7 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   rmSync(agentDir, { recursive: true, force: true });
+  rmSync(contextDir, { recursive: true, force: true });
   try {
     unlinkSync(TEST_DB);
     unlinkSync(TEST_DB + "-wal");
@@ -102,6 +112,17 @@ describe("Gateway team protocol", () => {
     expect(() => parseClientMessage(JSON.stringify({
       type: "approve_task",
     }))).toThrow("'taskId' must be a non-empty string");
+
+    expect(parseClientMessage(JSON.stringify({
+      type: "get_agent_detail",
+      name: "coder",
+    })).type).toBe("get_agent_detail");
+
+    expect(parseClientMessage(JSON.stringify({
+      type: "create_project_channel",
+      slug: "new-project",
+      title: "New Project",
+    })).type).toBe("create_project_channel");
   });
 
   test("routes websocket human messages through TeamRouter", () => {
@@ -141,6 +162,59 @@ describe("Gateway team protocol", () => {
     expect(channelsList?.channels.map((channel: any) => channel.slug)).toContain("lovely-octopus");
     expect(loaded?.channel.slug).toBe("lovely-octopus");
     expect(loaded?.messages[0].content).toBe("推进 Gateway 集成");
+  });
+
+  test("loads team agent file details", () => {
+    (gateway as any).dispatch("conn-1", {
+      type: "list_agents",
+    });
+    (gateway as any).dispatch("conn-1", {
+      type: "get_agent_detail",
+      name: "coder",
+    });
+
+    const listed = sent.find((msg) => msg.type === "agents_list");
+    const detail = sent.find((msg) => msg.type === "agent_detail_loaded");
+
+    expect(listed?.agents[0]?.source).toBe("team");
+    expect(detail?.agent.name).toBe("coder");
+    expect(detail?.agent.agentYaml).toContain("name: coder");
+    expect(detail?.agent.soul).toContain("# Soul");
+    expect(detail?.agent.agentsMd).toContain("# Agent Operating Instructions");
+  });
+
+  test("creates project channels with a context-hub project path", async () => {
+    (gateway as any).dispatch("conn-1", {
+      type: "create_project_channel",
+      slug: "new-project",
+      title: "New Project",
+      description: "Launch plan.",
+    });
+    await sleep(20);
+
+    const created = sent.find((msg) => msg.type === "project_channel_created");
+    const listed = sent.find((msg) => msg.type === "project_channels_list");
+    const hub = new ContextHub(contextDir);
+
+    expect(created?.channel.slug).toBe("new-project");
+    expect(created?.channel.contextPath).toBe("context-hub/3-projects/new-project");
+    expect(listed?.channels.map((channel: any) => channel.slug)).toContain("new-project");
+    expect(await hub.readOverview("3-projects/new-project")).toContain("# New Project");
+    expect(await hub.readFile("3-projects/new-project/status.md")).toContain("Project channel created");
+  });
+
+  test("broadcasts non-human team messages created by workers", () => {
+    messages.createMessage({
+      channelType: "agent_dm",
+      channelId: "coder",
+      senderType: "agent",
+      senderId: "coder",
+      content: "worker reply",
+    });
+
+    const pushed = sent.find((msg) => msg.type === "team_message_added");
+    expect(pushed?.message.senderType).toBe("agent");
+    expect(pushed?.message.content).toBe("worker reply");
   });
 
   test("updates tasks through gateway approval handlers", () => {

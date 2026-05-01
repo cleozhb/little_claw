@@ -71,6 +71,10 @@ interface ExternalChannelBindingRow {
 
 const CHANNEL_SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 
+export function defaultProjectContextPath(slug: string): string {
+  return `context-hub/3-projects/${slug}`;
+}
+
 /**
  * 项目频道存储。
  *
@@ -143,7 +147,7 @@ export class ProjectChannelStore {
       title: params.title,
       description: params.description,
       status: params.status ?? "active",
-      contextPath: params.contextPath,
+      contextPath: params.contextPath ?? defaultProjectContextPath(params.slug),
       createdAt: now,
       updatedAt: now,
     };

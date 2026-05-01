@@ -125,7 +125,10 @@ export class CoordinatorLoop {
       this.escalateFailedTasks();
       this.assignPendingTasks();
       await this.summarizeBusyProjectChannels();
-      await this.handleCoordinatorInbox();
+      const handledCoordinatorInbox = await this.handleCoordinatorInbox();
+      if (!handledCoordinatorInbox) {
+        await this.handleProjectChannelInbox();
+      }
     } finally {
       this.stateValue = "idle";
     }
@@ -225,15 +228,50 @@ export class CoordinatorLoop {
     }
   }
 
-  private async handleCoordinatorInbox(): Promise<void> {
+  private async handleCoordinatorInbox(): Promise<boolean> {
     const pendingMessages = this.messages.listMessages({
       channelType: "coordinator",
       channelId: DEFAULT_COORDINATOR_CHANNEL_ID,
       statuses: ["new", "routed", "acked"],
       limit: 20,
     }).filter((message) => message.senderId !== this.coordinatorName);
-    if (pendingMessages.length === 0) return;
+    if (pendingMessages.length === 0) return false;
 
+    await this.runCoordinatorOnMessages(pendingMessages, this.resolveCoordinatorReplyTarget(pendingMessages));
+    return true;
+  }
+
+  private async handleProjectChannelInbox(): Promise<boolean> {
+    for (const channel of this.channels.listChannels({ status: "active" })) {
+      if (this.hasWorkerOwnedProjectTask(channel.slug)) continue;
+
+      const pendingMessages = this.messages
+        .getPendingForProject(channel.slug, 20)
+        .filter((message) => message.senderType === "human" && !message.taskId);
+      if (pendingMessages.length === 0) continue;
+
+      log.step("Coordinator handling project channel inbox", {
+        project: channel.slug,
+        pendingMessages: pendingMessages.length,
+      });
+      await this.runCoordinatorOnMessages(pendingMessages, {
+        replyChannelType: "project",
+        replyChannelId: channel.id,
+        project: channel.slug,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  private async runCoordinatorOnMessages(
+    pendingMessages: TeamMessage[],
+    replyTarget: { replyChannelType: "coordinator"; replyChannelId: string } | {
+      replyChannelType: "project";
+      replyChannelId: string;
+      project: string;
+    },
+  ): Promise<void> {
     const coordinator = this.requireCoordinatorAgent();
     const conversation = new EphemeralConversation("Lovely Octopus coordinator execution.");
     const loop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
@@ -273,15 +311,32 @@ export class CoordinatorLoop {
       this.currentLoop = null;
     }
 
-    if (assistantText.trim()) {
+    const reply = assistantText.trim();
+    if (!reply) return;
+
+    if (replyTarget.replyChannelType === "project") {
       this.messages.createMessage({
-        channelType: "coordinator",
-        channelId: DEFAULT_COORDINATOR_CHANNEL_ID,
+        channelType: "project",
+        channelId: replyTarget.replyChannelId,
+        project: replyTarget.project,
         senderType: "coordinator",
         senderId: this.coordinatorName,
-        content: assistantText.trim(),
+        content: reply,
+        status: "resolved",
+        handledBy: this.coordinatorName,
       });
+      return;
     }
+
+    this.messages.createMessage({
+      channelType: "coordinator",
+      channelId: replyTarget.replyChannelId,
+      senderType: "coordinator",
+      senderId: this.coordinatorName,
+      content: reply,
+      status: "resolved",
+      handledBy: this.coordinatorName,
+    });
   }
 
   private requireCoordinatorAgent(): RegisteredAgent {
@@ -312,6 +367,56 @@ export class CoordinatorLoop {
       })
       .some((message) => message.senderId === "task-queue" || message.senderId === this.coordinatorName);
   }
+
+  private hasWorkerOwnedProjectTask(project: string): boolean {
+    return this.tasks
+      .listTasks({ project })
+      .some((task) =>
+        task.assignedTo &&
+        ["assigned", "running", "awaiting_approval"].includes(task.status)
+      );
+  }
+
+  private resolveCoordinatorReplyTarget(
+    pendingMessages: TeamMessage[],
+  ): { replyChannelType: "coordinator"; replyChannelId: string } | {
+    replyChannelType: "project";
+    replyChannelId: string;
+    project: string;
+  } {
+    const project = this.inferSingleProject(pendingMessages);
+    if (project) {
+      const channel = this.channels.getChannel(project);
+      if (channel) {
+        return {
+          replyChannelType: "project",
+          replyChannelId: channel.id,
+          project: channel.slug,
+        };
+      }
+    }
+
+    return {
+      replyChannelType: "coordinator",
+      replyChannelId: DEFAULT_COORDINATOR_CHANNEL_ID,
+    };
+  }
+
+  private inferSingleProject(messages: TeamMessage[]): string | undefined {
+    const projects = new Set<string>();
+    for (const message of messages) {
+      if (message.project) {
+        projects.add(message.project);
+      }
+      if (message.taskId) {
+        const task = this.tasks.getTask(message.taskId);
+        if (task?.project) {
+          projects.add(task.project);
+        }
+      }
+    }
+    return projects.size === 1 ? [...projects][0] : undefined;
+  }
 }
 
 export function buildCoordinatorSystemPrompt(agent: RegisteredAgent): string {
@@ -327,6 +432,8 @@ ${agent.operatingInstructions.trim()}
 You are a coordinator, not the human's boss and not the only team entrypoint.
 Use CoordinatorTools for task and message facts. Do not bypass TaskQueue or TeamMessageStore.
 Prefer deterministic assignment and status checks when they are enough.
+When delegating executable work to agents, create_task or delegate_task must create durable TaskQueue records first.
+send_message_to_agent is only for informal DM or existing-task follow-up, never for assigning new work.
 </coordinator_boundaries>`;
 }
 
@@ -350,7 +457,11 @@ ${formatAgents(params.agents)}
 function formatMessages(messages: TeamMessage[]): string {
   if (messages.length === 0) return "(none)";
   return messages
-    .map((message) => `- ${message.id} [${message.senderType}:${message.senderId}] ${message.content}`)
+    .map((message) => {
+      const project = message.project ? ` project=${message.project}` : "";
+      const task = message.taskId ? ` task=${message.taskId}` : "";
+      return `- ${message.id} [${message.channelType}:${message.channelId}${project}${task}] ${message.senderType}:${message.senderId}: ${message.content}`;
+    })
     .join("\n");
 }
 

@@ -283,6 +283,10 @@ export class AgentRegistry {
     );
   }
 
+  listAll(): RegisteredAgent[] {
+    return Array.from(this.agents.values());
+  }
+
   getLoadErrors(): AgentLoadError[] {
     return [...this.loadErrors];
   }

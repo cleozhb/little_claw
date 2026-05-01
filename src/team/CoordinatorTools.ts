@@ -112,13 +112,15 @@ function createTaskTool(context: CoordinatorToolContext): Tool {
       required: ["title", "description"],
     },
     async execute(params) {
+      const project = readOptionalString(params.project);
+      const channelId = readOptionalString(params.channel_id) ?? projectChannelId(context.channels, project);
       const task = context.tasks.createTask({
         title: readRequiredString(params, "title"),
         description: readRequiredString(params, "description"),
         priority: readOptionalNumber(params.priority),
         tags: readStringArray(params.tags, "tags"),
-        project: readOptionalString(params.project),
-        channelId: readOptionalString(params.channel_id),
+        project,
+        channelId,
         sourceMessageId: readOptionalString(params.source_message_id),
         assignedTo: readOptionalString(params.assigned_to),
         dependsOn: readStringArray(params.depends_on, "depends_on"),
@@ -202,13 +204,15 @@ function delegateTaskTool(context: CoordinatorToolContext): Tool {
     async execute(params) {
       const assignedTo = readOptionalString(params.assigned_to);
       if (assignedTo) requireAgent(context.agents, assignedTo);
+      const project = readOptionalString(params.project);
+      const channelId = readOptionalString(params.channel_id) ?? projectChannelId(context.channels, project);
       const task = context.tasks.delegateTask(readRequiredString(params, "parent_task_id"), {
         title: readRequiredString(params, "title"),
         description: readRequiredString(params, "description"),
         priority: readOptionalNumber(params.priority),
         tags: readStringArray(params.tags, "tags"),
-        project: readOptionalString(params.project),
-        channelId: readOptionalString(params.channel_id),
+        project,
+        channelId,
         assignedTo,
         dependsOn: readStringArray(params.depends_on, "depends_on"),
         dueAt: readOptionalString(params.due_at),
@@ -279,7 +283,8 @@ function checkTeamStatusTool(context: CoordinatorToolContext): Tool {
 function sendMessageToAgentTool(context: CoordinatorToolContext): Tool {
   return {
     name: "send_message_to_agent",
-    description: "Send a Coordinator message to an agent by writing TeamMessageStore.",
+    description:
+      "Send an informal Coordinator DM to an agent by writing TeamMessageStore. Do not use this to assign work; create_task or delegate_task must be used for work that should appear in Tasks. If task_id is provided, it must be an existing full TaskQueue task id.",
     parameters: {
       type: "object",
       properties: {
@@ -293,10 +298,12 @@ function sendMessageToAgentTool(context: CoordinatorToolContext): Tool {
     async execute(params) {
       const agentName = readRequiredString(params, "agent_name");
       requireAgent(context.agents, agentName);
+      const taskId = readOptionalString(params.task_id);
+      assertExistingTaskId(context.tasks, taskId);
       const message = context.messages.createMessage({
         channelType: "agent_dm",
         channelId: agentName,
-        taskId: readOptionalString(params.task_id),
+        taskId,
         senderType: "coordinator",
         senderId: "coordinator",
         content: readRequiredString(params, "content"),
@@ -322,12 +329,14 @@ function postToProjectChannelTool(context: CoordinatorToolContext): Tool {
       required: ["project", "content"],
     },
     async execute(params) {
+      const taskId = readOptionalString(params.task_id);
+      assertExistingTaskId(context.tasks, taskId);
       const message = context.channels.postMessage(readRequiredString(params, "project"), {
         senderType: "coordinator",
         senderId: "coordinator",
         content: readRequiredString(params, "content"),
         priority: readPriority(params.priority),
-        taskId: readOptionalString(params.task_id),
+        taskId,
       });
       return okJSON({ message: serializeMessage(message) });
     },
@@ -402,6 +411,20 @@ function requireProjectChannel(channels: ProjectChannelStore, project: string): 
     throw new Error(`Project channel not found: ${project}`);
   }
   return channel;
+}
+
+function projectChannelId(channels: ProjectChannelStore, project: string | undefined): string | undefined {
+  if (!project) return undefined;
+  return channels.getChannel(project)?.id;
+}
+
+function assertExistingTaskId(tasks: TaskQueue, taskId: string | undefined): void {
+  if (!taskId) return;
+  if (!tasks.getTask(taskId)) {
+    throw new Error(
+      `Unknown task_id: ${taskId}. Use create_task or delegate_task first, then pass the returned full task id.`,
+    );
+  }
 }
 
 function ensureAgentsLoaded(agents: AgentRegistry): RegisteredAgent[] {

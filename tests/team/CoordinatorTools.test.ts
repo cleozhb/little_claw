@@ -63,6 +63,7 @@ afterEach(() => {
 
 describe("CoordinatorTools", () => {
   test("create_task, list_tasks, assign_task, and delegate_task use TaskQueue", async () => {
+    const project = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
     const tools = toolMap();
     const created = await getTool(tools, "create_task").execute({
       title: "Implement coordinator loop",
@@ -74,6 +75,7 @@ describe("CoordinatorTools", () => {
     const createdTask = JSON.parse(created.output).task;
 
     expect(tasks.getTask(createdTask.id)?.status).toBe("pending");
+    expect(tasks.getTask(createdTask.id)?.channelId).toBe(project.id);
 
     const listed = await getTool(tools, "list_tasks").execute({ status: "pending", tags: ["code"] });
     expect(JSON.parse(listed.output).tasks.map((task: { id: string }) => task.id)).toEqual([
@@ -88,11 +90,13 @@ describe("CoordinatorTools", () => {
       title: "Write focused tests",
       description: "Add CoordinatorLoop coverage.",
       assigned_to: "coder",
+      project: project.slug,
       tags: ["test"],
     });
     const childTask = JSON.parse(child.output).task;
     expect(tasks.getTask(createdTask.id)?.blocks).toEqual([childTask.id]);
     expect(tasks.getTask(childTask.id)?.createdBy).toBe("coordinator");
+    expect(tasks.getTask(childTask.id)?.channelId).toBe(project.id);
   });
 
   test("send_message_to_agent and post_to_project_channel write team messages", async () => {
@@ -119,6 +123,27 @@ describe("CoordinatorTools", () => {
     expect(channels.listMessages(project.slug).map((message) => message.id)).toEqual([
       projectMessage.id,
     ]);
+  });
+
+  test("message tools reject fake task ids", async () => {
+    channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
+    const tools = toolMap();
+
+    await expect(
+      getTool(tools, "send_message_to_agent").execute({
+        agent_name: "coder",
+        task_id: "499122df",
+        content: "Do this fake task.",
+      }),
+    ).rejects.toThrow(/Unknown task_id/);
+
+    await expect(
+      getTool(tools, "post_to_project_channel").execute({
+        project: "lovely-octopus",
+        task_id: "499122df",
+        content: "Fake task status.",
+      }),
+    ).rejects.toThrow(/Unknown task_id/);
   });
 
   test("summarize_project_channel uses the stateless LLM helper and posts summary", async () => {

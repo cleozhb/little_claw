@@ -33,6 +33,8 @@ export interface CreateTeamMessageParams {
   senderId: string;
   content: string;
   priority?: TeamMessagePriority;
+  status?: TeamMessageStatus;
+  handledBy?: string;
   externalChannel?: string;
   externalChatId?: string;
   externalMessageId?: string;
@@ -56,6 +58,8 @@ export interface RouteTeamMessageParams {
   taskId?: string;
   routedBy?: string;
 }
+
+type TeamMessageCreatedHandler = (message: TeamMessage) => void;
 
 interface TeamMessageRow {
   id: string;
@@ -87,6 +91,7 @@ const PENDING_STATUSES: TeamMessageStatus[] = ["new", "routed", "acked"];
  */
 export class TeamMessageStore {
   private db: Database;
+  private createdHandlers = new Set<TeamMessageCreatedHandler>();
 
   private stmtInsertMessage;
   private stmtGetMessage;
@@ -152,11 +157,13 @@ export class TeamMessageStore {
       senderId: params.senderId,
       content: params.content,
       priority: params.priority ?? "normal",
-      status: "new",
+      status: params.status ?? "new",
+      handledBy: params.handledBy,
       externalChannel: params.externalChannel,
       externalChatId: params.externalChatId,
       externalMessageId: params.externalMessageId,
       createdAt: now,
+      handledAt: params.status && params.status !== "new" ? now : undefined,
     };
 
     try {
@@ -178,6 +185,7 @@ export class TeamMessageStore {
         message.createdAt,
         message.handledAt ?? null,
       );
+      this.emitCreated(message);
       return message;
     } catch (err) {
       const deduped = this.getByExternalMessage(params.externalChannel, params.externalMessageId);
@@ -189,6 +197,13 @@ export class TeamMessageStore {
   getMessage(id: string): TeamMessage | null {
     const row = this.stmtGetMessage.get(id) as TeamMessageRow | undefined;
     return row ? this.rowToMessage(row) : null;
+  }
+
+  onMessageCreated(handler: TeamMessageCreatedHandler): () => void {
+    this.createdHandlers.add(handler);
+    return () => {
+      this.createdHandlers.delete(handler);
+    };
   }
 
   listMessages(filter: ListTeamMessagesFilter = {}): TeamMessage[] {
@@ -272,7 +287,7 @@ export class TeamMessageStore {
       channelType: "project",
       statuses: PENDING_STATUSES,
     })
-      .filter((message) => message.project === project || message.channelId === project)
+      .filter((message) => message.project === project)
       .slice(0, limit);
   }
 
@@ -340,6 +355,13 @@ export class TeamMessageStore {
   private assertContent(content: string): void {
     if (content.trim() === "") {
       throw new Error("Team message content must not be empty.");
+    }
+  }
+
+  private emitCreated(message: TeamMessage): void {
+    if (message.senderType === "human") return;
+    for (const handler of this.createdHandlers) {
+      handler(message);
     }
   }
 

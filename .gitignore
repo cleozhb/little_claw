@@ -40,3 +40,4 @@ DESIGN.md
 # Finder (MacOS) folder config
 .DS_Store
 .codex
+.comate/

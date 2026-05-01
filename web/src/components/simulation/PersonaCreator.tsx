@@ -368,7 +368,7 @@ ${body}`;
                 <Puzzle className="h-3 w-3" />
                 关联 Skill (可选)
               </label>
-              <Select value={skill || "__none__"} onValueChange={(v) => setSkill(v === "__none__" ? "" : v)}>
+              <Select value={skill || "__none__"} onValueChange={(v) => setSkill(v === "__none__" ? "" : (v ?? ""))}>
                 <SelectTrigger className="mt-1 h-8 text-xs w-full">
                   <SelectValue placeholder="不关联 Skill" />
                 </SelectTrigger>

@@ -2,6 +2,7 @@ import { createAgentConfig } from "../agents/AgentConfig.ts";
 import { AgentLoop } from "../core/AgentLoop.ts";
 import { EphemeralConversation } from "../core/EphemeralConversation.ts";
 import type { ContextRetriever } from "../memory/ContextRetriever.ts";
+import type { ContextHub } from "../memory/ContextHub.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
 import type { LLMProvider } from "../llm/types.ts";
 import type { SkillManager } from "../skills/SkillManager.ts";
@@ -29,6 +30,7 @@ export interface AgentWorkerOptions {
   shellTool?: ShellTool;
   memoryManager?: MemoryManager;
   contextRetriever?: ContextRetriever;
+  contextHub?: ContextHub;
   pollIntervalMs?: number;
   maxTurns?: number;
 }
@@ -56,6 +58,7 @@ export class AgentWorker {
   private shellTool?: ShellTool;
   private memoryManager?: MemoryManager;
   private contextRetriever?: ContextRetriever;
+  private contextHub?: ContextHub;
   private pollIntervalMs: number;
   private maxTurns: number;
 
@@ -77,6 +80,7 @@ export class AgentWorker {
     this.shellTool = options.shellTool;
     this.memoryManager = options.memoryManager;
     this.contextRetriever = options.contextRetriever;
+    this.contextHub = options.contextHub;
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.maxTurns = options.maxTurns ?? 10;
 
@@ -276,7 +280,7 @@ export class AgentWorker {
     // 审批恢复使用独立 user_update，让 Agent 明确知道人类是批准还是拒绝。
     const prompt = approvalResumeStatus
       ? buildTaskResumePrompt(running, initialMessages, approvalResumeStatus)
-      : buildTaskUserPrompt(running, initialMessages);
+      : buildTaskUserPrompt(running, initialMessages, this.getSourceMessage(running));
 
     let assistantText = "";
     let errorMessage: string | null = null;
@@ -335,8 +339,19 @@ export class AgentWorker {
     if (errorMessage) {
       log.warn(`任务执行失败，交给 TaskQueue 处理重试：${latest.id}`, errorMessage);
       const failed = this.tasks.failTask(latest.id, errorMessage, agentName);
+      if (failed.status === "pending") {
+        // 可重试：重新分配给自己并发通知
+        const retry = this.tasks.assignTask(failed.id, agentName);
+        this.postTaskNotification(
+          retry,
+          `Task hit an execution error and has been scheduled for retry by @${agentName}.\n\nError: ${errorMessage}`,
+        );
+      } else {
+        this.postTaskNotification(failed, `❌ Failed: ${errorMessage}`);
+        await this.archiveTaskTerminalState(failed, "failed", errorMessage);
+      }
       this.stateValue = "idle";
-      return failed;
+      return this.tasks.getTask(latest.id)!;
     }
 
     const completed = this.tasks.completeTask(latest.id, assistantText, agentName);
@@ -345,6 +360,9 @@ export class AgentWorker {
       taskId: completed.id,
       resultLength: assistantText.length,
     });
+    const trimmedResult = assistantText.trim() || "Task completed.";
+    this.postTaskNotification(completed, trimmedResult);
+    await this.archiveTaskTerminalState(completed, "completed", trimmedResult);
     this.taskConversations.delete(completed.id);
     this.stateValue = "idle";
     return completed;
@@ -379,14 +397,101 @@ export class AgentWorker {
 
     this.currentLoop = loop;
     this.stateValue = "running";
+    let assistantText = "";
     try {
-      for await (const _event of loop.run(buildDirectMessagePrompt(directMessages))) {
-        // AgentLoop owns streaming/tool execution. The worker only waits for completion.
+      for await (const event of loop.run(buildDirectMessagePrompt(directMessages))) {
+        if (event.type === "text_delta") assistantText += event.text;
       }
     } finally {
       this.currentLoop = null;
       this.stateValue = "idle";
       log.info(`Agent DM 处理完成：${agentName}`);
+    }
+    // 将回复写入 agent_dm channel
+    const reply = assistantText.trim();
+    if (reply.length > 0) {
+      this.messages.createMessage({
+        channelType: "agent_dm",
+        channelId: agentName,
+        senderType: "agent",
+        senderId: agentName,
+        content: reply,
+        status: "resolved",
+        handledBy: agentName,
+      });
+    }
+  }
+
+  /** 任务终态归档：将结果追加到项目的 context-hub status.md */
+  private async archiveTaskTerminalState(
+    task: Task,
+    status: "completed" | "failed",
+    content: string,
+  ): Promise<void> {
+    if (!this.contextHub || !task.project) return;
+    try {
+      await this.contextHub.writeFile(
+        `3-projects/${task.project}/status.md`,
+        formatTaskArchiveEntry(task, status, this.agent.config.name, content),
+        "append",
+      );
+    } catch (err) {
+      log.warn(
+        `任务结果写入项目 status.md 失败：${task.id}`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /** 任务完成/失败时，往 project channel 发完整结果，同时往 agent DM 发简短通知 */
+  private postTaskNotification(task: Task, content: string): void {
+    const agentName = this.agent.config.name;
+    if (!content) return;
+
+    if (task.project) {
+      // 完整结果发到 project channel
+      this.messages.createMessage({
+        channelType: "project",
+        channelId: task.channelId ?? task.project,
+        project: task.project,
+        taskId: task.id,
+        senderType: "agent",
+        senderId: agentName,
+        content,
+        status: "resolved",
+        handledBy: agentName,
+      });
+      // 简短通知发到 agent DM，让用户在 agent 视图也能看到任务活动
+      const statusIcon = task.status === "completed" ? "✅" : "❌";
+      this.messages.createMessage({
+        channelType: "agent_dm",
+        channelId: agentName,
+        project: task.project,
+        taskId: task.id,
+        senderType: "agent",
+        senderId: agentName,
+        content: `${statusIcon} ${task.status === "completed" ? "Completed" : "Failed"} "${task.title}" in #${task.project}`,
+        status: "resolved",
+        handledBy: agentName,
+      });
+      return;
+    }
+
+    // 无 project 的任务，如果来源是 agent_dm，回复到同一个 DM
+    if (task.sourceMessageId) {
+      const source = this.messages.getMessage(task.sourceMessageId);
+      if (source?.channelType === "agent_dm") {
+        this.messages.createMessage({
+          channelType: "agent_dm",
+          channelId: source.channelId,
+          taskId: task.id,
+          senderType: "agent",
+          senderId: agentName,
+          content,
+          status: "resolved",
+          handledBy: agentName,
+        });
+      }
     }
   }
 
@@ -484,6 +589,11 @@ export class AgentWorker {
     return handled;
   }
 
+  private getSourceMessage(task: Task): TeamMessage | undefined {
+    if (!task.sourceMessageId) return undefined;
+    return this.messages.getMessage(task.sourceMessageId) ?? undefined;
+  }
+
   private getTaskConversation(taskId: string): EphemeralConversation {
     let conversation = this.taskConversations.get(taskId);
     if (!conversation) {
@@ -516,15 +626,17 @@ ${agent.operatingInstructions.trim()}
 </agent_operating_instructions>`;
 }
 
-export function buildTaskUserPrompt(task: Task, teamMessages: TeamMessage[]): string {
+export function buildTaskUserPrompt(task: Task, teamMessages: TeamMessage[], sourceMessage?: TeamMessage): string {
   // 任务描述和近期团队消息放在 user prompt，便于 AgentLoop 保持原有 system prompt 机制。
+  const sourceSection = sourceMessage
+    ? `\nsource_message:\n- [${sourceMessage.channelType}:${sourceMessage.channelId}] ${sourceMessage.senderId}: ${sourceMessage.content}\n`
+    : "";
   return `<task_context>
 id: ${task.id}
 title: ${task.title}
 description: ${task.description}
 project: ${task.project ?? "none"}
-approval_response: ${task.approvalResponse ?? "none"}
-
+approval_response: ${task.approvalResponse ?? "none"}${sourceSection}
 recent_team_messages:
 ${formatTeamMessages(teamMessages)}
 </task_context>`;
@@ -674,4 +786,26 @@ function isCancellable(status: Task["status"]): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatTaskArchiveEntry(
+  task: Task,
+  status: "completed" | "failed",
+  agentName: string,
+  content: string,
+): string {
+  const timestamp = new Date().toISOString();
+  return `
+
+## Task ${status === "completed" ? "Completed" : "Failed"}: ${task.title}
+
+- id: ${task.id}
+- status: ${status}
+- agent: ${agentName}
+- completed_at: ${timestamp}
+- retry_count: ${task.retryCount}/${task.maxRetries}
+
+### Result
+
+${content}`;
 }

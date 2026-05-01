@@ -196,6 +196,11 @@ export interface ListAgentsMessage {
   type: "list_agents";
 }
 
+export interface GetAgentDetailMessage {
+  type: "get_agent_detail";
+  name: string;
+}
+
 export interface MemorySearchMessage {
   type: "memory_search";
   query: string;
@@ -261,6 +266,15 @@ export interface BindProjectChannelMessage {
   externalChannel?: string;
   externalChatId?: string;
   userId?: string;
+}
+
+export interface CreateProjectChannelMessage {
+  type: "create_project_channel";
+  slug: string;
+  title?: string;
+  description?: string;
+  contextPath?: string;
+  initializeContext?: boolean;
 }
 
 export interface ListProjectChannelsMessage {
@@ -333,6 +347,7 @@ export type ClientMessage =
   | ListCronMessage
   | ListWatchersMessage
   | ListAgentsMessage
+  | GetAgentDetailMessage
   | MemorySearchMessage
   | MemoryStatsMessage
   | MemoryClearMessage
@@ -356,6 +371,7 @@ export type ClientMessage =
   | SendAgentDmMessage
   | SendProjectMessage
   | BindProjectChannelMessage
+  | CreateProjectChannelMessage
   | ListProjectChannelsMessage
   | GetProjectChannelMessage
   | GetTeamMessagesMessage
@@ -562,11 +578,41 @@ export interface AgentInfo {
   allowedTools: string[];
   maxTurns: number;
   canSpawnSubAgent: boolean;
+  displayName?: string;
+  role?: string;
+  status?: string;
+  aliases?: string[];
+  directMessage?: boolean;
+  skills?: string[];
+  taskTags?: string[];
+  source?: "preset" | "team";
 }
 
 export interface AgentsListMessage {
   type: "agents_list";
   agents: AgentInfo[];
+}
+
+export interface AgentDetailInfo {
+  name: string;
+  displayName: string;
+  role: string;
+  status: string;
+  aliases: string[];
+  directMessage: boolean;
+  tools: string[];
+  skills: string[];
+  taskTags: string[];
+  currentTasks: string[];
+  runtimeStatus: string;
+  agentYaml: string;
+  soul: string;
+  agentsMd: string;
+}
+
+export interface AgentDetailLoadedMessage {
+  type: "agent_detail_loaded";
+  agent: AgentDetailInfo;
 }
 
 export interface MemoryResultEntry {
@@ -749,6 +795,11 @@ export interface ProjectChannelLoadedMessage {
   messages: TeamMessageInfo[];
 }
 
+export interface ProjectChannelCreatedMessage {
+  type: "project_channel_created";
+  channel: ProjectChannelInfo;
+}
+
 export interface TeamMessagesLoadedMessage {
   type: "team_messages_loaded";
   messages: TeamMessageInfo[];
@@ -807,6 +858,7 @@ export type ServerMessage =
   | SubAgentProgressMessage
   | SubAgentDoneMessage
   | AgentsListMessage
+  | AgentDetailLoadedMessage
   | MemoryResultsMessage
   | MemoryStatsResultMessage
   | MemoryClearedMessage
@@ -822,6 +874,7 @@ export type ServerMessage =
   | SkillsMatchedMessage
   | HumanMessageRoutedMessage
   | TeamMessageAddedMessage
+  | ProjectChannelCreatedMessage
   | ProjectChannelsListMessage
   | ProjectChannelLoadedMessage
   | TeamMessagesLoadedMessage

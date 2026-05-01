@@ -1,0 +1,5 @@
+import { TasksView } from "@/components/mission-control/MissionControl";
+
+export default function MissionControlTasksPage() {
+  return <TasksView />;
+}

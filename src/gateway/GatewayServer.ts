@@ -38,8 +38,12 @@ import type { FeishuAdapter } from "./adapters/FeishuAdapter.ts";
 import type { TeamRouter } from "../team/TeamRouter.ts";
 import type { TeamMessageStore, TeamMessage } from "../team/TeamMessageStore.ts";
 import type { ProjectChannelStore, ProjectChannel } from "../team/ProjectChannelStore.ts";
+import { defaultProjectContextPath } from "../team/ProjectChannelStore.ts";
 import type { TaskQueue, Task } from "../team/TaskQueue.ts";
 import type { WebhookMessage } from "./adapters/types.ts";
+import type { AgentRegistry, RegisteredAgent } from "../team/AgentRegistry.ts";
+import YAML from "yaml";
+import type { ContextHub } from "../memory/ContextHub.ts";
 
 // ============================================================
 // Types
@@ -79,6 +83,10 @@ export interface GatewayOptions {
   projectChannels?: ProjectChannelStore;
   /** Lovely Octopus 任务队列 */
   taskQueue?: TaskQueue;
+  /** Lovely Octopus Agent 文件注册表 */
+  agentRegistry?: AgentRegistry;
+  /** Context Hub，用于初始化项目长期知识库目录 */
+  contextHub?: ContextHub;
   /** session 切换时的回调（用于触发旧 session 的记忆保存） */
   onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   /** chat 消息的处理回调，由外部（如 SessionRouter）注入 */
@@ -125,6 +133,8 @@ export class GatewayServer {
   private teamMessages?: TeamMessageStore;
   private projectChannels?: ProjectChannelStore;
   private taskQueue?: TaskQueue;
+  private agentRegistry?: AgentRegistry;
+  private contextHub?: ContextHub;
   private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   private port: number;
   private hostname: string;
@@ -165,7 +175,13 @@ export class GatewayServer {
     this.teamMessages = options.teamMessages;
     this.projectChannels = options.projectChannels;
     this.taskQueue = options.taskQueue;
+    this.agentRegistry = options.agentRegistry;
+    this.contextHub = options.contextHub;
     this.onSessionSwitch = options.onSessionSwitch;
+
+    this.teamMessages?.onMessageCreated((message) => {
+      this.broadcastToAll({ type: "team_message_added", message: serializeTeamMessage(message) });
+    });
 
     this.taskQueue?.onTaskUpdated((task, eventType) => {
       this.broadcastToAll({ type: "task_updated", task: serializeTask(task), eventType });
@@ -174,6 +190,13 @@ export class GatewayServer {
         this.notifyFeishuApprovalNeeded(task).catch((err) => {
           console.error(
             `[Gateway] Failed to push Feishu approval for task ${task.id}:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+      } else if (eventType === "completed" || task.status === "failed") {
+        this.notifyFeishuTaskTerminal(task).catch((err) => {
+          console.error(
+            `[Gateway] Failed to push Feishu task result for task ${task.id}:`,
             err instanceof Error ? err.message : String(err),
           );
         });
@@ -428,6 +451,8 @@ export class GatewayServer {
         return this.handleListWatchers(connectionId);
       case "list_agents":
         return this.handleListAgents(connectionId);
+      case "get_agent_detail":
+        return this.handleGetAgentDetail(connectionId, msg.name);
       case "memory_search":
         return this.handleMemorySearch(connectionId, msg.query);
       case "memory_stats":
@@ -494,6 +519,8 @@ export class GatewayServer {
           externalChatId: msg.externalChatId,
           userId: msg.userId,
         });
+      case "create_project_channel":
+        return this.handleCreateProjectChannel(connectionId, msg);
       case "list_project_channels":
         return this.handleListProjectChannels(connectionId, msg.status, msg.limit);
       case "get_project_channel":
@@ -865,6 +892,26 @@ export class GatewayServer {
   }
 
   private handleListAgents(connectionId: string): void {
+    if (this.agentRegistry) {
+      const agents: AgentInfo[] = this.agentRegistry.listAll().map((agent) => ({
+        name: agent.config.name,
+        displayName: agent.config.display_name,
+        description: agent.config.role,
+        role: agent.config.role,
+        status: agent.config.status,
+        aliases: [...agent.config.aliases],
+        directMessage: agent.config.direct_message,
+        allowedTools: [...agent.config.tools],
+        skills: [...agent.config.skills],
+        taskTags: [...agent.config.task_tags],
+        maxTurns: agent.config.max_concurrent_tasks,
+        canSpawnSubAgent: false,
+        source: "team",
+      }));
+      this.sendToConnection(connectionId, { type: "agents_list", agents });
+      return;
+    }
+
     const configs = getAllAgentConfigs();
     const agents: AgentInfo[] = configs.map((c) => ({
       name: c.name,
@@ -872,8 +919,34 @@ export class GatewayServer {
       allowedTools: c.allowedTools,
       maxTurns: c.maxTurns,
       canSpawnSubAgent: c.canSpawnSubAgent,
+      source: "preset",
     }));
     this.sendToConnection(connectionId, { type: "agents_list", agents });
+  }
+
+  private handleGetAgentDetail(connectionId: string, name: string): void {
+    if (!this.agentRegistry) {
+      this.sendToConnection(connectionId, { type: "error", message: "Agent registry not configured" });
+      return;
+    }
+
+    try {
+      const agent = this.agentRegistry.get(name);
+      if (!agent) {
+        this.sendToConnection(connectionId, { type: "error", message: `Agent not found: ${name}` });
+        return;
+      }
+
+      this.sendToConnection(connectionId, {
+        type: "agent_detail_loaded",
+        agent: serializeAgentDetail(agent),
+      });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to load agent detail: ${errorMessage(err)}`,
+      });
+    }
   }
 
   // ----------------------------------------------------------
@@ -1033,6 +1106,47 @@ export class GatewayServer {
     }
   }
 
+  private handleCreateProjectChannel(
+    connectionId: string,
+    msg: Extract<ClientMessage, { type: "create_project_channel" }>,
+  ): void {
+    if (!this.projectChannels) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team mode not configured" });
+      return;
+    }
+
+    try {
+      const contextPath = normalizeProjectContextPath(msg.slug, msg.contextPath);
+      const channel = this.projectChannels.createChannel({
+        slug: msg.slug,
+        title: msg.title?.trim() || titleFromSlug(msg.slug),
+        description: msg.description?.trim() || undefined,
+        contextPath,
+      });
+
+      if (msg.initializeContext !== false) {
+        this.initializeProjectContext(channel).catch((err) => {
+          console.error(
+            `[Gateway] Failed to initialize context for project ${channel.slug}:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+      }
+
+      const info = serializeProjectChannel(channel);
+      this.sendToConnection(connectionId, { type: "project_channel_created", channel: info });
+      this.sendToConnection(connectionId, {
+        type: "project_channels_list",
+        channels: this.projectChannels.listChannels({ limit: 100 }).map(serializeProjectChannel),
+      });
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to create project channel: ${errorMessage(err)}`,
+      });
+    }
+  }
+
   private handleListProjectChannels(
     connectionId: string,
     status?: "active" | "paused" | "archived",
@@ -1164,7 +1278,25 @@ export class GatewayServer {
       this.projectChannels.createChannel({
         slug: project,
         title: titleFromSlug(project),
+        contextPath: defaultProjectContextPath(project),
       })
+    );
+  }
+
+  private async initializeProjectContext(channel: ProjectChannel): Promise<void> {
+    if (!this.contextHub || !channel.contextPath) return;
+    const dir = stripContextHubPrefix(channel.contextPath);
+    const summary = channel.description ?? `${channel.title} project workspace.`;
+    await this.contextHub.writeFile(`${dir}/.abstract.md`, summary, "overwrite");
+    await this.contextHub.writeFile(
+      `${dir}/.overview.md`,
+      `# ${channel.title}\n\n## Status\nActive.\n\n## Key files\n- status.md — current state, decisions, and next actions.\n`,
+      "overwrite",
+    );
+    await this.contextHub.writeFile(
+      `${dir}/status.md`,
+      `# ${channel.title} Status\n\n## Current State\n- Project channel created for #${channel.slug}.\n\n## Decisions\n\n## Next Actions\n`,
+      "overwrite",
     );
   }
 
@@ -1869,6 +2001,17 @@ Output ONLY the markdown content, starting with --- for the frontmatter. No extr
     );
   }
 
+  private async notifyFeishuTaskTerminal(task: Task): Promise<void> {
+    if (!this.feishuAdapter || !this.teamMessages || !task.sourceMessageId) return;
+    const source = this.teamMessages.getMessage(task.sourceMessageId);
+    if (!source || source.externalChannel !== "feishu" || !source.externalChatId) return;
+
+    const body = task.status === "completed"
+      ? `任务已完成：${task.title}\n任务 ID：${task.id}\n\n${task.result ?? "(no result)"}`
+      : `任务失败：${task.title}\n任务 ID：${task.id}\n\n${task.error ?? "(no error details)"}`;
+    await this.feishuAdapter.sendToChannel(source.externalChatId, body);
+  }
+
   // ----------------------------------------------------------
   // 健康检查相关
   // ----------------------------------------------------------
@@ -1979,6 +2122,25 @@ function serializeProjectChannel(channel: ProjectChannel): ProjectChannelInfo {
   };
 }
 
+function serializeAgentDetail(agent: RegisteredAgent) {
+  return {
+    name: agent.config.name,
+    displayName: agent.config.display_name,
+    role: agent.config.role,
+    status: agent.config.status,
+    aliases: [...agent.config.aliases],
+    directMessage: agent.config.direct_message,
+    tools: [...agent.config.tools],
+    skills: [...agent.config.skills],
+    taskTags: [...agent.config.task_tags],
+    currentTasks: [...agent.currentTasks],
+    runtimeStatus: agent.status,
+    agentYaml: YAML.stringify(agent.config),
+    soul: agent.soul,
+    agentsMd: agent.operatingInstructions,
+  };
+}
+
 function serializeTask(task: Task): TaskInfo {
   return {
     id: task.id,
@@ -2015,6 +2177,17 @@ function titleFromSlug(slug: string): string {
     .filter(Boolean)
     .map((part) => part[0]!.toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function normalizeProjectContextPath(slug: string, contextPath?: string): string {
+  const raw = contextPath?.trim() || defaultProjectContextPath(slug);
+  if (raw.startsWith("context-hub/3-projects/")) return raw;
+  if (raw.startsWith("3-projects/")) return `context-hub/${raw}`;
+  throw new Error("Project context path must be under context-hub/3-projects/.");
+}
+
+function stripContextHubPrefix(path: string): string {
+  return path.startsWith("context-hub/") ? path.slice("context-hub/".length) : path;
 }
 
 function errorMessage(err: unknown): string {
