@@ -94,6 +94,8 @@ export class AgentLoop {
   private shellTool?: ShellTool;
   private memoryManager?: MemoryManager;
   private contextRetriever?: ContextRetriever;
+  /** 当前频道/项目 ID，用于记忆隔离 */
+  private channelId?: string;
   private cachedMemories: string[] = [];
   /** L1 检索命中的 .overview.md 内容，每次 run() 开始时刷新 */
   private cachedContextOverviews: ScoredContext[] = [];
@@ -114,6 +116,8 @@ export class AgentLoop {
   private roundCount = 0;
   /** 多少轮触发一次自动摘要 */
   private static readonly SUMMARY_INTERVAL = 5;
+  /** 已写入每日日志的消息数量，用于增量追加 */
+  private lastWrittenMsgCount = 0;
 
   // --- Abort 机制 ---
   /** 是否已中断 */
@@ -140,6 +144,8 @@ export class AgentLoop {
       shellTool?: ShellTool;
       memoryManager?: MemoryManager;
       contextRetriever?: ContextRetriever;
+      /** 当前频道/项目 ID，用于记忆的频道隔离。Team 模式下传入 project 频道 ID。 */
+      channelId?: string;
     },
   ) {
     this.client = client;
@@ -150,6 +156,7 @@ export class AgentLoop {
     this.shellTool = options?.shellTool;
     this.memoryManager = options?.memoryManager;
     this.contextRetriever = options?.contextRetriever;
+    this.channelId = options?.channelId;
   }
 
   // ----------------------------------------------------------
@@ -245,7 +252,7 @@ export class AgentLoop {
         const sessionId = this.conversation.getSessionId();
         const [fileMemoryCtx, memories] = await Promise.all([
           this.memoryManager.loadFileMemoryContext(),
-          this.memoryManager.recall(userMessage, sessionId),
+          this.memoryManager.recall(userMessage, sessionId, 5, this.channelId),
         ]);
         this.cachedFileMemory = fileMemoryCtx;
         this.cachedMemories = memories;
@@ -506,7 +513,9 @@ export class AgentLoop {
 
       // --- No tool calls: end turn ---
       // 判断停止条件：LLM 没有请求工具调用，说明推理完成，保存回复并结束循环
-      if (stopReason === "end_turn" || toolUseBlocks.length === 0) {
+      // 注意：不能仅凭 stopReason === "end_turn" 就结束，某些 provider 会在返回 tool_calls 的同时
+      // 标记 stop_reason 为 end_turn，此时应优先按 tool_calls 执行
+      if (toolUseBlocks.length === 0) {
         log.step(`Turn ${i + 1} COMPLETE — end_turn (no tool calls)`, {
           stopReason,
           textLength: textContent.length,
@@ -536,6 +545,17 @@ export class AgentLoop {
           usage: { totalInputTokens, totalOutputTokens },
         };
 
+        // 增量写入每日 JSONL 日志（同步追加，即时落盘）
+        if (this.memoryManager) {
+          const allMsgs = this.conversation.getMessages();
+          const newMsgs = allMsgs.slice(this.lastWrittenMsgCount);
+          if (newMsgs.length > 0) {
+            const sid = this.conversation.getSessionId();
+            this.memoryManager.saveDailyLog(sid, this.channelId, newMsgs);
+            this.lastWrittenMsgCount = allMsgs.length;
+          }
+        }
+
         // 轮次计数 +1，每 N 轮异步触发摘要保存（fire-and-forget，不阻塞对话）
         this.roundCount++;
         if (
@@ -544,7 +564,7 @@ export class AgentLoop {
         ) {
           const sid = this.conversation.getSessionId();
           const msgs = this.conversation.getMessages();
-          this.memoryManager.saveSummary(sid, msgs).catch((err) => {
+          this.memoryManager.saveSummary(sid, msgs, this.channelId).catch((err) => {
             if (process.env.DEBUG) {
               console.error(`[debug] Auto memory save failed:`, err);
             }
@@ -673,6 +693,18 @@ export class AgentLoop {
       }
 
       this.conversation.addToolResults(messageId, toolResultParams);
+
+      // 增量写入每日 JSONL 日志（每个 tool turn 完成后即时落盘）
+      if (this.memoryManager) {
+        const allMsgs = this.conversation.getMessages();
+        const newMsgs = allMsgs.slice(this.lastWrittenMsgCount);
+        if (newMsgs.length > 0) {
+          const sid = this.conversation.getSessionId();
+          this.memoryManager.saveDailyLog(sid, this.channelId, newMsgs);
+          this.lastWrittenMsgCount = allMsgs.length;
+        }
+      }
+
       log.step(`Turn ${i + 1} COMPLETE — has tool calls, continuing loop`, {
         stopReason,
         toolCalls: toolUseBlocks.map((t) => t.name).join(", "),

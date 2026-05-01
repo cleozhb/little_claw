@@ -262,6 +262,7 @@ export class AgentWorker {
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,
+      channelId: task.channelId,
     });
 
     this.currentLoop = loop;
@@ -376,6 +377,8 @@ export class AgentWorker {
     });
     const conversation = new EphemeralConversation("Lovely Octopus agent direct message.");
     // Agent DM 没有关联任务，因此不注入 report_progress/request_approval 两个任务工具。
+    // DM 消息可能来自不同频道，取第一条消息的 channelId 做记忆隔离
+    const dmChannelId = directMessages[0]?.channelId;
     const loop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
       config: createAgentConfig({
         name: agentName,
@@ -388,6 +391,7 @@ export class AgentWorker {
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,
+      channelId: dmChannelId,
     });
 
     for (const message of directMessages) {

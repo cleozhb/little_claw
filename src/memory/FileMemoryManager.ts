@@ -1,6 +1,7 @@
 import { join } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, appendFileSync } from "node:fs";
 import { ContextHub } from "./ContextHub.ts";
+import type { Message } from "../types/message.ts";
 
 // ---------------------------------------------------------------------------
 // FileMemoryManager — 基于文件的记忆层（OpenClaw 风格）
@@ -143,10 +144,52 @@ export class FileMemoryManager {
     await Bun.write(resolved, newContent);
   }
 
-  /** 写入今天的日志文件 */
+  /** 写入今天的日志文件（旧接口，保留向后兼容） */
   async writeTodayLog(content: string): Promise<void> {
     const today = this.getTodayDate();
     await this.appendToFile(`memory/${today}.md`, content);
+  }
+
+  /**
+   * 将对话消息增量追加到每日 JSONL 日志文件。
+   *
+   * 文件路径: ~/.little_claw/memory/YYYY-MM-DD.jsonl
+   * 每行一条 JSON 记录，包含 session 元信息和消息原文。
+   * 使用 appendFileSync 保证每条消息即时落盘，即使进程崩溃也不丢数据。
+   *
+   * @param sessionId 当前 session ID
+   * @param sessionTitle session 标题
+   * @param channelId 频道 ID（Team 模式）
+   * @param messages 要写入的消息列表（通常是增量部分）
+   */
+  appendDailyLog(
+    sessionId: string,
+    sessionTitle: string | null,
+    channelId: string | undefined,
+    messages: Message[],
+  ): void {
+    if (messages.length === 0) return;
+
+    const today = this.getTodayDate();
+    const filePath = join(this.memoryDir, `${today}.jsonl`);
+
+    // 确保 memory 目录存在
+    mkdirSync(this.memoryDir, { recursive: true });
+
+    const ts = new Date().toISOString();
+
+    const lines = messages.map((msg) => {
+      const record = {
+        session: { id: sessionId, title: sessionTitle, channelId: channelId ?? null },
+        ts,
+        role: msg.role,
+        content: msg.content,
+      };
+      return JSON.stringify(record);
+    });
+
+    // 追加写入，每条消息一行，末尾换行
+    appendFileSync(filePath, lines.join("\n") + "\n", "utf-8");
   }
 
   /** 获取今天的日期字符串 YYYY-MM-DD */
@@ -155,9 +198,9 @@ export class FileMemoryManager {
     return now.toISOString().slice(0, 10);
   }
 
-  /** 获取所有日志文件路径（用于向量索引） */
+  /** 获取所有日志文件路径（包括 .md 和 .jsonl） */
   async listLogFiles(): Promise<string[]> {
-    const glob = new Bun.Glob("*.md");
+    const glob = new Bun.Glob("*.{md,jsonl}");
     const files: string[] = [];
     for await (const path of glob.scan({ cwd: this.memoryDir })) {
       // 排除 MEMORY.md，只返回日期日志
