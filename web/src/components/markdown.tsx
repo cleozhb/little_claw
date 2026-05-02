@@ -49,6 +49,22 @@ const components: Components = {
       </a>
     );
   },
+  table({ children }) {
+    return (
+      <div className="my-2 overflow-x-auto">
+        <table className="w-full border-collapse text-sm">{children}</table>
+      </div>
+    );
+  },
+  thead({ children }) {
+    return <thead className="border-b bg-muted/50">{children}</thead>;
+  },
+  th({ children }) {
+    return <th className="px-3 py-1.5 text-left text-xs font-semibold">{children}</th>;
+  },
+  td({ children }) {
+    return <td className="px-3 py-1.5 text-xs border-b border-border/50">{children}</td>;
+  },
 };
 
 export function Markdown({ content }: { content: string }) {

@@ -7,6 +7,7 @@ import {
   Check,
   CircleAlert,
   Clock3,
+  Eye,
   FileText,
   FolderPlus,
   Hash,
@@ -28,9 +29,11 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
+import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,8 +58,40 @@ type ChannelSelection =
   | { type: "project"; id: string; label: string; project: string }
   | { type: "agent_dm"; id: string; label: string; agentName: string };
 
+type OctopusState = "idle" | "working" | "traveling" | "talking";
+
+interface AgentActivity {
+  state: OctopusState;
+  targetAgent?: string;
+  message?: string;
+  taskCount: number;
+  lastActivity: number;
+}
+
+const RETRO_COLORS = [
+  "#e85d75", // coral red
+  "#5bc0be", // teal
+  "#d4a843", // warm gold
+  "#9b5de5", // purple
+  "#f15bb5", // pink
+  "#00bbf9", // sky blue
+  "#8ac926", // lime green
+  "#ff6b35", // orange
+];
+
+function retroColor(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return RETRO_COLORS[Math.abs(hash) % RETRO_COLORS.length];
+}
+
+// Animation sequence: traveling → (1.5s) → talking (with speech bubble, 4s) → idle/working
+const TRAVEL_DURATION_MS = 1500;
+const TALK_DURATION_MS = 4000;
+
 interface MissionControlContextValue {
   agents: AgentInfo[];
+  agentActivities: Record<string, AgentActivity>;
   agentDetail: AgentDetailInfo | null;
   channels: ProjectChannelInfo[];
   connectionStatus: ReturnType<typeof useConnectionStatus>;
@@ -84,11 +119,29 @@ const navItems = [
   { href: "/mission-control/tasks", label: "Tasks", icon: Inbox },
   { href: "/mission-control/channels", label: "Channels", icon: MessageSquare },
   { href: "/mission-control/projects", label: "Projects", icon: Hash },
-  { href: "/mission-control/team", label: "Team", icon: Users },
+  { href: "/mission-control/team",     label: "Team",     icon: Users },
   { href: "/mission-control/calendar", label: "Calendar", icon: Clock3 },
-  { href: "/mission-control/memory", label: "Memory", icon: FileText },
-  { href: "/mission-control/docs", label: "Docs", icon: FileText },
+  { href: "/mission-control/memory",   label: "Memory",   icon: FileText },
+  { href: "/mission-control/docs",     label: "Docs",     icon: FileText },
+  { href: "/mission-control/visual",   label: "Visual",   icon: Eye },
 ];
+
+const CHANNEL_COLORS = [
+  { dot: "bg-blue-500", border: "border-l-blue-500", text: "text-blue-700", bg: "bg-blue-50" },
+  { dot: "bg-emerald-500", border: "border-l-emerald-500", text: "text-emerald-700", bg: "bg-emerald-50" },
+  { dot: "bg-violet-500", border: "border-l-violet-500", text: "text-violet-700", bg: "bg-violet-50" },
+  { dot: "bg-amber-500", border: "border-l-amber-500", text: "text-amber-700", bg: "bg-amber-50" },
+  { dot: "bg-rose-500", border: "border-l-rose-500", text: "text-rose-700", bg: "bg-rose-50" },
+  { dot: "bg-cyan-500", border: "border-l-cyan-500", text: "text-cyan-700", bg: "bg-cyan-50" },
+  { dot: "bg-indigo-500", border: "border-l-indigo-500", text: "text-indigo-700", bg: "bg-indigo-50" },
+  { dot: "bg-orange-500", border: "border-l-orange-500", text: "text-orange-700", bg: "bg-orange-50" },
+];
+
+function channelColor(key: string) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = key.charCodeAt(i) + ((hash << 5) - hash);
+  return CHANNEL_COLORS[Math.abs(hash) % CHANNEL_COLORS.length];
+}
 
 const statusText = {
   connected: "已连接",
@@ -122,6 +175,7 @@ function useMissionControl() {
 export function MissionControlProvider({ children }: { children: ReactNode }) {
   const connectionStatus = useConnectionStatus();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [agentActivities, setAgentActivities] = useState<Record<string, AgentActivity>>({});
   const [agentDetail, setAgentDetail] = useState<AgentDetailInfo | null>(null);
   const [channels, setChannels] = useState<ProjectChannelInfo[]>([]);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -283,6 +337,16 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       switch (message.type) {
         case "agents_list":
           setAgents(message.agents);
+          // Initialize activities for new agents
+          setAgentActivities((prev) => {
+            const next = { ...prev };
+            for (const agent of message.agents) {
+              if (!next[agent.name]) {
+                next[agent.name] = { state: "idle", taskCount: 0, lastActivity: Date.now() };
+              }
+            }
+            return next;
+          });
           break;
         case "agent_detail_loaded":
           setAgentDetail(message.agent);
@@ -305,6 +369,26 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           if (message.message.senderType !== "human") {
             setLastAction(formatTeamActivity(message.message));
           }
+          // Trigger octopus walking animation for ANY agent/coordinator communication
+          if (message.message.senderType === "agent" || message.message.senderType === "coordinator") {
+            const senderId = message.message.senderId;
+            const targetAgent = inferTargetAgent(message.message);
+            if (targetAgent && targetAgent !== senderId) {
+              setAgentActivities((prev) => {
+                const base = prev[senderId] ?? { state: "idle" as OctopusState, taskCount: 0, lastActivity: Date.now() };
+                return {
+                  ...prev,
+                  [senderId]: {
+                    ...base,
+                    state: "traveling",
+                    targetAgent,
+                    message: message.message.content,
+                    lastActivity: Date.now(),
+                  },
+                };
+              });
+            }
+          }
           setTimelineMessages((current) =>
             messageMatchesSelection(message.message, selectedChannel)
               ? dedupeMessages([...current, message.message])
@@ -325,6 +409,65 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         case "task_updated":
           setLastAction(`任务 ${message.task.title} 已更新为 ${message.task.status}`);
           setTasks((current) => upsertById(current, message.task));
+          // Animate: coordinator walks to agent when assigning a task
+          if (message.task.assignedTo && message.task.status === "assigned") {
+            setAgentActivities((prev) => {
+              // The "coordinator" might be named differently; use createdBy or "coordinator"
+              const coordinatorName = message.task.createdBy || "coordinator";
+              const base = prev[coordinatorName] ?? { state: "idle" as OctopusState, taskCount: 0, lastActivity: Date.now() };
+              return {
+                ...prev,
+                [coordinatorName]: {
+                  ...base,
+                  state: "traveling",
+                  targetAgent: message.task.assignedTo,
+                  message: `Assigning: ${message.task.title}`,
+                  lastActivity: Date.now(),
+                },
+              };
+            });
+          }
+          // Animate: agent walks to coordinator when completing/failing a task
+          if (message.task.assignedTo && (message.task.status === "completed" || message.task.status === "failed")) {
+            setAgentActivities((prev) => {
+              const agentName = message.task.assignedTo!;
+              const base = prev[agentName] ?? { state: "idle" as OctopusState, taskCount: 0, lastActivity: Date.now() };
+              const coordinatorName = message.task.createdBy || "coordinator";
+              return {
+                ...prev,
+                [agentName]: {
+                  ...base,
+                  state: "traveling",
+                  targetAgent: coordinatorName,
+                  message: message.task.status === "completed" ? `Done: ${message.task.title}` : `Failed: ${message.task.title}`,
+                  lastActivity: Date.now(),
+                },
+              };
+            });
+          }
+          // Update agent working state from task assignments
+          if (message.task.assignedTo) {
+            setAgentActivities((prev) => {
+              const name = message.task.assignedTo!;
+              const base = prev[name] ?? { state: "idle" as OctopusState, taskCount: 0, lastActivity: Date.now() };
+              const isRunning = message.task.status === "running" || message.task.status === "assigned";
+              // Don't override traveling/talking state from the animations above
+              if (base.state === "traveling" || base.state === "talking") {
+                return {
+                  ...prev,
+                  [name]: { ...base, taskCount: isRunning ? base.taskCount + 1 : base.taskCount },
+                };
+              }
+              return {
+                ...prev,
+                [name]: {
+                  ...base,
+                  state: isRunning ? "working" : "idle",
+                  lastActivity: Date.now(),
+                },
+              };
+            });
+          }
           break;
         case "approval_needed":
           setLastAction(`任务需要审批：${message.task.title}`);
@@ -337,9 +480,75 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     });
   }, [selectedChannel]);
 
+  // Animation sequence timers:
+  // traveling → (TRAVEL_DURATION_MS) → talking → (TALK_DURATION_MS) → idle/working
+  useEffect(() => {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    for (const [name, activity] of Object.entries(agentActivities)) {
+      if (activity.state === "traveling") {
+        // After travel time, switch to talking
+        timers.push(
+          setTimeout(() => {
+            setAgentActivities((prev) => {
+              const current = prev[name];
+              if (!current || current.state !== "traveling") return prev;
+              return {
+                ...prev,
+                [name]: { ...current, state: "talking" },
+              };
+            });
+          }, TRAVEL_DURATION_MS),
+        );
+      } else if (activity.state === "talking") {
+        // After talk time, return to idle/working
+        timers.push(
+          setTimeout(() => {
+            setAgentActivities((prev) => {
+              const current = prev[name];
+              if (!current || current.state !== "talking") return prev;
+              return {
+                ...prev,
+                [name]: {
+                  ...current,
+                  state: current.taskCount > 0 ? "working" : "idle",
+                  targetAgent: undefined,
+                  message: undefined,
+                },
+              };
+            });
+          }, TALK_DURATION_MS),
+        );
+      }
+    }
+    return () => timers.forEach(clearTimeout);
+  }, [agentActivities]);
+
+  // Sync taskCount into agentActivities from tasks
+  useEffect(() => {
+    const counts: Record<string, number> = {};
+    for (const task of tasks) {
+      if (task.assignedTo && (task.status === "running" || task.status === "assigned")) {
+        counts[task.assignedTo] = (counts[task.assignedTo] ?? 0) + 1;
+      }
+    }
+    setAgentActivities((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const name of Object.keys(next)) {
+        const newCount = counts[name] ?? 0;
+        if (next[name].taskCount !== newCount) {
+          next[name] = { ...next[name], taskCount: newCount };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tasks]);
+
   const value = useMemo<MissionControlContextValue>(
     () => ({
       agents,
+      agentActivities,
       agentDetail,
       channels,
       connectionStatus,
@@ -357,6 +566,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     }),
     [
       agents,
+      agentActivities,
       agentDetail,
       channels,
       connectionStatus,
@@ -380,19 +590,33 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 export function MissionControlFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { connectionStatus, error, lastAction, refresh } = useMissionControl();
+  const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <aside className="hidden w-[250px] shrink-0 border-r border-border/60 bg-sidebar md:flex md:flex-col">
-        <div className="flex items-center gap-2 px-4 py-3">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+    <div className="mc-theme flex h-screen overflow-hidden bg-background text-foreground">
+      <aside
+        className={cn(
+          "hidden shrink-0 border-r border-border/60 bg-sidebar md:flex md:flex-col transition-all duration-200",
+          collapsed ? "w-14" : "w-[250px]",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setCollapsed(!collapsed)}
+          className="flex w-full items-center gap-2 px-3 py-3 text-left transition-colors hover:bg-accent/50"
+          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+        >
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <Zap className="h-4 w-4" />
           </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">Mission Control</div>
-            <div className="text-[10px] text-muted-foreground">Lovely Octopus</div>
-          </div>
-        </div>
+          {!collapsed && (
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-semibold">Mission Control</div>
+              <div className="text-[10px] text-muted-foreground">Lovely Octopus</div>
+            </div>
+          )}
+        </button>
+
         <nav className="flex-1 space-y-1 px-2 py-2">
           {navItems.map((item) => {
             const active =
@@ -402,20 +626,22 @@ export function MissionControlFrame({ children }: { children: ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
+                title={collapsed ? item.label : undefined}
                 className={cn(
                   "flex h-8 items-center gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors",
+                  collapsed && "justify-center px-0",
                   active
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                 )}
               >
-                <Icon className="h-3.5 w-3.5" />
-                {item.label}
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                {!collapsed && item.label}
               </Link>
             );
           })}
         </nav>
-        <ConnectionPill status={connectionStatus} className="mx-3 mb-3" />
+        <ConnectionPill status={connectionStatus} collapsed={collapsed} className="mx-3 mb-3" />
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -502,6 +728,29 @@ export function ChannelsView() {
     timelineMessages,
   } = useMissionControl();
   const [draft, setDraft] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const channelSwitchedRef = useRef(false);
+
+  // Mark channel switch so next message load forces scroll to bottom
+  useEffect(() => {
+    channelSwitchedRef.current = true;
+  }, [selectedChannel]);
+
+  // Auto-scroll: always after channel switch, otherwise only when near bottom
+  useEffect(() => {
+    if (channelSwitchedRef.current) {
+      channelSwitchedRef.current = false;
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+      return;
+    }
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    if (nearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [timelineMessages]);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -532,6 +781,7 @@ export function ChannelsView() {
                 <ChannelButton
                   key={channel.id}
                   active={selectedChannel.type === "project" && selectedChannel.project === channel.slug}
+                  colorKey={channel.slug}
                   icon={<Hash className="h-3.5 w-3.5" />}
                   label={channel.title || channel.slug}
                   meta={channel.slug}
@@ -557,6 +807,7 @@ export function ChannelsView() {
                   <ChannelButton
                     key={agent.name}
                     active={selectedChannel.type === "agent_dm" && selectedChannel.agentName === agent.name}
+                    colorKey={agent.name}
                     icon={<Bot className="h-3.5 w-3.5" />}
                     label={agent.displayName || agent.name}
                     meta={`@${agent.name}`}
@@ -582,13 +833,16 @@ export function ChannelsView() {
             <div className="text-[10px] text-muted-foreground">{timelineMessages.length} messages</div>
           </div>
         </div>
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+        <div ref={scrollContainerRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
           {timelineMessages.length === 0 ? (
             <div className="flex h-full items-center justify-center rounded-lg border border-dashed text-xs text-muted-foreground">
               No messages
             </div>
           ) : (
-            timelineMessages.map((message) => <TimelineMessage key={message.id} message={message} />)
+            <>
+              {timelineMessages.map((message) => <TimelineMessage key={message.id} message={message} />)}
+              <div ref={messagesEndRef} />
+            </>
           )}
         </div>
         <form onSubmit={handleSubmit} className="shrink-0 border-t p-3">
@@ -830,6 +1084,269 @@ export function PlaceholderView({ title }: { title: string }) {
   );
 }
 
+// ── Visual Page: Retro Octopus Territory ──
+
+function RetroOctopus({ color, state }: { color: string; state: OctopusState }) {
+  const darkerColor = color + "cc";
+  return (
+    <svg viewBox="0 0 60 60" className={cn("retro-octopus w-16 h-16", state)}>
+      {/* Head */}
+      <ellipse cx="30" cy="20" rx="16" ry="14" fill={color} />
+      {/* Head highlight */}
+      <ellipse cx="30" cy="15" rx="10" ry="6" fill={darkerColor} opacity="0.3" />
+      {/* Eyes */}
+      <circle cx="23" cy="18" r="5" fill="white" />
+      <circle cx="37" cy="18" r="5" fill="white" />
+      <circle cx="24" cy="18" r="2.5" fill="#1a1a2e" />
+      <circle cx="38" cy="18" r="2.5" fill="#1a1a2e" />
+      {/* Eye shine */}
+      <circle cx="22" cy="16.5" r="1" fill="white" opacity="0.8" />
+      <circle cx="36" cy="16.5" r="1" fill="white" opacity="0.8" />
+      {/* Mouth */}
+      <ellipse cx="30" cy="25" rx="3" ry="1.5" fill={darkerColor} />
+      {/* Tentacles */}
+      {[
+        "M14,30 Q10,42 8,50",
+        "M19,30 Q16,43 14,52",
+        "M24,31 Q22,44 20,52",
+        "M29,32 Q28,44 27,53",
+        "M33,32 Q32,44 31,53",
+        "M38,31 Q38,44 40,52",
+        "M43,30 Q44,43 48,52",
+        "M48,30 Q50,42 54,50",
+      ].map((d, i) => (
+        <path
+          key={i}
+          d={d}
+          stroke={color}
+          strokeWidth="3"
+          fill="none"
+          strokeLinecap="round"
+          className="retro-tentacle"
+          style={{ animationDelay: `${i * 0.18}s` }}
+        />
+      ))}
+      {/* Suction cups hint */}
+      {[18, 23, 28, 33, 38, 43, 48].map((cx, i) => (
+        <circle key={i} cx={cx} cy={40 + (i % 2) * 3} r="1" fill={darkerColor} opacity="0.5" />
+      ))}
+    </svg>
+  );
+}
+
+function SpeechBubble({ content }: { content: string }) {
+  const preview = content.length > 50 ? content.slice(0, 50) + "..." : content;
+  return (
+    <div className="absolute -top-2 left-1/2 -translate-x-1/2 -translate-y-full z-20 speech-bubble-enter">
+      <div
+        className="rounded-lg px-2.5 py-1.5 text-[10px] leading-4 max-w-[180px] whitespace-normal"
+        style={{ background: "#0f3460", color: "#e0d8c0", border: "1px solid #1a3a6a" }}
+      >
+        {preview}
+      </div>
+      <div
+        className="mx-auto h-0 w-0"
+        style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid #0f3460" }}
+      />
+    </div>
+  );
+}
+
+function LonelyOctopus() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 py-20">
+      <RetroOctopus color="#5bc0be" state="idle" />
+      <div className="text-center">
+        <div className="text-sm font-mono" style={{ color: "#8a7f6b" }}>No agents registered</div>
+        <div className="text-[10px] font-mono mt-1" style={{ color: "#5a5548" }}>Waiting for agents to come alive...</div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityLog({ agents, activities }: { agents: AgentInfo[]; activities: Record<string, AgentActivity> }) {
+  const recentEvents = agents
+    .filter((a) => activities[a.name] && activities[a.name].state !== "idle")
+    .slice(0, 5);
+  if (recentEvents.length === 0) return null;
+  return (
+    <div className="absolute bottom-3 right-3 rounded-lg p-2 text-[10px] font-mono max-w-[260px] z-30" style={{ background: "#0f3460cc", border: "1px solid #1a3a6a", color: "#8a7f6b" }}>
+      {recentEvents.map((agent) => {
+        const activity = activities[agent.name];
+        const label = activity.state === "traveling" && activity.targetAgent
+          ? `walking to @${activity.targetAgent}`
+          : activity.state === "talking" && activity.targetAgent
+            ? `talking to @${activity.targetAgent}`
+            : activity.state === "working"
+              ? "is working"
+              : activity.state;
+        return (
+          <div key={agent.name} className="flex items-center gap-1.5 py-0.5">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: retroColor(agent.name) }} />
+            <span style={{ color: retroColor(agent.name) }}>{agent.displayName ?? agent.name}</span>
+            <span>{label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function VisualView() {
+  const { agents, agentActivities, tasks } = useMissionControl();
+  const gridRef = useRef<HTMLDivElement>(null);
+  const territoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // Animated offsets are set after a rAF so CSS transitions can fire
+  const [animatedOffsets, setAnimatedOffsets] = useState<Record<string, { x: number; y: number }>>({});
+
+  // Compute grid columns based on agent count
+  const gridCols = agents.length <= 2 ? 2 : agents.length <= 4 ? 2 : agents.length <= 9 ? 3 : 4;
+
+  // Two-phase animation: first render at home position, then in next frame apply the offset.
+  // This lets CSS transition see the "from" state and animate smoothly.
+  useEffect(() => {
+    const agentsWithTarget = agents.filter((a) => {
+      const activity = agentActivities[a.name];
+      return activity?.targetAgent && (activity.state === "traveling" || activity.state === "talking");
+    });
+
+    if (agentsWithTarget.length === 0) {
+      // No agents traveling — clear offsets so octopuses return home (with transition)
+      setAnimatedOffsets({});
+      return;
+    }
+
+    // Schedule offset computation for next animation frame
+    const rafId = requestAnimationFrame(() => {
+      const newOffsets: Record<string, { x: number; y: number }> = {};
+      for (const agent of agentsWithTarget) {
+        const activity = agentActivities[agent.name];
+        if (!activity?.targetAgent) continue;
+        const sourceEl = territoryRefs.current[agent.name];
+        const targetEl = territoryRefs.current[activity.targetAgent];
+        if (!sourceEl || !targetEl) continue;
+        const sourceRect = sourceEl.getBoundingClientRect();
+        const targetRect = targetEl.getBoundingClientRect();
+        newOffsets[agent.name] = {
+          x: targetRect.left - sourceRect.left + (targetRect.width - sourceRect.width) / 2,
+          y: targetRect.top - sourceRect.top + (targetRect.height - sourceRect.height) / 2,
+        };
+      }
+      setAnimatedOffsets((prev) => {
+        // Only update if values actually changed
+        const same = Object.keys(prev).length === Object.keys(newOffsets).length
+          && Object.entries(prev).every(([k, v]) => newOffsets[k]?.x === v.x && newOffsets[k]?.y === v.y);
+        return same ? prev : newOffsets;
+      });
+    });
+
+    return () => cancelAnimationFrame(rafId);
+  }, [agents, agentActivities]);
+
+  // Determine which territories are being visited
+  const targetedAgents = useMemo(() => {
+    const set = new Set<string>();
+    for (const activity of Object.values(agentActivities)) {
+      if (activity.targetAgent && (activity.state === "traveling" || activity.state === "talking")) {
+        set.add(activity.targetAgent);
+      }
+    }
+    return set;
+  }, [agentActivities]);
+
+  return (
+    <section className="visual-page flex h-full flex-col overflow-hidden">
+      <div className="shrink-0 border-b px-4 py-3 flex items-center justify-between" style={{ borderColor: "#0f3460" }}>
+        <div>
+          <h1 className="text-base font-semibold font-mono" style={{ color: "#e0d8c0" }}>Visual</h1>
+          <div className="mt-0.5 text-[10px] font-mono" style={{ color: "#8a7f6b" }}>
+            {agents.length} agents &middot; {tasks.filter((t) => t.status === "running").length} running tasks
+          </div>
+        </div>
+        <div className="text-[10px] font-mono" style={{ color: "#5a5548" }}>
+          Lovely Octopus Territory
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-visible p-4">
+        {agents.length === 0 ? (
+          <LonelyOctopus />
+        ) : (
+          <div
+            ref={gridRef}
+            className="grid gap-4"
+            style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
+          >
+            {agents.map((agent) => {
+              const activity = agentActivities[agent.name] ?? { state: "idle" as OctopusState, taskCount: 0, lastActivity: Date.now() };
+              const color = retroColor(agent.name);
+              const isTraveling = activity.state === "traveling";
+              const isTalking = activity.state === "talking";
+              const isWorking = activity.state === "working";
+              const isAway = isTraveling || isTalking;
+              const offset = animatedOffsets[agent.name];
+
+              return (
+                <div
+                  key={agent.name}
+                  ref={(el) => { territoryRefs.current[agent.name] = el; }}
+                  className={cn(
+                    "territory-zone flex flex-col items-center justify-center p-3 min-h-[160px] overflow-visible",
+                    targetedAgents.has(agent.name) && "active",
+                  )}
+                >
+                  <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color }}>
+                    {agent.displayName ?? agent.name}
+                  </div>
+                  <div className="relative">
+                    <div
+                      style={{
+                        // Always keep transition active so returning animation works too
+                        transition: `transform ${TRAVEL_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1)`,
+                        transform: offset ? `translate(${offset.x}px, ${offset.y}px)` : "translate(0px, 0px)",
+                        zIndex: isAway ? 15 : 1,
+                        position: "relative",
+                      }}
+                    >
+                      <RetroOctopus color={color} state={activity.state} />
+                      {isTalking && activity.message && <SpeechBubble content={activity.message} />}
+                    </div>
+                    {/* Ghost outline when octopus is away */}
+                    {isAway && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none">
+                        <RetroOctopus color={color} state="idle" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5 text-[10px] font-mono" style={{ color: "#8a7f6b" }}>
+                    {isWorking && (
+                      <span className="flex items-center gap-0.5">
+                        <Zap className="h-2.5 w-2.5" style={{ color }} />
+                        {activity.taskCount > 0 ? activity.taskCount : ""}
+                      </span>
+                    )}
+                    {isTraveling && activity.targetAgent && (
+                      <span style={{ color }}>&rarr; @{activity.targetAgent}</span>
+                    )}
+                    {isTalking && activity.targetAgent && (
+                      <span style={{ color }}>&#128172; @{activity.targetAgent}</span>
+                    )}
+                    {!isWorking && !isAway && (
+                      <span style={{ color: "#5a5548" }}>idle</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <ActivityLog agents={agents} activities={agentActivities} />
+    </section>
+  );
+}
+
 function TaskCard({
   task,
   onApproval,
@@ -837,6 +1354,7 @@ function TaskCard({
   task: TaskInfo;
   onApproval: (taskId: string, decision: "approve" | "reject") => void;
 }) {
+  const projectColor = task.project ? channelColor(task.project) : null;
   return (
     <article className="rounded-lg border bg-background p-3 shadow-sm">
       <div className="flex items-start gap-2">
@@ -852,7 +1370,8 @@ function TaskCard({
               </Badge>
             ) : null}
             {task.project ? (
-              <Badge variant="secondary" className="h-5 rounded-lg text-[10px]">
+              <Badge variant="secondary" className={cn("h-5 gap-1 rounded-lg text-[10px]", projectColor?.bg, projectColor?.text)}>
+                <span className={cn("h-1.5 w-1.5 rounded-full", projectColor?.dot)} />
                 #{task.project}
               </Badge>
             ) : null}
@@ -897,27 +1416,31 @@ function ChannelGroup({ children, title }: { children: ReactNode; title: string 
 
 function ChannelButton({
   active,
+  colorKey,
   icon,
   label,
   meta,
   onClick,
 }: {
   active: boolean;
+  colorKey?: string;
   icon: ReactNode;
   label: string;
   meta: string;
   onClick: () => void;
 }) {
+  const color = colorKey ? channelColor(colorKey) : null;
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
+        "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors border-l-2",
+        color ? color.border : "border-l-transparent",
         active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
       )}
     >
-      {icon}
+      {color ? <span className={cn("h-2 w-2 shrink-0 rounded-full", color.dot)} /> : icon}
       <span className="min-w-0 flex-1 truncate text-xs font-medium">{label}</span>
       <span className="max-w-24 truncate text-[10px] opacity-70">{meta}</span>
     </button>
@@ -925,9 +1448,12 @@ function ChannelButton({
 }
 
 function TimelineMessage({ message }: { message: TeamMessageInfo }) {
+  const colorKey = message.channelType === "project" ? message.project ?? message.channelId : message.channelId;
+  const color = channelColor(colorKey);
   return (
-    <article className="rounded-lg border bg-background p-3">
+    <article className={cn("rounded-lg border bg-background p-3 border-l-2", color.border)}>
       <div className="flex flex-wrap items-center gap-2">
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", color.dot)} />
         <Badge variant="secondary" className="h-5 rounded-lg text-[10px]">
           {message.senderType}
         </Badge>
@@ -935,7 +1461,7 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
         {message.project ? <span className="text-[10px] text-muted-foreground">#{message.project}</span> : null}
         <span className="ml-auto text-[10px] text-muted-foreground">{formatDate(message.createdAt)}</span>
       </div>
-      <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{message.content}</p>
+      <div className="mt-2 text-sm leading-6"><Markdown content={message.content} /></div>
       <div className="mt-2 flex flex-wrap gap-1">
         <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
           {message.channelType}
@@ -955,15 +1481,18 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
 
 function ConnectionPill({
   className,
+  collapsed,
   status,
 }: {
   className?: string;
+  collapsed?: boolean;
   status: ReturnType<typeof useConnectionStatus>;
 }) {
   return (
     <div
       className={cn(
-        "flex h-8 items-center gap-2 rounded-lg border bg-background px-2 text-xs text-muted-foreground",
+        "flex items-center gap-2 rounded-lg border bg-background text-xs text-muted-foreground",
+        collapsed ? "mx-auto h-8 w-8 justify-center px-0" : "h-8 px-2",
         className,
       )}
     >
@@ -974,7 +1503,7 @@ function ConnectionPill({
       ) : (
         <CircleAlert className="h-3.5 w-3.5 text-destructive" />
       )}
-      {statusText[status]}
+      {!collapsed && statusText[status]}
     </div>
   );
 }
@@ -1008,6 +1537,37 @@ function messageMatchesSelection(message: TeamMessageInfo, selection: ChannelSel
 
 function messageProjectKey(message: TeamMessageInfo) {
   return message.project ?? message.channelId;
+}
+
+/**
+ * Infer which agent is the target of a team message, so the Visual page
+ * can animate the sender octopus walking to the target.
+ *
+ * Priority:
+ * 1. agent_dm channel → channelId is the target agent name
+ * 2. coordinator channel → channelId might be the agent name
+ * 3. handledBy field → the agent that handled/processed this message
+ * 4. @mention in content → first @agent-name found in message text
+ */
+function inferTargetAgent(message: TeamMessageInfo): string | undefined {
+  // Direct DM — channelId IS the target agent
+  if (message.channelType === "agent_dm") return message.channelId;
+
+  // Coordinator channel — channelId might be the target agent name
+  if (message.channelType === "coordinator" && message.channelId && message.channelId !== "coordinator") {
+    return message.channelId;
+  }
+
+  // handledBy tells us which agent processed this message
+  if (message.handledBy && message.handledBy !== message.senderId) {
+    return message.handledBy;
+  }
+
+  // Scan for @mentions in content
+  const mentionMatch = message.content.match(/@(\w[\w-]*)/);
+  if (mentionMatch) return mentionMatch[1];
+
+  return undefined;
 }
 
 function formatTeamActivity(message: TeamMessageInfo) {

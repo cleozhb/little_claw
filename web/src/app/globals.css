@@ -117,6 +117,75 @@
   --sidebar-ring: oklch(0.55 0 0);
 }
 
+.mc-theme {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.15 0 0);
+  --card: oklch(0.995 0 0);
+  --card-foreground: oklch(0.15 0 0);
+  --popover: oklch(0.995 0 0);
+  --popover-foreground: oklch(0.15 0 0);
+  --primary: oklch(0.55 0.2 260);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.96 0.005 260);
+  --secondary-foreground: oklch(0.25 0.01 260);
+  --muted: oklch(0.96 0.003 260);
+  --muted-foreground: oklch(0.55 0.01 260);
+  --accent: oklch(0.93 0.02 260);
+  --accent-foreground: oklch(0.20 0.04 260);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.90 0.003 260);
+  --input: oklch(0.92 0.003 260);
+  --ring: oklch(0.55 0.2 260);
+  --chart-1: oklch(0.55 0.2 260);
+  --chart-2: oklch(0.65 0.18 160);
+  --chart-3: oklch(0.60 0.2 30);
+  --chart-4: oklch(0.55 0.18 330);
+  --chart-5: oklch(0.60 0.15 80);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.97 0.005 260);
+  --sidebar-foreground: oklch(0.15 0 0);
+  --sidebar-primary: oklch(0.55 0.2 260);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.93 0.02 260);
+  --sidebar-accent-foreground: oklch(0.20 0.04 260);
+  --sidebar-border: oklch(0.90 0.003 260);
+  --sidebar-ring: oklch(0.55 0.2 260);
+}
+
+.mc-theme.dark {
+  --background: oklch(0.13 0.005 260);
+  --foreground: oklch(0.93 0.01 260);
+  --card: oklch(0.17 0.008 260);
+  --card-foreground: oklch(0.93 0.01 260);
+  --popover: oklch(0.17 0.008 260);
+  --popover-foreground: oklch(0.93 0.01 260);
+  --primary: oklch(0.65 0.2 260);
+  --primary-foreground: oklch(0.13 0.005 260);
+  --secondary: oklch(0.22 0.01 260);
+  --secondary-foreground: oklch(0.90 0.01 260);
+  --muted: oklch(0.22 0.01 260);
+  --muted-foreground: oklch(0.65 0.01 260);
+  --accent: oklch(0.25 0.015 260);
+  --accent-foreground: oklch(0.93 0.01 260);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.65 0.2 260);
+  --chart-1: oklch(0.65 0.2 260);
+  --chart-2: oklch(0.70 0.18 160);
+  --chart-3: oklch(0.65 0.2 30);
+  --chart-4: oklch(0.60 0.18 330);
+  --chart-5: oklch(0.65 0.15 80);
+  --sidebar: oklch(0.15 0.008 260);
+  --sidebar-foreground: oklch(0.93 0.01 260);
+  --sidebar-primary: oklch(0.65 0.2 260);
+  --sidebar-primary-foreground: oklch(0.93 0.01 260);
+  --sidebar-accent: oklch(0.25 0.015 260);
+  --sidebar-accent-foreground: oklch(0.93 0.01 260);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.65 0.2 260);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -145,4 +214,124 @@
 }
 .animate-arg-highlight {
   animation: arg-highlight 2s ease-out forwards;
+}
+
+/* ── Visual Page: Retro Octopus Animations ── */
+
+@keyframes octopus-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes octopus-bob-working {
+  0%, 100% { transform: translateY(0) scale(1); }
+  25% { transform: translateY(-3px) scale(1.02); }
+  50% { transform: translateY(-5px) scale(1); }
+  75% { transform: translateY(-2px) scale(1.02); }
+}
+
+@keyframes tentacle-wiggle {
+  0%, 100% { d: path("M0,0 Q2,12 -2,20"); }
+  50% { d: path("M0,0 Q-2,12 2,20"); }
+}
+
+@keyframes speech-bubble-in {
+  0% { opacity: 0; transform: translateY(4px) scale(0.9); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes speech-bubble-out {
+  0% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-4px) scale(0.9); }
+}
+
+@keyframes scanline {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 4px; }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 4px 1px oklch(0.7 0.15 80 / 20%); }
+  50% { box-shadow: 0 0 8px 2px oklch(0.7 0.15 80 / 35%); }
+}
+
+.visual-page {
+  --retro-bg: #1a1a2e;
+  --retro-surface: #16213e;
+  --retro-border: #0f3460;
+  --retro-text: #e0d8c0;
+  --retro-muted: #8a7f6b;
+  background: var(--retro-bg);
+  color: var(--retro-text);
+  position: relative;
+  overflow: hidden;
+}
+
+.visual-page::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    oklch(0 0 0 / 3%) 2px,
+    oklch(0 0 0 / 3%) 4px
+  );
+  animation: scanline 0.3s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.visual-page::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 50%, oklch(0 0 0 / 25%) 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.visual-page > * {
+  position: relative;
+  z-index: 2;
+}
+
+.retro-octopus.idle {
+  animation: octopus-bob 2.5s ease-in-out infinite;
+}
+
+.retro-octopus.working {
+  animation: octopus-bob-working 1.2s ease-in-out infinite;
+}
+
+.retro-octopus.traveling {
+  transition: transform 1.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.retro-octopus.talking {
+  animation: octopus-bob 1.8s ease-in-out infinite;
+}
+
+.retro-tentacle {
+  animation: tentacle-wiggle 1.5s ease-in-out infinite;
+}
+
+.territory-zone {
+  background: var(--retro-surface);
+  border: 2px dashed var(--retro-border);
+  border-radius: 8px;
+  position: relative;
+}
+
+.territory-zone.active {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+.speech-bubble-enter {
+  animation: speech-bubble-in 0.3s ease-out forwards;
+}
+
+.speech-bubble-exit {
+  animation: speech-bubble-out 0.3s ease-in forwards;
 }
