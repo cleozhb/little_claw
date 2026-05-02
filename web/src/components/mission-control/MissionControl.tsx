@@ -14,9 +14,11 @@ import {
   Inbox,
   Loader2,
   MessageSquare,
+  Radio,
   RefreshCcw,
   Send,
   ShieldCheck,
+  Terminal,
   Users,
   X,
   Zap,
@@ -62,7 +64,7 @@ type ChannelSelection =
   | { type: "project"; id: string; label: string; project: string }
   | { type: "agent_dm"; id: string; label: string; agentName: string };
 
-type OctopusState = "idle" | "working" | "traveling" | "talking";
+type OctopusState = "idle" | "working" | "departing" | "walking" | "arriving" | "talking" | "returning";
 
 interface AgentActivity {
   state: OctopusState;
@@ -89,9 +91,20 @@ function retroColor(name: string) {
   return RETRO_COLORS[Math.abs(hash) % RETRO_COLORS.length];
 }
 
-// Animation sequence: traveling → (1.5s) → talking (with speech bubble, 4s) → idle/working
-const TRAVEL_DURATION_MS = 1500;
+function isCommunicating(state: OctopusState) {
+  return state === "departing" || state === "walking" || state === "arriving" || state === "talking" || state === "returning";
+}
+
+function isDockedAtTarget(state: OctopusState) {
+  return state === "walking" || state === "arriving" || state === "talking";
+}
+
+// Visual-only animation sequence derived from gateway events.
+const DEPARTURE_DURATION_MS = 180;
+const TRAVEL_DURATION_MS = 1300;
+const ARRIVAL_DURATION_MS = 240;
 const TALK_DURATION_MS = 4000;
+const RETURN_DURATION_MS = 900;
 
 interface MissionControlContextValue {
   agents: AgentInfo[];
@@ -422,7 +435,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
                   ...prev,
                   [senderId]: {
                     ...base,
-                    state: "traveling",
+                    state: "departing",
                     targetAgent,
                     message: message.message.content,
                     lastActivity: Date.now(),
@@ -479,7 +492,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
                 ...prev,
                 [coordinatorName]: {
                   ...base,
-                  state: "traveling",
+                  state: "departing",
                   targetAgent: message.task.assignedTo,
                   message: `Assigning: ${message.task.title}`,
                   lastActivity: Date.now(),
@@ -497,7 +510,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
                 ...prev,
                 [agentName]: {
                   ...base,
-                  state: "traveling",
+                  state: "departing",
                   targetAgent: coordinatorName,
                   message: message.task.status === "completed" ? `Done: ${message.task.title}` : `Failed: ${message.task.title}`,
                   lastActivity: Date.now(),
@@ -511,8 +524,8 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
               const name = message.task.assignedTo!;
               const base = prev[name] ?? { state: "idle" as OctopusState, taskCount: 0, lastActivity: Date.now() };
               const isRunning = message.task.status === "running" || message.task.status === "assigned";
-              // Don't override traveling/talking state from the animations above
-              if (base.state === "traveling" || base.state === "talking") {
+              // Don't override an active communication animation.
+              if (isCommunicating(base.state)) {
                 return {
                   ...prev,
                   [name]: { ...base, taskCount: isRunning ? base.taskCount + 1 : base.taskCount },
@@ -541,31 +554,68 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   }, [selectedChannel]);
 
   // Animation sequence timers:
-  // traveling → (TRAVEL_DURATION_MS) → talking → (TALK_DURATION_MS) → idle/working
+  // departing → walking → arriving → talking → returning → idle/working
   useEffect(() => {
     const timers: ReturnType<typeof setTimeout>[] = [];
     for (const [name, activity] of Object.entries(agentActivities)) {
-      if (activity.state === "traveling") {
-        // After travel time, switch to talking
+      if (activity.state === "departing") {
         timers.push(
           setTimeout(() => {
             setAgentActivities((prev) => {
               const current = prev[name];
-              if (!current || current.state !== "traveling") return prev;
+              if (!current || current.state !== "departing") return prev;
+              return {
+                ...prev,
+                [name]: { ...current, state: "walking" },
+              };
+            });
+          }, DEPARTURE_DURATION_MS),
+        );
+      } else if (activity.state === "walking") {
+        timers.push(
+          setTimeout(() => {
+            setAgentActivities((prev) => {
+              const current = prev[name];
+              if (!current || current.state !== "walking") return prev;
+              return {
+                ...prev,
+                [name]: { ...current, state: "arriving" },
+              };
+            });
+          }, TRAVEL_DURATION_MS),
+        );
+      } else if (activity.state === "arriving") {
+        timers.push(
+          setTimeout(() => {
+            setAgentActivities((prev) => {
+              const current = prev[name];
+              if (!current || current.state !== "arriving") return prev;
               return {
                 ...prev,
                 [name]: { ...current, state: "talking" },
               };
             });
-          }, TRAVEL_DURATION_MS),
+          }, ARRIVAL_DURATION_MS),
         );
       } else if (activity.state === "talking") {
-        // After talk time, return to idle/working
         timers.push(
           setTimeout(() => {
             setAgentActivities((prev) => {
               const current = prev[name];
               if (!current || current.state !== "talking") return prev;
+              return {
+                ...prev,
+                [name]: { ...current, state: "returning" },
+              };
+            });
+          }, TALK_DURATION_MS),
+        );
+      } else if (activity.state === "returning") {
+        timers.push(
+          setTimeout(() => {
+            setAgentActivities((prev) => {
+              const current = prev[name];
+              if (!current || current.state !== "returning") return prev;
               return {
                 ...prev,
                 [name]: {
@@ -576,7 +626,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
                 },
               };
             });
-          }, TALK_DURATION_MS),
+          }, RETURN_DURATION_MS),
         );
       }
     }
@@ -802,6 +852,7 @@ export function ChannelsView() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const channelSwitchedRef = useRef(false);
   const wasNearBottomRef = useRef(true);
+  const userSentMessageRef = useRef(false);
 
   // Mark channel switch so next message load forces scroll to bottom
   useEffect(() => {
@@ -822,7 +873,7 @@ export function ChannelsView() {
     return () => container.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Auto-scroll: always after channel switch, otherwise only when was near bottom
+  // Auto-scroll: always after channel switch or user-sent message, otherwise only when was near bottom
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -832,6 +883,13 @@ export function ChannelsView() {
       container.scrollTop = container.scrollHeight;
       return;
     }
+
+    if (userSentMessageRef.current) {
+      userSentMessageRef.current = false;
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+      return;
+    }
+
     if (wasNearBottomRef.current) {
       container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
     }
@@ -842,6 +900,7 @@ export function ChannelsView() {
     if (!draft.trim()) return;
     sendChannelMessage(draft);
     setDraft("");
+    userSentMessageRef.current = true;
   }
 
   return (
@@ -939,6 +998,7 @@ export function ChannelsView() {
                 if (!draft.trim()) return;
                 sendChannelMessage(draft);
                 setDraft("");
+                userSentMessageRef.current = true;
               }}
               agents={agents}
               channels={channels}
@@ -1479,32 +1539,42 @@ function RetroOctopus({ color, state }: { color: string; state: OctopusState }) 
       <circle cx="36" cy="16.5" r="1" fill="white" opacity="0.8" />
       {/* Mouth */}
       <ellipse cx="30" cy="25" rx="3" ry="1.5" fill={darkerColor} />
-      {/* Tentacles */}
+      {/* Short floating tentacles */}
       {[
-        "M14,30 Q10,42 8,50",
-        "M19,30 Q16,43 14,52",
-        "M24,31 Q22,44 20,52",
-        "M29,32 Q28,44 27,53",
-        "M33,32 Q32,44 31,53",
-        "M38,31 Q38,44 40,52",
-        "M43,30 Q44,43 48,52",
-        "M48,30 Q50,42 54,50",
+        "M15,36 Q13,39 14,42",
+        "M21,37 Q20,40 20,43",
+        "M27,37 Q27,40 27,43",
+        "M33,37 Q33,40 34,43",
+        "M39,37 Q40,40 40,43",
+        "M45,36 Q47,39 46,42",
       ].map((d, i) => (
         <path
           key={i}
           d={d}
           stroke={color}
-          strokeWidth="3"
+          strokeWidth="3.2"
           fill="none"
           strokeLinecap="round"
           className="retro-tentacle"
-          style={{ animationDelay: `${i * 0.18}s` }}
+          style={{ animationDelay: `${i * 0.16}s` }}
         />
       ))}
       {/* Suction cups hint */}
-      {[18, 23, 28, 33, 38, 43, 48].map((cx, i) => (
-        <circle key={i} cx={cx} cy={40 + (i % 2) * 3} r="1" fill={darkerColor} opacity="0.5" />
+      {[14, 20, 27, 34, 40, 46].map((cx, i) => (
+        <circle key={i} cx={cx} cy={41 + (i % 2)} r="0.85" fill={darkerColor} opacity="0.5" />
       ))}
+      {state === "working" && (
+        <g className="octopus-work-chip" transform="translate(36 35)">
+          <rect width="14" height="10" rx="2" fill="#101820" stroke="#6ff7e8" strokeWidth="1" />
+          <path d="M3,4 h7 M3,7 h4" stroke="#f1b84b" strokeWidth="1.1" strokeLinecap="round" />
+        </g>
+      )}
+      {isCommunicating(state) && (
+        <g className="octopus-radio-wave" fill="none" stroke="#f1b84b" strokeLinecap="round" strokeWidth="1.3">
+          <path d="M43,13 Q49,18 43,23" />
+          <path d="M46,10 Q55,18 46,26" opacity="0.55" />
+        </g>
+      )}
     </svg>
   );
 }
@@ -1515,13 +1585,13 @@ function SpeechBubble({ content }: { content: string }) {
     <div className="absolute -top-2 left-1/2 -translate-x-1/2 -translate-y-full z-20 speech-bubble-enter">
       <div
         className="rounded-lg px-2.5 py-1.5 text-[10px] leading-4 max-w-[180px] whitespace-normal"
-        style={{ background: "#0f3460", color: "#e0d8c0", border: "1px solid #1a3a6a" }}
+        style={{ background: "#15120f", color: "#efe3c7", border: "1px solid #6ff7e8" }}
       >
         {preview}
       </div>
       <div
         className="mx-auto h-0 w-0"
-        style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid #0f3460" }}
+        style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid #15120f" }}
       />
     </div>
   );
@@ -1532,8 +1602,8 @@ function LonelyOctopus() {
     <div className="flex flex-col items-center justify-center gap-4 py-20">
       <RetroOctopus color="#5bc0be" state="idle" />
       <div className="text-center">
-        <div className="text-sm font-mono" style={{ color: "#8a7f6b" }}>No agents registered</div>
-        <div className="text-[10px] font-mono mt-1" style={{ color: "#5a5548" }}>Waiting for agents to come alive...</div>
+        <div className="text-sm font-mono" style={{ color: "#8b806f" }}>No agents registered</div>
+        <div className="text-[10px] font-mono mt-1" style={{ color: "#5feddc" }}>Waiting for agents to come alive...</div>
       </div>
     </div>
   );
@@ -1545,16 +1615,10 @@ function ActivityLog({ agents, activities }: { agents: AgentInfo[]; activities: 
     .slice(0, 5);
   if (recentEvents.length === 0) return null;
   return (
-    <div className="absolute bottom-3 right-3 rounded-lg p-2 text-[10px] font-mono max-w-[260px] z-30" style={{ background: "#0f3460cc", border: "1px solid #1a3a6a", color: "#8a7f6b" }}>
+    <div className="absolute bottom-3 right-3 rounded-lg p-2 text-[10px] font-mono max-w-[260px] z-30" style={{ background: "rgb(21 18 15 / 86%)", border: "1px solid rgb(111 247 232 / 24%)", color: "#8b806f" }}>
       {recentEvents.map((agent) => {
         const activity = activities[agent.name];
-        const label = activity.state === "traveling" && activity.targetAgent
-          ? `walking to @${activity.targetAgent}`
-          : activity.state === "talking" && activity.targetAgent
-            ? `talking to @${activity.targetAgent}`
-            : activity.state === "working"
-              ? "is working"
-              : activity.state;
+        const label = visualActivityLabel(activity);
         return (
           <div key={agent.name} className="flex items-center gap-1.5 py-0.5">
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: retroColor(agent.name) }} />
@@ -1567,33 +1631,59 @@ function ActivityLog({ agents, activities }: { agents: AgentInfo[]; activities: 
   );
 }
 
+function visualActivityLabel(activity: AgentActivity) {
+  if (activity.state === "departing" && activity.targetAgent) return `leaving for @${activity.targetAgent}`;
+  if (activity.state === "walking" && activity.targetAgent) return `walking to @${activity.targetAgent}`;
+  if (activity.state === "arriving" && activity.targetAgent) return `arrived at @${activity.targetAgent}`;
+  if (activity.state === "talking" && activity.targetAgent) return `talking to @${activity.targetAgent}`;
+  if (activity.state === "returning") return "returning home";
+  if (activity.state === "working") return "is working";
+  return activity.state;
+}
+
+const IDLE_VISUAL_ACTIVITY: AgentActivity = { state: "idle", taskCount: 0, lastActivity: 0 };
+
 export function VisualView() {
   const { agents, agentActivities, tasks } = useMissionControl();
   const gridRef = useRef<HTMLDivElement>(null);
   const territoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
   // Animated offsets are set after a rAF so CSS transitions can fire
   const [animatedOffsets, setAnimatedOffsets] = useState<Record<string, { x: number; y: number }>>({});
+  const [activeLinks, setActiveLinks] = useState<Record<string, { x1: number; y1: number; x2: number; y2: number }>>({});
 
   // Compute grid columns based on agent count
   const gridCols = agents.length <= 2 ? 2 : agents.length <= 4 ? 2 : agents.length <= 9 ? 3 : 4;
+
+  const runningTasksByAgent = useMemo(() => {
+    const map: Record<string, TaskInfo[]> = {};
+    for (const task of tasks) {
+      if (!task.assignedTo || (task.status !== "assigned" && task.status !== "running" && task.status !== "approved")) {
+        continue;
+      }
+      map[task.assignedTo] = [...(map[task.assignedTo] ?? []), task];
+    }
+    return map;
+  }, [tasks]);
 
   // Two-phase animation: first render at home position, then in next frame apply the offset.
   // This lets CSS transition see the "from" state and animate smoothly.
   useEffect(() => {
     const agentsWithTarget = agents.filter((a) => {
       const activity = agentActivities[a.name];
-      return activity?.targetAgent && (activity.state === "traveling" || activity.state === "talking");
+      return activity?.targetAgent && isCommunicating(activity.state);
     });
 
     if (agentsWithTarget.length === 0) {
-      // No agents traveling — clear offsets so octopuses return home (with transition)
       setAnimatedOffsets({});
+      setActiveLinks({});
       return;
     }
 
     // Schedule offset computation for next animation frame
     const rafId = requestAnimationFrame(() => {
       const newOffsets: Record<string, { x: number; y: number }> = {};
+      const newLinks: Record<string, { x1: number; y1: number; x2: number; y2: number }> = {};
+      const gridRect = gridRef.current?.getBoundingClientRect();
       for (const agent of agentsWithTarget) {
         const activity = agentActivities[agent.name];
         if (!activity?.targetAgent) continue;
@@ -1602,16 +1692,42 @@ export function VisualView() {
         if (!sourceEl || !targetEl) continue;
         const sourceRect = sourceEl.getBoundingClientRect();
         const targetRect = targetEl.getBoundingClientRect();
-        newOffsets[agent.name] = {
-          x: targetRect.left - sourceRect.left + (targetRect.width - sourceRect.width) / 2,
-          y: targetRect.top - sourceRect.top + (targetRect.height - sourceRect.height) / 2,
-        };
+        const sourceCenterX = sourceRect.left + sourceRect.width / 2;
+        const sourceCenterY = sourceRect.top + sourceRect.height / 2;
+        const targetCenterX = targetRect.left + targetRect.width / 2;
+        const targetCenterY = targetRect.top + targetRect.height / 2;
+        const side = sourceCenterX <= targetCenterX ? -1 : 1;
+        const dockX = side * Math.min(76, Math.max(44, targetRect.width * 0.2));
+        const dockY = 8;
+
+        if (isDockedAtTarget(activity.state)) {
+          newOffsets[agent.name] = {
+            x: targetCenterX - sourceCenterX + dockX,
+            y: targetCenterY - sourceCenterY + dockY,
+          };
+        }
+        if (gridRect) {
+          newLinks[agent.name] = {
+            x1: sourceCenterX - gridRect.left,
+            y1: sourceCenterY - gridRect.top,
+            x2: targetCenterX + dockX - gridRect.left,
+            y2: targetCenterY + dockY - gridRect.top,
+          };
+        }
       }
       setAnimatedOffsets((prev) => {
         // Only update if values actually changed
         const same = Object.keys(prev).length === Object.keys(newOffsets).length
           && Object.entries(prev).every(([k, v]) => newOffsets[k]?.x === v.x && newOffsets[k]?.y === v.y);
         return same ? prev : newOffsets;
+      });
+      setActiveLinks((prev) => {
+        const same = Object.keys(prev).length === Object.keys(newLinks).length
+          && Object.entries(prev).every(([k, v]) => {
+            const next = newLinks[k];
+            return next?.x1 === v.x1 && next.y1 === v.y1 && next.x2 === v.x2 && next.y2 === v.y2;
+          });
+        return same ? prev : newLinks;
       });
     });
 
@@ -1622,7 +1738,7 @@ export function VisualView() {
   const targetedAgents = useMemo(() => {
     const set = new Set<string>();
     for (const activity of Object.values(agentActivities)) {
-      if (activity.targetAgent && (activity.state === "traveling" || activity.state === "talking")) {
+      if (activity.targetAgent && isCommunicating(activity.state)) {
         set.add(activity.targetAgent);
       }
     }
@@ -1631,15 +1747,15 @@ export function VisualView() {
 
   return (
     <section className="visual-page flex h-full flex-col overflow-hidden">
-      <div className="shrink-0 border-b px-4 py-3 flex items-center justify-between" style={{ borderColor: "#0f3460" }}>
+      <div className="shrink-0 border-b px-4 py-3 flex items-center justify-between" style={{ borderColor: "rgb(239 227 199 / 16%)" }}>
         <div>
-          <h1 className="text-base font-semibold font-mono" style={{ color: "#e0d8c0" }}>Visual</h1>
-          <div className="mt-0.5 text-[10px] font-mono" style={{ color: "#8a7f6b" }}>
+          <h1 className="text-base font-semibold font-mono" style={{ color: "#efe3c7" }}>Visual</h1>
+          <div className="mt-0.5 text-[10px] font-mono" style={{ color: "#8b806f" }}>
             {agents.length} agents &middot; {tasks.filter((t) => t.status === "running").length} running tasks
           </div>
         </div>
-        <div className="text-[10px] font-mono" style={{ color: "#5a5548" }}>
-          Lovely Octopus Territory
+        <div className="text-[10px] font-mono" style={{ color: "#5feddc" }}>
+          Signal Octopus Deck
         </div>
       </div>
 
@@ -1649,32 +1765,61 @@ export function VisualView() {
         ) : (
           <div
             ref={gridRef}
-            className="grid gap-4"
+            className="visual-grid relative grid gap-4"
             style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
           >
+            <svg className="communication-layer absolute inset-0 h-full w-full overflow-visible" aria-hidden="true">
+              {Object.entries(activeLinks).map(([name, link]) => {
+                const activity = agentActivities[name];
+                const color = retroColor(name);
+                const curve = Math.max(42, Math.abs(link.x2 - link.x1) * 0.32);
+                const d = `M ${link.x1} ${link.y1} C ${link.x1 + curve} ${link.y1 - 28}, ${link.x2 - curve} ${link.y2 - 28}, ${link.x2} ${link.y2}`;
+                return (
+                  <g key={name} className={cn("communication-link", activity?.state && `is-${activity.state}`)} style={{ color }}>
+                    <path d={d} stroke={color} />
+                    <circle cx={link.x2} cy={link.y2} r="3" fill={color} />
+                  </g>
+                );
+              })}
+            </svg>
             {agents.map((agent) => {
-              const activity = agentActivities[agent.name] ?? { state: "idle" as OctopusState, taskCount: 0, lastActivity: Date.now() };
+              const activity = agentActivities[agent.name] ?? IDLE_VISUAL_ACTIVITY;
               const color = retroColor(agent.name);
-              const isTraveling = activity.state === "traveling";
+              const isTraveling = activity.state === "departing" || activity.state === "walking" || activity.state === "arriving";
               const isTalking = activity.state === "talking";
               const isWorking = activity.state === "working";
-              const isAway = isTraveling || isTalking;
+              const isReturning = activity.state === "returning";
+              const isAway = isCommunicating(activity.state);
               const offset = animatedOffsets[agent.name];
+              const activeTasks = runningTasksByAgent[agent.name] ?? [];
+              const primaryTask = activeTasks[0];
 
               return (
                 <div
                   key={agent.name}
                   ref={(el) => { territoryRefs.current[agent.name] = el; }}
                   className={cn(
-                    "territory-zone flex flex-col items-center justify-center p-3 min-h-[160px] overflow-visible",
+                    "territory-zone relative z-[2] flex min-h-[184px] flex-col items-center justify-between overflow-visible p-3",
                     targetedAgents.has(agent.name) && "active",
+                    isAway && "has-visitor-motion",
                   )}
                 >
-                  <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color }}>
-                    {agent.displayName ?? agent.name}
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-[10px] font-mono uppercase tracking-wider" style={{ color }}>
+                        {agent.displayName ?? agent.name}
+                      </div>
+                      <div className="truncate text-[9px] font-mono" style={{ color: "#8b806f" }}>
+                        {agent.role || agent.status || "agent"}
+                      </div>
+                    </div>
+                    <span className="agent-status-pill" style={{ borderColor: color, color }}>
+                      {visualActivityLabel(activity)}
+                    </span>
                   </div>
-                  <div className="relative">
+                  <div className="relative my-2">
                     <div
+                      className={cn("octopus-stage", isReturning && "is-returning")}
                       style={{
                         // Always keep transition active so returning animation works too
                         transition: `transform ${TRAVEL_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1)`,
@@ -1693,18 +1838,37 @@ export function VisualView() {
                       </div>
                     )}
                   </div>
-                  <div className="mt-1 flex items-center gap-1.5 text-[10px] font-mono" style={{ color: "#8a7f6b" }}>
-                    {isWorking && (
-                      <span className="flex items-center gap-0.5">
-                        <Zap className="h-2.5 w-2.5" style={{ color }} />
-                        {activity.taskCount > 0 ? activity.taskCount : ""}
-                      </span>
+                  <div className="agent-task-strip">
+                    {primaryTask ? (
+                      <>
+                        <Terminal className="h-3 w-3 shrink-0" style={{ color }} />
+                        <span className="min-w-0 flex-1 truncate">{primaryTask.title}</span>
+                        {activeTasks.length > 1 && <span className="shrink-0" style={{ color }}>+{activeTasks.length - 1}</span>}
+                      </>
+                    ) : isAway ? (
+                      <>
+                        <Radio className="h-3 w-3 shrink-0" style={{ color }} />
+                        <span className="min-w-0 flex-1 truncate">{activity.targetAgent ? `syncing with @${activity.targetAgent}` : "moving"}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="h-3 w-3 shrink-0 opacity-50" />
+                        <span className="min-w-0 flex-1 truncate">standing by</span>
+                      </>
                     )}
+                  </div>
+                  <div className="mt-1 flex min-h-4 items-center gap-1.5 text-[10px] font-mono" style={{ color: "#8a7f6b" }}>
                     {isTraveling && activity.targetAgent && (
-                      <span style={{ color }}>&rarr; @{activity.targetAgent}</span>
+                      <span style={{ color }}>walking to @{activity.targetAgent}</span>
                     )}
                     {isTalking && activity.targetAgent && (
-                      <span style={{ color }}>&#128172; @{activity.targetAgent}</span>
+                      <span style={{ color }}>face to face with @{activity.targetAgent}</span>
+                    )}
+                    {isReturning && (
+                      <span style={{ color }}>returning home</span>
+                    )}
+                    {isWorking && !isAway && (
+                      <span style={{ color }}>working {activity.taskCount > 0 ? `on ${activity.taskCount}` : ""}</span>
                     )}
                     {!isWorking && !isAway && (
                       <span style={{ color: "#5a5548" }}>idle</span>
