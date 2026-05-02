@@ -33,6 +33,7 @@ import {
   useState,
 } from "react";
 
+import { AutocompleteInput } from "@/components/mission-control/AutocompleteInput";
 import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -731,24 +732,39 @@ export function ChannelsView() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const channelSwitchedRef = useRef(false);
+  const wasNearBottomRef = useRef(true);
 
   // Mark channel switch so next message load forces scroll to bottom
   useEffect(() => {
     channelSwitchedRef.current = true;
   }, [selectedChannel]);
 
-  // Auto-scroll: always after channel switch, otherwise only when near bottom
+  // Track scroll position so we know if user was near bottom before new messages render
   useEffect(() => {
-    if (channelSwitchedRef.current) {
-      channelSwitchedRef.current = false;
-      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
-      return;
-    }
     const container = scrollContainerRef.current;
     if (!container) return;
-    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-    if (nearBottom) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const onScroll = () => {
+      wasNearBottomRef.current =
+        container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    // Initialize
+    onScroll();
+    return () => container.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Auto-scroll: always after channel switch, otherwise only when was near bottom
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    if (channelSwitchedRef.current) {
+      channelSwitchedRef.current = false;
+      container.scrollTop = container.scrollHeight;
+      return;
+    }
+    if (wasNearBottomRef.current) {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
     }
   }, [timelineMessages]);
 
@@ -847,9 +863,16 @@ export function ChannelsView() {
         </div>
         <form onSubmit={handleSubmit} className="shrink-0 border-t p-3">
           <div className="flex gap-2">
-            <Textarea
+            <AutocompleteInput
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={setDraft}
+              onSubmit={() => {
+                if (!draft.trim()) return;
+                sendChannelMessage(draft);
+                setDraft("");
+              }}
+              agents={agents}
+              channels={channels}
               placeholder="@coder review this, #lovely-octopus update, /task ..."
               className="max-h-32 min-h-12 resize-none text-sm"
               disabled={connectionStatus !== "connected"}
