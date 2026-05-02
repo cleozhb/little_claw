@@ -30,6 +30,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -849,50 +850,22 @@ export function ChannelsView() {
   } = useMissionControl();
   const [draft, setDraft] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const channelSwitchedRef = useRef(false);
-  const wasNearBottomRef = useRef(true);
   const userSentMessageRef = useRef(false);
 
-  // Mark channel switch so next message load forces scroll to bottom
+  // Mark channel switch so next message load forces instant scroll
   useEffect(() => {
     channelSwitchedRef.current = true;
   }, [selectedChannel]);
 
-  // Track scroll position so we know if user was near bottom before new messages render
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    const onScroll = () => {
-      wasNearBottomRef.current =
-        container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-    };
-    container.addEventListener("scroll", onScroll, { passive: true });
-    // Initialize
-    onScroll();
-    return () => container.removeEventListener("scroll", onScroll);
-  }, []);
-
-  // Auto-scroll: always after channel switch or user-sent message, otherwise only when was near bottom
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    if (channelSwitchedRef.current) {
-      channelSwitchedRef.current = false;
-      container.scrollTop = container.scrollHeight;
-      return;
-    }
-
-    if (userSentMessageRef.current) {
-      userSentMessageRef.current = false;
-      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-      return;
-    }
-
-    if (wasNearBottomRef.current) {
-      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-    }
+  // Auto-scroll: always scroll to bottom on channel switch, new message, or user-sent message
+  useLayoutEffect(() => {
+    messagesEndRef.current?.scrollIntoView({
+      block: "end",
+      behavior: channelSwitchedRef.current ? "instant" : "smooth",
+    });
+    channelSwitchedRef.current = false;
+    userSentMessageRef.current = false;
   }, [timelineMessages]);
 
   function handleSubmit(event: FormEvent) {
@@ -977,7 +950,7 @@ export function ChannelsView() {
             <div className="text-[10px] text-muted-foreground">{timelineMessages.length} messages</div>
           </div>
         </div>
-        <div ref={scrollContainerRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
           {timelineMessages.length === 0 ? (
             <div className="flex h-full items-center justify-center rounded-lg border border-dashed text-xs text-muted-foreground">
               No messages
