@@ -127,6 +127,8 @@ describe("AgentWorker", () => {
     expect(llm.lastSystem).toContain("Use the team task context.");
     expect(String(llm.lastMessages[0]?.content)).toContain("<task_context>");
     expect(String(llm.lastMessages[0]?.content)).toContain("Fix routing bug");
+    expect(String(llm.lastMessages[0]?.content)).toContain("project_workspace: context-hub/3-projects/lovely-octopus");
+    expect(String(llm.lastMessages[0]?.content)).toContain("Create and edit project files under context-hub/3-projects/lovely-octopus/");
     expect(String(llm.lastMessages[0]?.content)).toContain(projectMessage.content);
     expect(String(llm.lastMessages[0]?.content)).toContain(dmMessage.content);
     expect(llm.lastTools.map((tool) => tool.name)).toEqual([

@@ -50,6 +50,7 @@ import type {
   TaskStatus,
   TeamMessageInfo,
 } from "@/types/protocol";
+import { shouldUseTeamRouter } from "./channel-routing";
 
 const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws";
 
@@ -278,8 +279,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       const text = content.trim();
       if (!text) return;
 
-      const isCommand = /^(@|#|\/task\b)/.test(text);
-      if (isCommand) {
+      if (shouldUseTeamRouter(text, selectedChannel)) {
         send(
           { type: "route_human_message", text, externalChannel: "websocket", userId: "mission-control" },
           "已提交路由消息",

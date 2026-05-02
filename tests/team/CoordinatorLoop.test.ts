@@ -211,6 +211,37 @@ describe("CoordinatorLoop", () => {
     ).toBe(true);
   });
 
+  test("project channel task creation inherits project context when the tool omits it", async () => {
+    const channel = channels.createChannel({ slug: "hello", title: "Hello" });
+    const inbound = channels.postMessage(channel.slug, {
+      senderType: "human",
+      senderId: "ceo",
+      content: "再给 code agent 安排一个小测试。",
+    });
+    const llm = new ScriptedLLM([
+      {
+        type: "tool",
+        name: "create_task",
+        input: {
+          title: "实现 Python 防抖函数",
+          description: "Create debounce.py and tests.",
+          tags: ["code"],
+          assigned_to: "coder",
+        },
+      },
+      { type: "text", text: "已安排防抖函数任务。" },
+    ]);
+    const loop = coordinatorLoop(llm);
+
+    await loop.tick();
+
+    const createdTask = tasks.listTasks({ project: channel.slug })[0];
+    expect(createdTask?.title).toBe("实现 Python 防抖函数");
+    expect(createdTask?.channelId).toBe(channel.id);
+    expect(createdTask?.sourceMessageId).toBe(inbound.id);
+    expect(tasks.listTasks().filter((task) => task.title === "实现 Python 防抖函数")).toHaveLength(1);
+  });
+
   test("leaves project channel messages pending when an open project task can consume them", async () => {
     const channel = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
     const task = tasks.createTask({

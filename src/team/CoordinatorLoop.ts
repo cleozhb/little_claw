@@ -11,6 +11,7 @@ import { createLogger } from "../utils/logger.ts";
 import type { AgentRegistry, RegisteredAgent } from "./AgentRegistry.ts";
 import {
   COORDINATOR_TOOL_NAMES,
+  type CoordinatorTaskDefaults,
   ensureCoordinatorTools,
   summarizeProjectChannel,
 } from "./CoordinatorTools.ts";
@@ -66,6 +67,7 @@ export class CoordinatorLoop {
   private stopped = true;
   private loopPromise: Promise<void> | null = null;
   private currentLoop: AgentLoop | null = null;
+  private currentTaskDefaults: CoordinatorTaskDefaults | undefined;
   private stateValue: CoordinatorLoopState = "idle";
 
   constructor(options: CoordinatorLoopOptions) {
@@ -90,6 +92,7 @@ export class CoordinatorLoop {
       channels: this.channels,
       agents: this.agents,
       llmProvider: this.llmProvider,
+      getTaskDefaults: () => this.currentTaskDefaults,
     });
   }
 
@@ -298,6 +301,7 @@ export class CoordinatorLoop {
     this.currentLoop = loop;
     let assistantText = "";
     try {
+      this.currentTaskDefaults = this.buildTaskDefaults(pendingMessages, replyTarget);
       for await (const event of loop.run(buildCoordinatorUserPrompt({
         messages: pendingMessages,
         tasks: this.tasks.listTasks({ limit: 20 }),
@@ -308,6 +312,7 @@ export class CoordinatorLoop {
         }
       }
     } finally {
+      this.currentTaskDefaults = undefined;
       this.currentLoop = null;
     }
 
@@ -416,6 +421,26 @@ export class CoordinatorLoop {
       }
     }
     return projects.size === 1 ? [...projects][0] : undefined;
+  }
+
+  private buildTaskDefaults(
+    pendingMessages: TeamMessage[],
+    replyTarget: { replyChannelType: "coordinator"; replyChannelId: string } | {
+      replyChannelType: "project";
+      replyChannelId: string;
+      project: string;
+    },
+  ): CoordinatorTaskDefaults | undefined {
+    if (replyTarget.replyChannelType !== "project") return undefined;
+
+    const sourceMessages = pendingMessages.filter((message) =>
+      message.senderType === "human" && message.project === replyTarget.project,
+    );
+    return {
+      project: replyTarget.project,
+      channelId: replyTarget.replyChannelId,
+      sourceMessageId: sourceMessages.length === 1 ? sourceMessages[0]?.id : undefined,
+    };
   }
 }
 

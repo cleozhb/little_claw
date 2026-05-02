@@ -27,6 +27,13 @@ export interface CoordinatorToolContext {
   channels: ProjectChannelStore;
   agents: AgentRegistry;
   llmProvider?: LLMProvider;
+  getTaskDefaults?: () => CoordinatorTaskDefaults | undefined;
+}
+
+export interface CoordinatorTaskDefaults {
+  project?: string;
+  channelId?: string;
+  sourceMessageId?: string;
 }
 
 export class CoordinatorLLMHelper {
@@ -112,8 +119,15 @@ function createTaskTool(context: CoordinatorToolContext): Tool {
       required: ["title", "description"],
     },
     async execute(params) {
-      const project = readOptionalString(params.project);
-      const channelId = readOptionalString(params.channel_id) ?? projectChannelId(context.channels, project);
+      const defaults = context.getTaskDefaults?.();
+      const explicitProject = readOptionalString(params.project);
+      const project = explicitProject ?? defaults?.project;
+      const channelId = resolveTaskChannelId({
+        channels: context.channels,
+        project,
+        explicitChannelId: readOptionalString(params.channel_id),
+        defaults,
+      });
       const task = context.tasks.createTask({
         title: readRequiredString(params, "title"),
         description: readRequiredString(params, "description"),
@@ -121,7 +135,7 @@ function createTaskTool(context: CoordinatorToolContext): Tool {
         tags: readStringArray(params.tags, "tags"),
         project,
         channelId,
-        sourceMessageId: readOptionalString(params.source_message_id),
+        sourceMessageId: readOptionalString(params.source_message_id) ?? defaults?.sourceMessageId,
         assignedTo: readOptionalString(params.assigned_to),
         dependsOn: readStringArray(params.depends_on, "depends_on"),
         dueAt: readOptionalString(params.due_at),
@@ -204,9 +218,19 @@ function delegateTaskTool(context: CoordinatorToolContext): Tool {
     async execute(params) {
       const assignedTo = readOptionalString(params.assigned_to);
       if (assignedTo) requireAgent(context.agents, assignedTo);
-      const project = readOptionalString(params.project);
-      const channelId = readOptionalString(params.channel_id) ?? projectChannelId(context.channels, project);
-      const task = context.tasks.delegateTask(readRequiredString(params, "parent_task_id"), {
+      const parentTaskId = readRequiredString(params, "parent_task_id");
+      const parent = context.tasks.getTask(parentTaskId);
+      const defaults = context.getTaskDefaults?.();
+      const explicitProject = readOptionalString(params.project);
+      const project = explicitProject ?? defaults?.project ?? parent?.project;
+      const channelId = resolveTaskChannelId({
+        channels: context.channels,
+        project,
+        explicitChannelId: readOptionalString(params.channel_id),
+        defaults,
+        parent,
+      });
+      const task = context.tasks.delegateTask(parentTaskId, {
         title: readRequiredString(params, "title"),
         description: readRequiredString(params, "description"),
         priority: readOptionalNumber(params.priority),
@@ -418,6 +442,21 @@ function projectChannelId(channels: ProjectChannelStore, project: string | undef
   return channels.getChannel(project)?.id;
 }
 
+function resolveTaskChannelId(params: {
+  channels: ProjectChannelStore;
+  project: string | undefined;
+  explicitChannelId: string | undefined;
+  defaults?: CoordinatorTaskDefaults;
+  parent?: Task | null;
+}): string | undefined {
+  if (params.explicitChannelId) return params.explicitChannelId;
+  const channelId = projectChannelId(params.channels, params.project);
+  if (channelId) return channelId;
+  if (params.project && params.project === params.defaults?.project) return params.defaults.channelId;
+  if (params.project && params.project === params.parent?.project) return params.parent.channelId;
+  return undefined;
+}
+
 function assertExistingTaskId(tasks: TaskQueue, taskId: string | undefined): void {
   if (!taskId) return;
   if (!tasks.getTask(taskId)) {
@@ -446,6 +485,8 @@ function serializeTask(task: Task) {
     assignedTo: task.assignedTo,
     tags: task.tags,
     project: task.project,
+    channelId: task.channelId,
+    sourceMessageId: task.sourceMessageId,
     dueAt: task.dueAt,
   };
 }

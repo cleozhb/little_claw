@@ -640,6 +640,8 @@ id: ${task.id}
 title: ${task.title}
 description: ${task.description}
 project: ${task.project ?? "none"}
+project_workspace: ${task.project ? `context-hub/3-projects/${task.project}` : "none"}
+workspace_instruction: ${task.project ? `Create and edit project files under context-hub/3-projects/${task.project}/ unless the task explicitly names another path.` : "No project workspace is attached to this task."}
 approval_response: ${task.approvalResponse ?? "none"}${sourceSection}
 recent_team_messages:
 ${formatTeamMessages(teamMessages)}

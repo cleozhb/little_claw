@@ -125,6 +125,39 @@ describe("CoordinatorTools", () => {
     ]);
   });
 
+  test("create_task inherits project defaults from the current project channel", async () => {
+    const project = channels.createChannel({ slug: "hello", title: "Hello" });
+    const source = channels.postMessage(project.slug, {
+      senderType: "human",
+      senderId: "ceo",
+      content: "安排一个小测试。",
+    });
+    const tools = createCoordinatorTools({
+      tasks,
+      messages,
+      channels,
+      agents,
+      getTaskDefaults: () => ({
+        project: project.slug,
+        channelId: project.id,
+        sourceMessageId: source.id,
+      }),
+    });
+
+    const created = await getTool(toolMapFromTools(tools), "create_task").execute({
+      title: "实现防抖函数",
+      description: "Write debounce.py and tests.",
+      tags: ["code"],
+      assigned_to: "coder",
+    });
+    const createdTask = JSON.parse(created.output).task;
+    const stored = tasks.getTask(createdTask.id);
+
+    expect(stored?.project).toBe(project.slug);
+    expect(stored?.channelId).toBe(project.id);
+    expect(stored?.sourceMessageId).toBe(source.id);
+  });
+
   test("message tools reject fake task ids", async () => {
     channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
     const tools = toolMap();
@@ -196,6 +229,10 @@ function toolMap(llmProvider?: LLMProvider) {
     string,
     (typeof tools)[number]
   >;
+}
+
+function toolMapFromTools(tools: Tool[]) {
+  return Object.fromEntries(tools.map((tool) => [tool.name, tool])) as Record<string, Tool>;
 }
 
 function getTool(tools: Record<string, Tool>, name: string): Tool {
