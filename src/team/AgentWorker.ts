@@ -12,6 +12,7 @@ import type { AgentEvent } from "../types/message.ts";
 import type { RegisteredAgent } from "./AgentRegistry.ts";
 import type { Task } from "./TaskQueue.ts";
 import { TaskQueue } from "./TaskQueue.ts";
+import type { ProjectChannelStore } from "./ProjectChannelStore.ts";
 import { TeamMessageStore, type TeamMessage } from "./TeamMessageStore.ts";
 import { createLogger } from "../utils/logger.ts";
 
@@ -24,6 +25,7 @@ export interface AgentWorkerOptions {
   agent: RegisteredAgent;
   tasks: TaskQueue;
   messages: TeamMessageStore;
+  projectChannels?: ProjectChannelStore;
   llmProvider: LLMProvider;
   toolRegistry: ToolRegistry;
   skillManager?: SkillManager;
@@ -52,6 +54,7 @@ export class AgentWorker {
   private agent: RegisteredAgent;
   private tasks: TaskQueue;
   private messages: TeamMessageStore;
+  private projectChannels?: ProjectChannelStore;
   private llmProvider: LLMProvider;
   private toolRegistry: ToolRegistry;
   private skillManager?: SkillManager;
@@ -74,6 +77,7 @@ export class AgentWorker {
     this.agent = options.agent;
     this.tasks = options.tasks;
     this.messages = options.messages;
+    this.projectChannels = options.projectChannels;
     this.llmProvider = options.llmProvider;
     this.toolRegistry = options.toolRegistry;
     this.skillManager = options.skillManager;
@@ -454,17 +458,7 @@ export class AgentWorker {
 
     if (task.project) {
       // 完整结果发到 project channel
-      this.messages.createMessage({
-        channelType: "project",
-        channelId: task.channelId ?? task.project,
-        project: task.project,
-        taskId: task.id,
-        senderType: "agent",
-        senderId: agentName,
-        content,
-        status: "resolved",
-        handledBy: agentName,
-      });
+      this.postProjectTaskNotification(task, content, agentName);
       // 简短通知发到 agent DM，让用户在 agent 视图也能看到任务活动
       const statusIcon = task.status === "completed" ? "✅" : "❌";
       this.messages.createMessage({
@@ -481,13 +475,26 @@ export class AgentWorker {
       return;
     }
 
-    // 无 project 的任务，如果来源是 agent_dm，回复到同一个 DM
-    if (task.sourceMessageId) {
-      const source = this.messages.getMessage(task.sourceMessageId);
-      if (source?.channelType === "agent_dm") {
-        this.messages.createMessage({
-          channelType: "agent_dm",
-          channelId: source.channelId,
+    // 无 project 的任务回到该任务所属 Agent 的 DM；如果来源是其它 agent_dm，则沿用来源 DM。
+    const source = task.sourceMessageId ? this.messages.getMessage(task.sourceMessageId) : null;
+    this.messages.createMessage({
+      channelType: "agent_dm",
+      channelId: source?.channelType === "agent_dm" ? source.channelId : agentName,
+      taskId: task.id,
+      senderType: "agent",
+      senderId: agentName,
+      content,
+      status: "resolved",
+      handledBy: agentName,
+    });
+  }
+
+  private postProjectTaskNotification(task: Task, content: string, agentName: string): void {
+    if (!task.project) return;
+    if (this.projectChannels) {
+      try {
+        this.ensureProjectChannel(task.project);
+        this.projectChannels.postMessage(task.project, {
           taskId: task.id,
           senderType: "agent",
           senderId: agentName,
@@ -495,8 +502,34 @@ export class AgentWorker {
           status: "resolved",
           handledBy: agentName,
         });
+        return;
+      } catch (err) {
+        log.warn(
+          `项目频道回写失败，回退到 TeamMessageStore：${task.id}`,
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
+
+    this.messages.createMessage({
+      channelType: "project",
+      channelId: task.channelId ?? task.project,
+      project: task.project,
+      taskId: task.id,
+      senderType: "agent",
+      senderId: agentName,
+      content,
+      status: "resolved",
+      handledBy: agentName,
+    });
+  }
+
+  private ensureProjectChannel(project: string): void {
+    if (!this.projectChannels || this.projectChannels.getChannel(project)) return;
+    this.projectChannels.createChannel({
+      slug: project,
+      title: titleFromSlug(project),
+    });
   }
 
   private handleAgentEvent(event: AgentEvent): "approval_requested" | "none" {
@@ -814,4 +847,12 @@ function formatTaskArchiveEntry(
 ### Result
 
 ${content}`;
+}
+
+function titleFromSlug(slug: string): string {
+  return slug
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }

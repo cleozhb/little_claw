@@ -110,6 +110,53 @@ export interface TaskInfo {
   dueAt?: string;
 }
 
+export type TeamScheduleType = "cron" | "watcher";
+export type TeamScheduleSource = "agent_yaml" | "ui" | "migration";
+export type TeamScheduleRunStatus = "created" | "skipped" | "failed_to_create";
+export type TeamScheduleRunTriggerType = TeamScheduleType | "manual";
+
+export interface TeamScheduleInfo {
+  id: string;
+  source: TeamScheduleSource;
+  sourceKey?: string;
+  type: TeamScheduleType;
+  name: string;
+  agentName: string;
+  prompt: string;
+  project?: string;
+  channelId?: string;
+  tags: string[];
+  priority: number;
+  maxRetries: number;
+  enabled: boolean;
+  cronExpr?: string;
+  checkCommand?: string;
+  condition?: string;
+  intervalMs?: number;
+  cooldownMs?: number;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  lastCheckAt?: string;
+  lastTriggeredAt?: string;
+  lastTaskId?: string;
+  lastStatus?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamScheduleRunInfo {
+  id: string;
+  scheduleId: string;
+  triggerType: TeamScheduleRunTriggerType;
+  taskId?: string;
+  agentName: string;
+  status: TeamScheduleRunStatus;
+  triggerPayload?: unknown;
+  error?: string;
+  createdAt: string;
+}
+
 export type RouteTarget =
   | { type: "agent"; id: string }
   | { type: "project"; id: string }
@@ -310,6 +357,39 @@ export interface ListTasksMessage {
   limit?: number;
 }
 
+export interface ListTeamSchedulesMessage {
+  type: "list_team_schedules";
+  agentName?: string;
+  project?: string;
+  enabled?: boolean;
+  limit?: number;
+}
+
+export interface UpdateTeamScheduleMessage {
+  type: "update_team_schedule";
+  scheduleId: string;
+  updates: {
+    enabled?: boolean;
+    name?: string;
+    prompt?: string;
+    cronExpr?: string;
+    project?: string;
+    tags?: string[];
+    priority?: number;
+  };
+}
+
+export interface RunTeamScheduleNowMessage {
+  type: "run_team_schedule_now";
+  scheduleId: string;
+}
+
+export interface GetTeamScheduleRunsMessage {
+  type: "get_team_schedule_runs";
+  scheduleId?: string;
+  limit?: number;
+}
+
 export interface ApproveTaskMessage {
   type: "approve_task";
   taskId: string;
@@ -376,6 +456,10 @@ export type ClientMessage =
   | GetProjectChannelMessage
   | GetTeamMessagesMessage
   | ListTasksMessage
+  | ListTeamSchedulesMessage
+  | UpdateTeamScheduleMessage
+  | RunTeamScheduleNowMessage
+  | GetTeamScheduleRunsMessage
   | ApproveTaskMessage
   | RejectTaskMessage
   | CancelTaskMessage
@@ -821,6 +905,28 @@ export interface ApprovalNeededMessage {
   task: TaskInfo;
 }
 
+export interface TeamSchedulesListMessage {
+  type: "team_schedules_list";
+  schedules: TeamScheduleInfo[];
+}
+
+export interface TeamScheduleUpdatedMessage {
+  type: "team_schedule_updated";
+  schedule: TeamScheduleInfo;
+}
+
+export interface TeamScheduleTriggeredMessage {
+  type: "team_schedule_triggered";
+  schedule: TeamScheduleInfo;
+  run: TeamScheduleRunInfo;
+  task?: TaskInfo;
+}
+
+export interface TeamScheduleRunsMessage {
+  type: "team_schedule_runs";
+  runs: TeamScheduleRunInfo[];
+}
+
 // --- Simulation Domain Types ---
 
 export interface ArgumentNode {
@@ -880,4 +986,8 @@ export type ServerMessage =
   | TeamMessagesLoadedMessage
   | TasksListMessage
   | TaskUpdatedMessage
-  | ApprovalNeededMessage;
+  | ApprovalNeededMessage
+  | TeamSchedulesListMessage
+  | TeamScheduleUpdatedMessage
+  | TeamScheduleTriggeredMessage
+  | TeamScheduleRunsMessage;

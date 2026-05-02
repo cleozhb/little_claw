@@ -19,6 +19,8 @@ import {
   type ProjectChannelInfo,
   type TaskInfo,
   type TeamMessagePriority,
+  type TeamScheduleInfo,
+  type TeamScheduleRunInfo,
 } from "./protocol";
 import { HealthChecker, type HealthStatus } from "./HealthChecker.ts";
 import { LLMHealthTarget } from "./health/LLMHealthTarget.ts";
@@ -42,6 +44,8 @@ import { defaultProjectContextPath } from "../team/ProjectChannelStore.ts";
 import type { TaskQueue, Task } from "../team/TaskQueue.ts";
 import type { WebhookMessage } from "./adapters/types.ts";
 import type { AgentRegistry, RegisteredAgent } from "../team/AgentRegistry.ts";
+import type { TeamScheduleStore, TeamSchedule, TeamScheduleRun, UpdateTeamScheduleParams } from "../team/TeamScheduleStore.ts";
+import type { TeamScheduleAdapter } from "../team/TeamScheduleAdapter.ts";
 import YAML from "yaml";
 import type { ContextHub } from "../memory/ContextHub.ts";
 
@@ -85,6 +89,10 @@ export interface GatewayOptions {
   taskQueue?: TaskQueue;
   /** Lovely Octopus Agent 文件注册表 */
   agentRegistry?: AgentRegistry;
+  /** Lovely Octopus Team 定时任务存储 */
+  teamSchedules?: TeamScheduleStore;
+  /** Lovely Octopus Team 定时任务触发适配器 */
+  teamScheduleAdapter?: TeamScheduleAdapter;
   /** Context Hub，用于初始化项目长期知识库目录 */
   contextHub?: ContextHub;
   /** session 切换时的回调（用于触发旧 session 的记忆保存） */
@@ -134,6 +142,8 @@ export class GatewayServer {
   private projectChannels?: ProjectChannelStore;
   private taskQueue?: TaskQueue;
   private agentRegistry?: AgentRegistry;
+  private teamSchedules?: TeamScheduleStore;
+  private teamScheduleAdapter?: TeamScheduleAdapter;
   private contextHub?: ContextHub;
   private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   private port: number;
@@ -176,6 +186,8 @@ export class GatewayServer {
     this.projectChannels = options.projectChannels;
     this.taskQueue = options.taskQueue;
     this.agentRegistry = options.agentRegistry;
+    this.teamSchedules = options.teamSchedules;
+    this.teamScheduleAdapter = options.teamScheduleAdapter;
     this.contextHub = options.contextHub;
     this.onSessionSwitch = options.onSessionSwitch;
 
@@ -201,6 +213,19 @@ export class GatewayServer {
           );
         });
       }
+    });
+
+    this.teamSchedules?.onScheduleUpdated((schedule) => {
+      this.broadcastToAll({ type: "team_schedule_updated", schedule: serializeTeamSchedule(schedule) });
+    });
+
+    this.teamScheduleAdapter?.onRun((result) => {
+      this.broadcastToAll({
+        type: "team_schedule_triggered",
+        schedule: serializeTeamSchedule(result.schedule),
+        run: serializeTeamScheduleRun(result.run),
+        task: result.task ? serializeTask(result.task) : undefined,
+      });
     });
 
     // 初始化健康检查
@@ -529,6 +554,14 @@ export class GatewayServer {
         return this.handleGetTeamMessages(connectionId, msg);
       case "list_tasks":
         return this.handleListTasks(connectionId, msg);
+      case "list_team_schedules":
+        return this.handleListTeamSchedules(connectionId, msg);
+      case "update_team_schedule":
+        return this.handleUpdateTeamSchedule(connectionId, msg.scheduleId, msg.updates);
+      case "run_team_schedule_now":
+        return this.handleRunTeamScheduleNow(connectionId, msg.scheduleId);
+      case "get_team_schedule_runs":
+        return this.handleGetTeamScheduleRuns(connectionId, msg.scheduleId, msg.limit);
       case "approve_task":
         return this.handleApproveTask(connectionId, msg.taskId, msg.response, msg.userId);
       case "reject_task":
@@ -1229,6 +1262,84 @@ export class GatewayServer {
         tags: msg.tags,
         limit: msg.limit,
       }).map(serializeTask),
+    });
+  }
+
+  private handleListTeamSchedules(
+    connectionId: string,
+    msg: Extract<ClientMessage, { type: "list_team_schedules" }>,
+  ): void {
+    if (!this.teamSchedules) {
+      this.sendToConnection(connectionId, { type: "team_schedules_list", schedules: [] });
+      return;
+    }
+
+    this.sendToConnection(connectionId, {
+      type: "team_schedules_list",
+      schedules: this.teamSchedules.listSchedules({
+        agentName: msg.agentName,
+        project: msg.project,
+        enabled: msg.enabled,
+        limit: msg.limit,
+      }).map(serializeTeamSchedule),
+    });
+  }
+
+  private handleUpdateTeamSchedule(
+    connectionId: string,
+    scheduleId: string,
+    updates: unknown,
+  ): void {
+    if (!this.teamSchedules) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team schedules not configured" });
+      return;
+    }
+    if (!isRecord(updates)) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: "Failed to update team schedule: updates must be an object",
+      });
+      return;
+    }
+
+    try {
+      const schedule = this.teamSchedules.updateSchedule(scheduleId, buildTeamScheduleUpdates(updates));
+      if (!schedule) {
+        this.sendToConnection(connectionId, { type: "error", message: `Team schedule not found: ${scheduleId}` });
+        return;
+      }
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to update team schedule: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private handleRunTeamScheduleNow(connectionId: string, scheduleId: string): void {
+    if (!this.teamScheduleAdapter) {
+      this.sendToConnection(connectionId, { type: "error", message: "Team schedules not configured" });
+      return;
+    }
+
+    try {
+      this.teamScheduleAdapter.runNow(scheduleId);
+    } catch (err) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        message: `Failed to run team schedule: ${errorMessage(err)}`,
+      });
+    }
+  }
+
+  private handleGetTeamScheduleRuns(connectionId: string, scheduleId?: string, limit?: number): void {
+    if (!this.teamSchedules) {
+      this.sendToConnection(connectionId, { type: "team_schedule_runs", runs: [] });
+      return;
+    }
+    this.sendToConnection(connectionId, {
+      type: "team_schedule_runs",
+      runs: this.teamSchedules.listRuns({ scheduleId, limit }).map(serializeTeamScheduleRun),
     });
   }
 
@@ -2171,6 +2282,52 @@ function serializeTask(task: Task): TaskInfo {
   };
 }
 
+function serializeTeamSchedule(schedule: TeamSchedule): TeamScheduleInfo {
+  return {
+    id: schedule.id,
+    source: schedule.source,
+    sourceKey: schedule.sourceKey,
+    type: schedule.type,
+    name: schedule.name,
+    agentName: schedule.agentName,
+    prompt: schedule.prompt,
+    project: schedule.project,
+    channelId: schedule.channelId,
+    tags: [...schedule.tags],
+    priority: schedule.priority,
+    maxRetries: schedule.maxRetries,
+    enabled: schedule.enabled,
+    cronExpr: schedule.cronExpr,
+    checkCommand: schedule.checkCommand,
+    condition: schedule.condition,
+    intervalMs: schedule.intervalMs,
+    cooldownMs: schedule.cooldownMs,
+    lastRunAt: schedule.lastRunAt,
+    nextRunAt: schedule.nextRunAt,
+    lastCheckAt: schedule.lastCheckAt,
+    lastTriggeredAt: schedule.lastTriggeredAt,
+    lastTaskId: schedule.lastTaskId,
+    lastStatus: schedule.lastStatus,
+    lastError: schedule.lastError,
+    createdAt: schedule.createdAt,
+    updatedAt: schedule.updatedAt,
+  };
+}
+
+function serializeTeamScheduleRun(run: TeamScheduleRun): TeamScheduleRunInfo {
+  return {
+    id: run.id,
+    scheduleId: run.scheduleId,
+    triggerType: run.triggerType,
+    taskId: run.taskId,
+    agentName: run.agentName,
+    status: run.status,
+    triggerPayload: run.triggerPayload,
+    error: run.error,
+    createdAt: run.createdAt,
+  };
+}
+
 function titleFromSlug(slug: string): string {
   return slug
     .split(/[-_]/)
@@ -2188,6 +2345,24 @@ function normalizeProjectContextPath(slug: string, contextPath?: string): string
 
 function stripContextHubPrefix(path: string): string {
   return path.startsWith("context-hub/") ? path.slice("context-hub/".length) : path;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildTeamScheduleUpdates(raw: Record<string, unknown>): UpdateTeamScheduleParams {
+  const updates: UpdateTeamScheduleParams = {};
+  if (typeof raw.enabled === "boolean") updates.enabled = raw.enabled;
+  if (typeof raw.name === "string") updates.name = raw.name;
+  if (typeof raw.prompt === "string") updates.prompt = raw.prompt;
+  if (typeof raw.cronExpr === "string") updates.cronExpr = raw.cronExpr;
+  if (typeof raw.project === "string") updates.project = raw.project;
+  if (Array.isArray(raw.tags) && raw.tags.every((tag) => typeof tag === "string")) {
+    updates.tags = raw.tags;
+  }
+  if (typeof raw.priority === "number") updates.priority = raw.priority;
+  return updates;
 }
 
 function errorMessage(err: unknown): string {

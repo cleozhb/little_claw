@@ -40,6 +40,9 @@ import { ProjectChannelStore } from "./team/ProjectChannelStore.ts";
 import { createAgentWorkers, type AgentWorker } from "./team/AgentWorker.ts";
 import { CoordinatorLoop } from "./team/CoordinatorLoop.ts";
 import { TeamRouter } from "./team/TeamRouter.ts";
+import { TeamScheduleStore } from "./team/TeamScheduleStore.ts";
+import { TeamCronScheduler, TeamWatcherScheduler } from "./team/TeamSchedulers.ts";
+import { TeamScheduleAdapter } from "./team/TeamScheduleAdapter.ts";
 import type { LLMProvider } from "./llm/types.ts";
 import type { ShellTool } from "./tools/types.ts";
 import type { MemoryManager as MemoryManagerType } from "./memory/MemoryManager.ts";
@@ -85,6 +88,10 @@ export interface LovelyOctopusRuntime {
   teamMessages: TeamMessageStore;
   projectChannels: ProjectChannelStore;
   taskQueue: TaskQueue;
+  teamSchedules: TeamScheduleStore;
+  teamCronScheduler: TeamCronScheduler;
+  teamWatcherScheduler: TeamWatcherScheduler;
+  teamScheduleAdapter: TeamScheduleAdapter;
   agentWorkers: AgentWorker[];
   coordinatorLoop: CoordinatorLoop;
   teamRouter: TeamRouter;
@@ -114,9 +121,17 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
   const teamMessages = new TeamMessageStore(options.db);
   const projectChannels = new ProjectChannelStore(options.db, teamMessages);
   const taskQueue = new TaskQueue(options.db);
+  const teamSchedules = new TeamScheduleStore(options.db);
+  const scheduleSync = teamSchedules.syncFromAgents(registeredAgents);
+  if (scheduleSync.created > 0 || scheduleSync.updated > 0 || scheduleSync.deleted > 0) {
+    console.log(
+      `Lovely Octopus schedules: ${scheduleSync.created} created, ${scheduleSync.updated} updated, ${scheduleSync.deleted} deleted, ${scheduleSync.unchanged} unchanged`,
+    );
+  }
   const agentWorkers = createAgentWorkers(agentRegistry.listActive(), {
     tasks: taskQueue,
     messages: teamMessages,
+    projectChannels,
     llmProvider: options.llmProvider,
     toolRegistry: options.toolRegistry,
     skillManager: options.skillManager,
@@ -145,6 +160,19 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     messages: teamMessages,
     projectChannels,
   });
+  const teamCronScheduler = new TeamCronScheduler(teamSchedules);
+  const teamWatcherScheduler = new TeamWatcherScheduler(teamSchedules);
+  const teamScheduleAdapter = new TeamScheduleAdapter({
+    schedules: teamSchedules,
+    agents: agentRegistry,
+    tasks: taskQueue,
+  });
+  teamCronScheduler.onTrigger((event) => {
+    teamScheduleAdapter.handleTrigger(event);
+  });
+  teamWatcherScheduler.onTrigger((event) => {
+    teamScheduleAdapter.handleTrigger(event);
+  });
 
   let started = false;
 
@@ -154,6 +182,10 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     teamMessages,
     projectChannels,
     taskQueue,
+    teamSchedules,
+    teamCronScheduler,
+    teamWatcherScheduler,
+    teamScheduleAdapter,
     agentWorkers,
     coordinatorLoop,
     teamRouter,
@@ -164,10 +196,14 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
         worker.start();
       }
       coordinatorLoop.start();
+      teamCronScheduler.start();
+      teamWatcherScheduler.start();
     },
     async stop() {
       if (!started) return;
       started = false;
+      teamCronScheduler.stop();
+      teamWatcherScheduler.stop();
       await Promise.all(agentWorkers.map((worker) => worker.stop()));
       await coordinatorLoop.stop();
     },
@@ -444,6 +480,8 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     projectChannels: lovelyOctopus.projectChannels,
     taskQueue: lovelyOctopus.taskQueue,
     agentRegistry: lovelyOctopus.agentRegistry,
+    teamSchedules: lovelyOctopus.teamSchedules,
+    teamScheduleAdapter: lovelyOctopus.teamScheduleAdapter,
     contextHub,
     onSessionSwitch: (oldSessionId) => {
       sessionRouter.saveMemoryForSession(oldSessionId);

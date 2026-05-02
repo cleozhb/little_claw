@@ -11,6 +11,7 @@ import {
   REPORT_PROGRESS_TOOL,
   REQUEST_APPROVAL_TOOL,
 } from "../../src/team/AgentWorker.ts";
+import { ProjectChannelStore } from "../../src/team/ProjectChannelStore.ts";
 import { TaskQueue } from "../../src/team/TaskQueue.ts";
 import { TeamMessageStore } from "../../src/team/TeamMessageStore.ts";
 import { ToolRegistry } from "../../src/tools/ToolRegistry.ts";
@@ -175,6 +176,64 @@ describe("AgentWorker", () => {
     } finally {
       rmSync(baseDir, { recursive: true, force: true });
     }
+  });
+
+  test("posts scheduled project task results through ProjectChannelStore", async () => {
+    const channels = new ProjectChannelStore(db, messages);
+    const channel = channels.createChannel({ slug: "engineering", title: "Engineering" });
+    const task = tasks.createTask({
+      title: "[scheduled] Smoke test",
+      description: "Run a scheduled task.",
+      createdBy: "scheduler:schedule-1",
+      assignedTo: "coder",
+      project: "engineering",
+      tags: ["scheduled", "code"],
+    });
+    const llm = new ScriptedLLM([{ type: "text", text: "scheduled result" }]);
+    const worker = new AgentWorker({
+      agent: agent("coder", []),
+      tasks,
+      messages,
+      projectChannels: channels,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 2,
+    });
+
+    await worker.tick();
+
+    const projectMessages = channels.listMessages("engineering");
+    expect(projectMessages.some((message) => message.content === "scheduled result")).toBe(true);
+    const result = projectMessages.find((message) => message.content === "scheduled result");
+    expect(result?.channelId).toBe(channel.id);
+    expect(result?.project).toBe("engineering");
+    expect(result?.taskId).toBe(task.id);
+  });
+
+  test("posts task results without a project to the owning agent DM", async () => {
+    const task = tasks.createTask({
+      title: "Standalone task",
+      description: "No project channel attached.",
+      createdBy: "scheduler:schedule-1",
+      assignedTo: "coder",
+      tags: ["scheduled"],
+    });
+    const llm = new ScriptedLLM([{ type: "text", text: "standalone result" }]);
+    const worker = new AgentWorker({
+      agent: agent("coder", []),
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 2,
+    });
+
+    await worker.tick();
+
+    const dmMessages = messages.listMessages({ channelType: "agent_dm", channelId: "coder" });
+    expect(dmMessages.some((message) => message.content === "standalone result")).toBe(true);
+    const result = dmMessages.find((message) => message.content === "standalone result");
+    expect(result?.taskId).toBe(task.id);
   });
 
   test("report_progress writes task logs while the AgentLoop owns tool execution", async () => {

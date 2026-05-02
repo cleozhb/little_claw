@@ -47,6 +47,8 @@ import type {
   ClientMessage,
   ProjectChannelInfo,
   ServerMessage,
+  TeamScheduleInfo,
+  TeamScheduleRunInfo,
   TaskInfo,
   TaskStatus,
   TeamMessageInfo,
@@ -106,12 +108,20 @@ interface MissionControlContextValue {
   error: string | null;
   lastAction: string | null;
   loadAgentDetail: (name: string) => void;
+  loadTeamScheduleRuns: (scheduleId?: string, limit?: number) => void;
   refresh: () => void;
+  runTeamScheduleNow: (scheduleId: string) => void;
   selectedChannel: ChannelSelection;
   selectChannel: (selection: ChannelSelection) => void;
   sendChannelMessage: (content: string) => void;
+  teamScheduleRuns: TeamScheduleRunInfo[];
+  teamSchedules: TeamScheduleInfo[];
   tasks: TaskInfo[];
   timelineMessages: TeamMessageInfo[];
+  updateTeamSchedule: (
+    scheduleId: string,
+    updates: Extract<ClientMessage, { type: "update_team_schedule" }>["updates"],
+  ) => void;
   updateTaskApproval: (taskId: string, decision: "approve" | "reject") => void;
 }
 
@@ -181,6 +191,8 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const [agentDetail, setAgentDetail] = useState<AgentDetailInfo | null>(null);
   const [channels, setChannels] = useState<ProjectChannelInfo[]>([]);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
+  const [teamSchedules, setTeamSchedules] = useState<TeamScheduleInfo[]>([]);
+  const [teamScheduleRuns, setTeamScheduleRuns] = useState<TeamScheduleRunInfo[]>([]);
   const [timelineMessages, setTimelineMessages] = useState<TeamMessageInfo[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<ChannelSelection>({
     type: "all",
@@ -210,6 +222,8 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     wsClient.send({ type: "list_project_channels", limit: 100 });
     wsClient.send({ type: "get_team_messages", limit: 80 });
     wsClient.send({ type: "list_agents" });
+    wsClient.send({ type: "list_team_schedules", limit: 200 });
+    wsClient.send({ type: "get_team_schedule_runs", limit: 80 });
   }, [connectionStatus]);
 
   const selectChannel = useCallback(
@@ -271,6 +285,33 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           ? ({ type: "approve_task", taskId, response: "Approved from Mission Control." } as const)
           : ({ type: "reject_task", taskId, response: "Rejected from Mission Control." } as const);
       send(message, decision === "approve" ? "已发送 approve" : "已发送 reject");
+    },
+    [send],
+  );
+
+  const loadTeamScheduleRuns = useCallback(
+    (scheduleId?: string, limit = 80) => {
+      send(
+        { type: "get_team_schedule_runs", scheduleId, limit },
+        scheduleId ? "正在加载定时任务运行记录" : "正在加载最近运行记录",
+      );
+    },
+    [send],
+  );
+
+  const updateTeamSchedule = useCallback(
+    (
+      scheduleId: string,
+      updates: Extract<ClientMessage, { type: "update_team_schedule" }>["updates"],
+    ) => {
+      send({ type: "update_team_schedule", scheduleId, updates }, "已更新定时任务");
+    },
+    [send],
+  );
+
+  const runTeamScheduleNow = useCallback(
+    (scheduleId: string) => {
+      send({ type: "run_team_schedule_now", scheduleId }, "已请求立即执行");
     },
     [send],
   );
@@ -406,6 +447,24 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           break;
         case "tasks_list":
           setTasks(message.tasks);
+          break;
+        case "team_schedules_list":
+          setTeamSchedules(sortSchedules(message.schedules));
+          break;
+        case "team_schedule_updated":
+          setTeamSchedules((current) => sortSchedules(upsertById(current, message.schedule)));
+          setLastAction(`定时任务已更新：${message.schedule.name}`);
+          break;
+        case "team_schedule_triggered":
+          setTeamSchedules((current) => sortSchedules(upsertById(current, message.schedule)));
+          setTeamScheduleRuns((current) => upsertRun(current, message.run));
+          if (message.task) {
+            setTasks((current) => upsertById(current, message.task!));
+          }
+          setLastAction(formatScheduleRunActivity(message.schedule, message.run));
+          break;
+        case "team_schedule_runs":
+          setTeamScheduleRuns(message.runs);
           break;
         case "task_updated":
           setLastAction(`任务 ${message.task.title} 已更新为 ${message.task.status}`);
@@ -557,12 +616,17 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       error,
       lastAction,
       loadAgentDetail,
+      loadTeamScheduleRuns,
       refresh,
+      runTeamScheduleNow,
       selectedChannel,
       selectChannel,
       sendChannelMessage,
+      teamScheduleRuns,
+      teamSchedules,
       tasks,
       timelineMessages,
+      updateTeamSchedule,
       updateTaskApproval,
     }),
     [
@@ -575,12 +639,17 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       error,
       lastAction,
       loadAgentDetail,
+      loadTeamScheduleRuns,
       refresh,
+      runTeamScheduleNow,
       selectedChannel,
       selectChannel,
       sendChannelMessage,
+      teamScheduleRuns,
+      teamSchedules,
       tasks,
       timelineMessages,
+      updateTeamSchedule,
       updateTaskApproval,
     ],
   );
@@ -1096,6 +1165,289 @@ export function TeamView() {
   );
 }
 
+export function CalendarView() {
+  const {
+    agents,
+    connectionStatus,
+    loadTeamScheduleRuns,
+    runTeamScheduleNow,
+    teamScheduleRuns,
+    teamSchedules,
+    updateTeamSchedule,
+  } = useMissionControl();
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = useState<"all" | "cron" | "watcher">("all");
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (!selectedScheduleId) return;
+    if (!teamSchedules.some((schedule) => schedule.id === selectedScheduleId)) {
+      setSelectedScheduleId(null);
+    }
+  }, [selectedScheduleId, teamSchedules]);
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return;
+    loadTeamScheduleRuns(selectedScheduleId ?? undefined, selectedScheduleId ? 60 : 80);
+  }, [connectionStatus, loadTeamScheduleRuns, selectedScheduleId]);
+
+  const filteredSchedules = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return teamSchedules.filter((schedule) => {
+      if (typeFilter !== "all" && schedule.type !== typeFilter) return false;
+      if (!normalizedQuery) return true;
+      const searchText = [
+        schedule.name,
+        schedule.agentName,
+        schedule.project,
+        schedule.prompt,
+        schedule.cronExpr,
+        schedule.condition,
+        schedule.checkCommand,
+        ...schedule.tags,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return searchText.includes(normalizedQuery);
+    });
+  }, [query, teamSchedules, typeFilter]);
+
+  const selectedSchedule = selectedScheduleId
+    ? teamSchedules.find((schedule) => schedule.id === selectedScheduleId) ?? null
+    : null;
+  const visibleRuns = selectedSchedule
+    ? teamScheduleRuns.filter((run) => run.scheduleId === selectedSchedule.id)
+    : teamScheduleRuns;
+  const enabledCount = teamSchedules.filter((schedule) => schedule.enabled).length;
+  const dueSoonCount = teamSchedules.filter((schedule) => schedule.enabled && isDueSoon(schedule.nextRunAt)).length;
+  const failedRunCount = teamScheduleRuns.filter((run) => run.status === "failed_to_create").length;
+  const selectedAgent = selectedSchedule
+    ? agents.find((agent) => agent.name === selectedSchedule.agentName)
+    : null;
+
+  return (
+    <section className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[360px_1fr]">
+      <aside className="flex min-h-0 flex-col border-b md:border-b-0 md:border-r">
+        <div className="shrink-0 border-b px-3 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h1 className="text-base font-semibold">Calendar</h1>
+              <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span>{teamSchedules.length} total</span>
+                <span>{enabledCount} enabled</span>
+                <span>{dueSoonCount} due soon</span>
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                loadTeamScheduleRuns(undefined, 80);
+                setSelectedScheduleId(null);
+              }}
+              disabled={connectionStatus !== "connected"}
+              title="刷新运行记录"
+            >
+              <RefreshCcw className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <div className="mt-3 space-y-2">
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search schedules"
+              className="h-8 text-xs"
+            />
+            <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1">
+              {(["all", "cron", "watcher"] as const).map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => setTypeFilter(filter)}
+                  className={cn(
+                    "h-7 rounded-md px-2 text-xs font-medium transition-colors",
+                    typeFilter === filter
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {filter === "all" ? "All" : filter}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+          {filteredSchedules.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">
+              No team schedules
+            </div>
+          ) : (
+            filteredSchedules.map((schedule) => (
+              <ScheduleListItem
+                key={schedule.id}
+                active={selectedSchedule?.id === schedule.id}
+                schedule={schedule}
+                onSelect={() => setSelectedScheduleId(schedule.id)}
+              />
+            ))
+          )}
+        </div>
+      </aside>
+
+      <div className="flex min-h-0 flex-col">
+        <div className="shrink-0 border-b px-4 py-3">
+          {selectedSchedule ? (
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="min-w-0 truncate text-sm font-semibold">{selectedSchedule.name}</h2>
+                  <ScheduleStatusBadge schedule={selectedSchedule} />
+                  <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
+                    {selectedSchedule.type}
+                  </Badge>
+                  <Badge variant="secondary" className="h-5 rounded-lg text-[10px]">
+                    @{selectedSchedule.agentName}
+                  </Badge>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span>{formatScheduleTiming(selectedSchedule)}</span>
+                  <span>last {formatDate(selectedSchedule.lastRunAt) || "never"}</span>
+                  <span>next {formatDate(selectedSchedule.nextRunAt) || "not scheduled"}</span>
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                {selectedSchedule.lastTaskId ? (
+                  <Link
+                    href="/mission-control/tasks"
+                    className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-[0.8rem] font-medium hover:bg-muted"
+                  >
+                    <Inbox className="h-3.5 w-3.5" />
+                    Latest Task
+                  </Link>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => runTeamScheduleNow(selectedSchedule.id)}
+                  disabled={connectionStatus !== "connected"}
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  Run Now
+                </Button>
+                <Button
+                  size="sm"
+                  variant={selectedSchedule.enabled ? "outline" : "secondary"}
+                  onClick={() =>
+                    updateTeamSchedule(selectedSchedule.id, { enabled: !selectedSchedule.enabled })
+                  }
+                  disabled={connectionStatus !== "connected"}
+                >
+                  {selectedSchedule.enabled ? <X className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+                  {selectedSchedule.enabled ? "Disable" : "Enable"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <h2 className="text-sm font-semibold">Recent Runs</h2>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {teamScheduleRuns.length} loaded &middot; {failedRunCount} failed
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="min-h-0 overflow-y-auto p-4">
+            {selectedSchedule ? (
+              <div className="space-y-3">
+                <section className="rounded-lg border bg-background p-4">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <ScheduleMetric label="Agent" value={selectedAgent?.displayName || selectedSchedule.agentName} />
+                    <ScheduleMetric label="Project" value={selectedSchedule.project || "No project"} />
+                    <ScheduleMetric label="Priority" value={`P${selectedSchedule.priority}`} />
+                    <ScheduleMetric label="Retries" value={String(selectedSchedule.maxRetries)} />
+                  </div>
+                  <div className="mt-4 rounded-lg border bg-muted/30 p-3">
+                    <div className="text-[10px] font-semibold uppercase text-muted-foreground">Prompt</div>
+                    <p className="mt-1 whitespace-pre-wrap text-xs leading-5">{selectedSchedule.prompt}</p>
+                  </div>
+                  {selectedSchedule.type === "watcher" ? (
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <CodeField label="Check Command" value={selectedSchedule.checkCommand} />
+                      <CodeField label="Condition" value={selectedSchedule.condition} />
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-1">
+                    <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
+                      {formatScheduleSource(selectedSchedule.source)}
+                    </Badge>
+                    {selectedSchedule.channelId ? (
+                      <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
+                        {selectedSchedule.channelId}
+                      </Badge>
+                    ) : null}
+                    {selectedSchedule.tags.map((tag) => (
+                      <Badge key={tag} variant="secondary" className="h-5 rounded-lg text-[10px]">
+                        {tag}
+                      </Badge>
+                    ))}
+                  </div>
+                </section>
+
+                <RunTimeline runs={visibleRuns} schedules={teamSchedules} />
+              </div>
+            ) : (
+              <RunTimeline runs={visibleRuns} schedules={teamSchedules} />
+            )}
+          </div>
+
+          <aside className="min-h-0 overflow-y-auto border-t p-3 lg:border-l lg:border-t-0">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-xs font-semibold">Upcoming</div>
+              <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
+                {teamSchedules.filter((schedule) => schedule.enabled && schedule.nextRunAt).length}
+              </Badge>
+            </div>
+            <div className="space-y-2">
+              {teamSchedules.filter((schedule) => schedule.enabled && schedule.nextRunAt).length === 0 ? (
+                <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+                  No upcoming runs
+                </div>
+              ) : (
+                teamSchedules
+                  .filter((schedule) => schedule.enabled && schedule.nextRunAt)
+                  .slice(0, 12)
+                  .map((schedule) => (
+                    <button
+                      key={schedule.id}
+                      type="button"
+                      onClick={() => setSelectedScheduleId(schedule.id)}
+                      className={cn(
+                        "w-full rounded-lg border p-3 text-left transition-colors hover:bg-muted/60",
+                        selectedSchedule?.id === schedule.id && "bg-accent",
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium">{schedule.name}</span>
+                      </div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        {formatFullDate(schedule.nextRunAt)} &middot; @{schedule.agentName}
+                      </div>
+                    </button>
+                  ))
+              )}
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function PlaceholderView({ title }: { title: string }) {
   return (
     <section className="flex h-full items-center justify-center p-4">
@@ -1370,6 +1722,191 @@ export function VisualView() {
   );
 }
 
+function ScheduleListItem({
+  active,
+  onSelect,
+  schedule,
+}: {
+  active: boolean;
+  onSelect: () => void;
+  schedule: TeamScheduleInfo;
+}) {
+  const projectColor = schedule.project ? channelColor(schedule.project) : null;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "w-full rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted/60",
+        active && "bg-accent",
+        !schedule.enabled && "opacity-70",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <Clock3 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold">{schedule.name}</div>
+          <div className="mt-1 truncate text-[10px] text-muted-foreground">
+            @{schedule.agentName} &middot; {formatScheduleTiming(schedule)}
+          </div>
+        </div>
+        <ScheduleStatusBadge schedule={schedule} />
+      </div>
+      <div className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{schedule.prompt}</div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
+          {schedule.type}
+        </Badge>
+        {schedule.project ? (
+          <Badge variant="secondary" className={cn("h-5 gap-1 rounded-lg text-[10px]", projectColor?.bg, projectColor?.text)}>
+            <span className={cn("h-1.5 w-1.5 rounded-full", projectColor?.dot)} />
+            #{schedule.project}
+          </Badge>
+        ) : null}
+        {schedule.lastTaskId ? (
+          <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
+            task {schedule.lastTaskId.slice(0, 8)}
+          </Badge>
+        ) : null}
+      </div>
+    </button>
+  );
+}
+
+function ScheduleStatusBadge({ schedule }: { schedule: TeamScheduleInfo }) {
+  const status = !schedule.enabled ? "disabled" : schedule.lastStatus ?? "enabled";
+  const className =
+    status === "created" || status === "enabled"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : status === "skipped"
+        ? "border-amber-200 bg-amber-50 text-amber-700"
+        : status === "failed_to_create"
+          ? "border-rose-200 bg-rose-50 text-rose-700"
+          : "border-border bg-muted text-muted-foreground";
+  return (
+    <Badge variant="outline" className={cn("h-5 rounded-lg text-[10px]", className)}>
+      {status}
+    </Badge>
+  );
+}
+
+function ScheduleMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3">
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function CodeField({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="rounded-lg border bg-muted/30 p-3">
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-5">
+        {value || "Not configured"}
+      </div>
+    </div>
+  );
+}
+
+function RunTimeline({
+  runs,
+  schedules,
+}: {
+  runs: TeamScheduleRunInfo[];
+  schedules: TeamScheduleInfo[];
+}) {
+  return (
+    <section className="rounded-lg border bg-background">
+      <div className="flex h-10 items-center justify-between border-b px-3">
+        <div className="text-xs font-semibold">Runs</div>
+        <Badge variant="secondary" className="h-5 rounded-lg text-[10px]">
+          {runs.length}
+        </Badge>
+      </div>
+      <div className="divide-y">
+        {runs.length === 0 ? (
+          <div className="p-6 text-center text-xs text-muted-foreground">No runs</div>
+        ) : (
+          runs.map((run) => (
+            <RunTimelineItem key={run.id} run={run} schedule={schedules.find((item) => item.id === run.scheduleId)} />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RunTimelineItem({
+  run,
+  schedule,
+}: {
+  run: TeamScheduleRunInfo;
+  schedule?: TeamScheduleInfo;
+}) {
+  const isSuccess = run.status === "created";
+  const isSkipped = run.status === "skipped";
+  return (
+    <article className="p-3">
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border",
+            isSuccess
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : isSkipped
+                ? "border-amber-200 bg-amber-50 text-amber-700"
+                : "border-rose-200 bg-rose-50 text-rose-700",
+          )}
+        >
+          {isSuccess ? <Check className="h-3.5 w-3.5" /> : isSkipped ? <Clock3 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 truncate text-xs font-semibold">{schedule?.name ?? run.scheduleId}</span>
+            <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
+              {run.triggerType}
+            </Badge>
+            <Badge variant="secondary" className="h-5 rounded-lg text-[10px]">
+              @{run.agentName}
+            </Badge>
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            {formatFullDate(run.createdAt)}
+            {run.taskId ? (
+              <>
+                {" · "}
+                <Link href="/mission-control/tasks" className="font-medium text-foreground hover:underline">
+                  task {run.taskId.slice(0, 8)}
+                </Link>
+              </>
+            ) : null}
+          </div>
+          {run.error ? (
+            <div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/5 p-2 text-xs leading-5 text-destructive">
+              {run.error}
+            </div>
+          ) : null}
+        </div>
+        <Badge
+          variant="outline"
+          className={cn(
+            "h-5 rounded-lg text-[10px]",
+            isSuccess
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : isSkipped
+                ? "border-amber-200 bg-amber-50 text-amber-700"
+                : "border-rose-200 bg-rose-50 text-rose-700",
+          )}
+        >
+          {run.status}
+        </Badge>
+      </div>
+    </article>
+  );
+}
+
 function TaskCard({
   task,
   onApproval,
@@ -1396,6 +1933,12 @@ function TaskCard({
               <Badge variant="secondary" className={cn("h-5 gap-1 rounded-lg text-[10px]", projectColor?.bg, projectColor?.text)}>
                 <span className={cn("h-1.5 w-1.5 rounded-full", projectColor?.dot)} />
                 #{task.project}
+              </Badge>
+            ) : null}
+            {task.tags.includes("scheduled") ? (
+              <Badge variant="outline" className="h-5 gap-1 rounded-lg border-amber-200 bg-amber-50 text-[10px] text-amber-700">
+                <Clock3 className="h-3 w-3" />
+                scheduled
               </Badge>
             ) : null}
           </div>
@@ -1541,6 +2084,22 @@ function upsertById<T extends { id: string }>(items: T[], item: T) {
   return items.map((entry) => (entry.id === item.id ? item : entry));
 }
 
+function upsertRun(items: TeamScheduleRunInfo[], item: TeamScheduleRunInfo) {
+  return upsertById(items, item)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 120);
+}
+
+function sortSchedules(schedules: TeamScheduleInfo[]) {
+  return [...schedules].sort((a, b) => {
+    if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+    const aNext = a.nextRunAt ? new Date(a.nextRunAt).getTime() : Number.POSITIVE_INFINITY;
+    const bNext = b.nextRunAt ? new Date(b.nextRunAt).getTime() : Number.POSITIVE_INFINITY;
+    if (aNext !== bNext) return aNext - bNext;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 function dedupeMessages(messages: TeamMessageInfo[]) {
   return Array.from(new Map(messages.map((message) => [message.id, message])).values()).sort(
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
@@ -1609,9 +2168,46 @@ function formatTeamActivity(message: TeamMessageInfo) {
   return `${sender} 在 ${target} 回复：${messagePreview(message.content)}`;
 }
 
+function formatScheduleRunActivity(schedule: TeamScheduleInfo, run: TeamScheduleRunInfo) {
+  if (run.status === "created") {
+    return `定时任务已创建任务：${schedule.name}`;
+  }
+  if (run.status === "skipped") {
+    return `定时任务已跳过：${schedule.name}`;
+  }
+  return `定时任务执行失败：${schedule.name}`;
+}
+
 function messagePreview(content: string) {
   const compact = content.replace(/\s+/g, " ").trim();
   return compact.length > 60 ? `${compact.slice(0, 60)}...` : compact;
+}
+
+function formatScheduleTiming(schedule: TeamScheduleInfo) {
+  if (schedule.type === "cron") return schedule.cronExpr ?? "No cron";
+  const interval = schedule.intervalMs ? formatDuration(schedule.intervalMs) : "no interval";
+  const cooldown = schedule.cooldownMs ? `cooldown ${formatDuration(schedule.cooldownMs)}` : "no cooldown";
+  return `${interval} · ${cooldown}`;
+}
+
+function formatScheduleSource(source: TeamScheduleInfo["source"]) {
+  if (source === "agent_yaml") return "agent.yaml";
+  return source;
+}
+
+function formatDuration(ms: number) {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
+function isDueSoon(value?: string) {
+  if (!value) return false;
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) return false;
+  const now = Date.now();
+  return time >= now && time - now <= 24 * 60 * 60 * 1000;
 }
 
 function formatDate(value?: string) {
@@ -1623,5 +2219,18 @@ function formatDate(value?: string) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+  }).format(date);
+}
+
+function formatFullDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
   }).format(date);
 }

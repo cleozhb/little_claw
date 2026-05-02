@@ -22,6 +22,30 @@ export type AgentRuntimeStatus = "idle" | "working" | "waiting_approval" | "paus
 export interface AgentCronJob {
   cron: string;
   prompt: string;
+  key?: string;
+  name?: string;
+  project?: string;
+  channel_id?: string;
+  tags?: string[];
+  priority?: number;
+  max_retries?: number;
+  enabled?: boolean;
+}
+
+export interface AgentWatcher {
+  check_command: string;
+  prompt: string;
+  key?: string;
+  name?: string;
+  condition?: string;
+  interval_minutes?: number;
+  cooldown_minutes?: number;
+  project?: string;
+  channel_id?: string;
+  tags?: string[];
+  priority?: number;
+  max_retries?: number;
+  enabled?: boolean;
 }
 
 export interface AgentYamlConfig {
@@ -38,6 +62,7 @@ export interface AgentYamlConfig {
   skills: string[];
   task_tags: string[];
   cron_jobs: AgentCronJob[];
+  watchers?: AgentWatcher[];
   requires_approval: string[];
   max_concurrent_tasks: number;
   max_tokens_per_task: number;
@@ -401,6 +426,7 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
     skills: readStringArray(raw.skills, "skills"),
     task_tags: readStringArray(raw.task_tags, "task_tags"),
     cron_jobs: readCronJobs(raw.cron_jobs),
+    watchers: readWatchers(raw.watchers),
     requires_approval: readStringArray(raw.requires_approval, "requires_approval"),
     max_concurrent_tasks: maxConcurrentTasks,
     max_tokens_per_task: maxTokensPerTask,
@@ -460,6 +486,28 @@ function readStringArray(value: unknown, key: string): string[] {
   return [...value];
 }
 
+function readOptionalStringArray(value: unknown, key: string): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  return readStringArray(value, key);
+}
+
+function readOptionalBoolean(value: unknown, key: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(`agent.yaml field "${key}" must be a boolean.`);
+  }
+  return value;
+}
+
+function readOptionalInteger(value: unknown, key: string, options: { min?: number } = {}): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const min = options.min ?? 0;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min) {
+    throw new Error(`agent.yaml field "${key}" must be an integer >= ${min}.`);
+  }
+  return value;
+}
+
 function readCronJobs(value: unknown): AgentCronJob[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
@@ -472,6 +520,47 @@ function readCronJobs(value: unknown): AgentCronJob[] {
     }
     const cron = readRequiredString(item, "cron");
     const prompt = readRequiredString(item, "prompt");
-    return { cron, prompt };
+    return {
+      cron,
+      prompt,
+      key: readOptionalString(item.key),
+      name: readOptionalString(item.name),
+      project: readOptionalString(item.project),
+      channel_id: readOptionalString(item.channel_id),
+      tags: readOptionalStringArray(item.tags, `cron_jobs[${index}].tags`),
+      priority: readOptionalInteger(item.priority, `cron_jobs[${index}].priority`),
+      max_retries: readOptionalInteger(item.max_retries, `cron_jobs[${index}].max_retries`),
+      enabled: readOptionalBoolean(item.enabled, `cron_jobs[${index}].enabled`),
+    };
+  });
+}
+
+function readWatchers(value: unknown): AgentWatcher[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('agent.yaml field "watchers" must be an array.');
+  }
+
+  return value.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new Error(`watchers[${index}] must be an object.`);
+    }
+    const checkCommand = readRequiredString(item, "check_command");
+    const prompt = readRequiredString(item, "prompt");
+    return {
+      check_command: checkCommand,
+      prompt,
+      key: readOptionalString(item.key),
+      name: readOptionalString(item.name),
+      condition: readOptionalString(item.condition),
+      interval_minutes: readOptionalInteger(item.interval_minutes, `watchers[${index}].interval_minutes`, { min: 1 }),
+      cooldown_minutes: readOptionalInteger(item.cooldown_minutes, `watchers[${index}].cooldown_minutes`, { min: 0 }),
+      project: readOptionalString(item.project),
+      channel_id: readOptionalString(item.channel_id),
+      tags: readOptionalStringArray(item.tags, `watchers[${index}].tags`),
+      priority: readOptionalInteger(item.priority, `watchers[${index}].priority`),
+      max_retries: readOptionalInteger(item.max_retries, `watchers[${index}].max_retries`),
+      enabled: readOptionalBoolean(item.enabled, `watchers[${index}].enabled`),
+    };
   });
 }

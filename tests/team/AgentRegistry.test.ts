@@ -160,6 +160,25 @@ describe("AgentRegistry", () => {
     expect(agent.operatingInstructions).toContain("Read the relevant code");
   });
 
+  test("built-in schedule templates use explicit stable fields", () => {
+    const baseDir = makeBaseDir();
+    const registry = new AgentRegistry(baseDir);
+
+    const agent = registry.createFromTemplate("coordinator");
+    const [job] = agent.config.cron_jobs;
+    const yaml = readFileSync(join(baseDir, "coordinator", "agent.yaml"), "utf8");
+
+    expect(job?.key).toBe("daily-team-review");
+    expect(job?.name).toBe("Daily Team Review");
+    expect(job?.project).toBe("team-ops");
+    expect(job?.tags).toContain("scheduled");
+    expect(job?.max_retries).toBe(2);
+    expect(job?.enabled).toBe(true);
+    expect(agent.config.watchers).toEqual([]);
+    expect(yaml).toContain("key: daily-team-review");
+    expect(yaml).toContain("watchers: []");
+  });
+
   test("creates a custom-named agent from a template with overrides", () => {
     const baseDir = makeBaseDir();
     const registry = new AgentRegistry(baseDir);
