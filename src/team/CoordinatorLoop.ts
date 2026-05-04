@@ -289,6 +289,7 @@ export class CoordinatorLoop {
         canSpawnSubAgent: false,
       }),
       skillManager: this.skillManager,
+      configuredSkillNames: coordinator.config.skills,
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,

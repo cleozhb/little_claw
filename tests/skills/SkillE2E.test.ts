@@ -6,6 +6,11 @@ import { SkillLoader } from "../../src/skills/SkillLoader";
 import { SkillManager } from "../../src/skills/SkillManager";
 import { SkillPromptBuilder } from "../../src/skills/SkillPromptBuilder";
 import { SkillConfigFile } from "../../src/skills/SkillConfigFile";
+import { AgentLoop } from "../../src/core/AgentLoop";
+import { EphemeralConversation } from "../../src/core/EphemeralConversation";
+import { ToolRegistry } from "../../src/tools/ToolRegistry";
+import type { ChatOptions, LLMProvider } from "../../src/llm/types";
+import type { Message, StreamEvent } from "../../src/types/message";
 
 const TEST_DIR = "/tmp/little_claw_e2e_skill_test";
 const SKILLS_DIR = join(TEST_DIR, "skills");
@@ -201,7 +206,6 @@ If the user specifies a language, respond with only that language's greeting.
     const skillPrompt = builder.buildSkillPrompt(
       loadedSkills,
       undefined,
-      manager.getRecentlyUsed(),
     );
 
     const effectivePrompt = `${basePrompt}\n\n${skillPrompt}`;
@@ -212,6 +216,65 @@ If the user specifies a language, respond with only that language's greeting.
     expect(effectivePrompt).toContain("hello-world");
     expect(effectivePrompt).toContain("こんにちは");
     expect(effectivePrompt).toContain("echo");
+  });
+
+  test("AgentLoop respects configuredSkillNames and skips global skill injection", async () => {
+    const isolatedSkillsDir = join(TEST_DIR, "configured-filter-skills");
+    const configuredDir = join(isolatedSkillsDir, "configured-only");
+    const unconfiguredDir = join(isolatedSkillsDir, "unconfigured-skill");
+    mkdirSync(configuredDir, { recursive: true });
+    mkdirSync(unconfiguredDir, { recursive: true });
+    writeFileSync(
+      join(configuredDir, "SKILL.md"),
+      `---
+name: configured-only
+description: Configured skill for a specific agent
+---
+
+# Configured Skill
+
+configured skill body marker
+`,
+    );
+    writeFileSync(
+      join(unconfiguredDir, "SKILL.md"),
+      `---
+name: unconfigured-skill
+description: Skill that should not be injected
+---
+
+# Unconfigured Skill
+
+unconfigured skill body marker
+`,
+    );
+    writeFileSync(
+      CONFIG_PATH,
+      JSON.stringify({ skills: { entries: {} } }),
+    );
+
+    const config = new SkillConfigFile(CONFIG_PATH);
+    await config.load();
+    const loader = new TestSkillLoader(isolatedSkillsDir);
+    const manager = new SkillManager(loader, config);
+    await manager.initializeAll();
+
+    const llm = new CapturingLLM("done");
+    const loop = new AgentLoop(
+      llm,
+      new ToolRegistry(),
+      new EphemeralConversation("test configured skills"),
+      {
+        skillManager: manager,
+        configuredSkillNames: ["configured-only"],
+      },
+    );
+
+    for await (const _event of loop.run("use the configured skill")) {}
+
+    const firstSystem = llm.calls[0]?.system ?? "";
+    expect(firstSystem).toContain("configured skill body marker");
+    expect(firstSystem).not.toContain("unconfigured skill body marker");
   });
 
   test("SkillManager.reload() re-scans and picks up new skills", async () => {
@@ -373,3 +436,33 @@ Parse the JSON output and present the IP address to the user.
     expect(prompt).not.toContain("/some/path");
   });
 });
+
+class CapturingLLM implements LLMProvider {
+  calls: Array<{ messages: Message[]; system: string; tools: NonNullable<ChatOptions["tools"]> }> = [];
+
+  constructor(private reply: string) {}
+
+  get lastSystem(): string {
+    return this.calls.at(-1)?.system ?? "";
+  }
+
+  async *chat(messages: Message[], options?: ChatOptions): AsyncGenerator<StreamEvent> {
+    this.calls.push({
+      messages: [...messages],
+      system: options?.system ?? "",
+      tools: options?.tools ?? [],
+    });
+    yield { type: "text_delta", text: this.reply };
+    yield {
+      type: "message_end",
+      stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+  }
+
+  getModel(): string {
+    return "capturing-test-model";
+  }
+
+  setModel(_model: string): void {}
+}

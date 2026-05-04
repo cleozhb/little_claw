@@ -104,8 +104,8 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
   const agentRegistry = new AgentRegistry(options.agentDir);
   let registeredAgents = agentRegistry.loadAll();
   if (registeredAgents.length === 0) {
-    console.log("Lovely Octopus: no agents found, creating default coordinator and coder templates");
-    for (const name of ["coordinator", "coder"]) {
+    console.log("Lovely Octopus: no agents found, creating default coordinator, coder, and podcast-curator templates");
+    for (const name of ["coordinator", "coder", "podcast-curator"]) {
       try {
         agentRegistry.createFromTemplate(name);
       } catch (err) {

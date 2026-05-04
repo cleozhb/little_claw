@@ -203,7 +203,7 @@ describe("AgentRegistry", () => {
     const baseDir = makeBaseDir();
     const registry = new AgentRegistry(baseDir);
 
-    expect(registry.listTemplates().map((template) => template.name)).toContain("podcast-translator");
+    expect(registry.listTemplates().map((template) => template.name)).toContain("podcast-curator");
     expect(() =>
       registry.createFromTemplate("unknown-agent", {
         templateName: "missing-template",

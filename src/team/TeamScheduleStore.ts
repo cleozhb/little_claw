@@ -385,6 +385,8 @@ export class TeamScheduleStore {
   }
 
   deleteSchedule(id: string): void {
+    const sqlite = this.getSQLite();
+    sqlite.prepare(`DELETE FROM team_schedule_runs WHERE schedule_id = ?1`).run(id);
     this.stmtDeleteSchedule.run(id);
   }
 

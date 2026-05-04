@@ -1172,7 +1172,7 @@ export function TeamView() {
           )}
         </div>
       </aside>
-      <div className="flex min-h-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-col">
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-3">
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold">{agentDetail?.displayName ?? activeAgentName ?? "Agent"}</div>
@@ -1190,9 +1190,15 @@ export function TeamView() {
             </Button>
           ))}
         </div>
-        <pre className="min-h-0 flex-1 overflow-auto p-4 font-mono text-xs leading-5 text-foreground">
-          {fileContent ?? "No file loaded"}
-        </pre>
+        {selectedFile === "agent.yaml" ? (
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-5 text-foreground">
+            {fileContent ?? "No file loaded"}
+          </pre>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-auto p-4 text-xs leading-5">
+            {fileContent ? <Markdown content={fileContent} /> : "No file loaded"}
+          </div>
+        )}
       </div>
     </section>
   );

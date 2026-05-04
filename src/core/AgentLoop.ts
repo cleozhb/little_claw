@@ -91,6 +91,7 @@ export class AgentLoop {
   private config: AgentConfig;
   private pendingTitleGeneration: Promise<void> | null = null;
   private skillManager?: SkillManager;
+  private configuredSkillNames: string[];
   private shellTool?: ShellTool;
   private memoryManager?: MemoryManager;
   private contextRetriever?: ContextRetriever;
@@ -141,6 +142,7 @@ export class AgentLoop {
     options?: {
       config?: AgentConfig;
       skillManager?: SkillManager;
+      configuredSkillNames?: string[];
       shellTool?: ShellTool;
       memoryManager?: MemoryManager;
       contextRetriever?: ContextRetriever;
@@ -153,6 +155,7 @@ export class AgentLoop {
     this.conversation = conversation;
     this.config = options?.config ?? MAIN_AGENT;
     this.skillManager = options?.skillManager;
+    this.configuredSkillNames = uniqueNonEmpty(options?.configuredSkillNames ?? []);
     this.shellTool = options?.shellTool;
     this.memoryManager = options?.memoryManager;
     this.contextRetriever = options?.contextRetriever;
@@ -278,49 +281,71 @@ export class AgentLoop {
       }
     }
 
-    // Skill 混合检索
+    // Skill 选择：Team agent 可通过 agent.yaml.skills 固定注入；未配置时才走全局检索。
     if (this.skillManager) {
-      const retriever = this.skillManager.getRetriever();
-      if (retriever && userMessage) {
-        try {
-          // 构造检索 query：当前用户消息 + 最近几轮对话摘要，提供足够上下文
-          const query = this.buildSkillQuery(userMessage);
-          const matched = await retriever.retrieve(query, 5);
-          // 合并 pinned + retrieved（去重）
-          const pinnedNames = new Set(this.skillManager.getPinnedSkills());
-          const allLoaded = this.skillManager.getLoadedSkills();
-          const pinned = allLoaded.filter(s => pinnedNames.has(s.name));
-          const matchedNames = new Set(matched.map(m => m.skill.name));
-          const extraPinned = pinned.filter(s => !matchedNames.has(s.name));
-
-          // 保留之前选中但本轮未匹配到的 skill（避免多轮对话中丢失上下文）
-          const newNames = new Set([...matchedNames, ...pinnedNames]);
-          const carried = this.selectedSkills.filter(s => !newNames.has(s.name));
-
-          this.selectedSkills = [...extraPinned, ...matched.map(m => m.skill), ...carried];
-
-          if (matched.length > 0) {
-            const matchedEvent: AgentSkillsMatchedEvent = {
-              type: "skills_matched",
-              skills: matched.map(m => ({
-                name: m.skill.name,
-                score: m.score,
-                matchReason: m.matchReason,
-              })),
-            };
-            yield matchedEvent;
-          }
-        } catch (err) {
-          if (process.env.DEBUG) {
-            console.error(`[debug] Skill retrieval failed:`, err);
-          }
-          // 失败时保留之前选中的 skill，而非回退到全量
-          if (this.selectedSkills.length === 0) {
-            this.selectedSkills = this.skillManager.getLoadedSkills();
-          }
+      if (this.configuredSkillNames.length > 0) {
+        this.selectedSkills = this.getConfiguredLoadedSkills();
+        const loadedNames = new Set(this.selectedSkills.map((skill) => skill.name));
+        const missing = this.configuredSkillNames.filter((name) => !loadedNames.has(name));
+        if (missing.length > 0) {
+          log.warn(
+            `Configured skill(s) are not loaded for agent ${this.config.name}`,
+            missing.join(", "),
+          );
         }
-      } else if (this.selectedSkills.length === 0) {
-        this.selectedSkills = this.skillManager.getLoadedSkills();
+        if (this.selectedSkills.length > 0) {
+          yield {
+            type: "skills_matched",
+            skills: this.selectedSkills.map((skill) => ({
+              name: skill.name,
+              score: 1,
+              matchReason: "configured in agent.yaml",
+            })),
+          };
+        }
+      } else {
+        const retriever = this.skillManager.getRetriever();
+        if (retriever && userMessage) {
+          try {
+            // 构造检索 query：当前用户消息 + 最近几轮对话摘要，提供足够上下文
+            const query = this.buildSkillQuery(userMessage);
+            const matched = await retriever.retrieve(query, 5);
+            // 合并 pinned + retrieved（去重）
+            const pinnedNames = new Set(this.skillManager.getPinnedSkills());
+            const allLoaded = this.skillManager.getLoadedSkills();
+            const pinned = allLoaded.filter(s => pinnedNames.has(s.name));
+            const matchedNames = new Set(matched.map(m => m.skill.name));
+            const extraPinned = pinned.filter(s => !matchedNames.has(s.name));
+
+            // 保留之前选中但本轮未匹配到的 skill（避免多轮对话中丢失上下文）
+            const newNames = new Set([...matchedNames, ...pinnedNames]);
+            const carried = this.selectedSkills.filter(s => !newNames.has(s.name));
+
+            this.selectedSkills = [...extraPinned, ...matched.map(m => m.skill), ...carried];
+
+            if (matched.length > 0) {
+              const matchedEvent: AgentSkillsMatchedEvent = {
+                type: "skills_matched",
+                skills: matched.map(m => ({
+                  name: m.skill.name,
+                  score: m.score,
+                  matchReason: m.matchReason,
+                })),
+              };
+              yield matchedEvent;
+            }
+          } catch (err) {
+            if (process.env.DEBUG) {
+              console.error(`[debug] Skill retrieval failed:`, err);
+            }
+            // 失败时保留之前选中的 skill，而非回退到全量
+            if (this.selectedSkills.length === 0) {
+              this.selectedSkills = this.skillManager.getLoadedSkills();
+            }
+          }
+        } else if (this.selectedSkills.length === 0) {
+          this.selectedSkills = this.skillManager.getLoadedSkills();
+        }
       }
     }
 
@@ -792,9 +817,11 @@ export class AgentLoop {
     // 构建 skill prompt
     let skillPrompt = "";
     if (this.skillManager) {
-      const skills = this.selectedSkills.length > 0
+      const skills = this.configuredSkillNames.length > 0
         ? this.selectedSkills
-        : this.skillManager.getLoadedSkills();
+        : this.selectedSkills.length > 0
+          ? this.selectedSkills
+          : this.skillManager.getLoadedSkills();
       if (skills.length > 0) {
         const builder = new SkillPromptBuilder();
         const raw = builder.buildSkillPrompt(
@@ -934,7 +961,9 @@ export class AgentLoop {
     if (!this.skillManager) return {};
 
     const merged: Record<string, string> = {};
-    const loadedSkills = this.skillManager.getLoadedSkills();
+    const loadedSkills = this.configuredSkillNames.length > 0
+      ? this.getConfiguredLoadedSkills()
+      : this.skillManager.getLoadedSkills();
 
     // 反向遍历：先填入低优先级，后填入高优先级覆盖
     // SkillManager.getLoadedSkills() 按加载顺序返回（项目级在前），
@@ -954,4 +983,14 @@ export class AgentLoop {
       new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
     ]);
   }
+
+  private getConfiguredLoadedSkills(): ParsedSkill[] {
+    if (!this.skillManager || this.configuredSkillNames.length === 0) return [];
+    const configured = new Set(this.configuredSkillNames);
+    return this.skillManager.getLoadedSkills().filter((skill) => configured.has(skill.name));
+  }
+}
+
+function uniqueNonEmpty(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
