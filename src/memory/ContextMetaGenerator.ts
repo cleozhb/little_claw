@@ -2,8 +2,8 @@
  * src/memory/ContextMetaGenerator.ts — 自动生成/维护 .abstract.md 和 .overview.md
  *
  * 两种模式：
- *   1. 首次启动扫描：为缺少元文件的目录调用 LLM 生成
- *   2. 增量更新：context_write 写入后补充 overview 中缺失的文件条目
+ *   1. 启动扫描：为缺少或明显过期的元文件调用 LLM 生成
+ *   2. 增量更新：context_write 写入后刷新对应目录的元文件
  */
 
 import type { LLMProvider } from "../llm/types.ts";
@@ -36,38 +36,60 @@ export class ContextMetaGenerator {
       const files = await this.contextHub.listFiles(relativePath);
       if (files.length === 0) continue;
 
-      // 检查 .abstract.md
       const existingAbstract = await this.contextHub.readFile(
         `${relativePath}/.abstract.md`,
       );
-      if (!existingAbstract) {
-        const abstract = await this.generateAbstract(relativePath, files);
-        if (abstract) {
-          await this.contextHub.writeFile(
-            `${relativePath}/.abstract.md`,
-            abstract,
-            "overwrite",
-          );
-          generated++;
-        }
-      }
-
-      // 检查 .overview.md
       const existingOverview = await this.contextHub.readOverview(relativePath);
-      if (!existingOverview) {
-        const overview = await this.generateOverview(relativePath, files);
-        if (overview) {
-          await this.contextHub.writeFile(
-            `${relativePath}/.overview.md`,
-            overview,
-            "overwrite",
-          );
-          generated++;
-        }
+
+      if (!existingAbstract || !existingOverview || hasMissingFileEntries(existingOverview, files)) {
+        const updated = await this.refreshDirectory(relativePath);
+        generated += updated;
       }
     }
 
     return { generated };
+  }
+
+  /**
+   * 刷新一个目录的 .abstract.md 和 .overview.md。
+   *
+   * context_write 写入项目资料后调用这里，确保 L1 索引不依赖 agent 手动维护。
+   * 生成失败时使用确定性 fallback，至少保证所有文件都出现在 .overview.md 里。
+   */
+  async refreshDirectory(dirPath: string): Promise<number> {
+    const relativePath = stripContextHubPrefix(dirPath);
+    if (SKIP_DIRS.some((p) => relativePath.startsWith(p))) return 0;
+
+    const files = await this.contextHub.listFiles(relativePath);
+    if (files.length === 0) return 0;
+
+    let updated = 0;
+
+    const abstract =
+      (await this.generateAbstract(relativePath, files)) ??
+      fallbackAbstract(relativePath, files);
+    if (abstract) {
+      await this.contextHub.writeFile(
+        `${relativePath}/.abstract.md`,
+        abstract,
+        "overwrite",
+      );
+      updated++;
+    }
+
+    const overview =
+      (await this.generateOverview(relativePath, files)) ??
+      (await this.fallbackOverview(relativePath, files));
+    if (overview) {
+      await this.contextHub.writeFile(
+        `${relativePath}/.overview.md`,
+        ensureOverviewListsFiles(overview, files),
+        "overwrite",
+      );
+      updated++;
+    }
+
+    return updated;
   }
 
   /**
@@ -142,4 +164,64 @@ Overview:`;
       return null;
     }
   }
+
+  private async fallbackOverview(
+    dirPath: string,
+    files: string[],
+  ): Promise<string> {
+    const title = titleFromDir(dirPath);
+    const lines = [`# ${title}`, "", "## Key files"];
+
+    for (const file of files) {
+      const content = await this.contextHub.readFile(`${dirPath}/${file}`);
+      lines.push(`- ${file} — ${describeFile(file, content)}`);
+    }
+
+    return lines.join("\n");
+  }
+}
+
+function stripContextHubPrefix(path: string): string {
+  return path.startsWith("context-hub/") ? path.slice("context-hub/".length) : path;
+}
+
+function hasMissingFileEntries(overview: string | null, files: string[]): boolean {
+  if (!overview) return true;
+  return files.some((file) => !overview.includes(file));
+}
+
+function ensureOverviewListsFiles(overview: string, files: string[]): string {
+  const missing = files.filter((file) => !overview.includes(file));
+  if (missing.length === 0) return overview;
+
+  const lines = [overview.trimEnd(), "", "## Auto-indexed files"];
+  for (const file of missing) {
+    lines.push(`- ${file} — ${describeFile(file, null)}`);
+  }
+  return lines.join("\n");
+}
+
+function fallbackAbstract(dirPath: string, files: string[]): string {
+  const dirName = dirPath.split("/").pop() ?? dirPath;
+  return `${titleFromDir(dirName)} workspace with ${files.length} tracked file${files.length === 1 ? "" : "s"}.`;
+}
+
+function titleFromDir(dirPath: string): string {
+  const dirName = dirPath.split("/").pop() ?? dirPath;
+  return dirName
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function describeFile(fileName: string, content: string | null): string {
+  if (fileName.endsWith(".json")) return "structured project data.";
+  if (fileName === "status.md") return "current state, decisions, and next actions.";
+  if (fileName.endsWith(".md")) {
+    const heading = content?.match(/^#\s+(.+)$/m)?.[1]?.trim();
+    return heading ? heading : "project notes.";
+  }
+  if (fileName.endsWith(".txt")) return "plain-text project data.";
+  return "project file.";
 }

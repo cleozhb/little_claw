@@ -281,6 +281,9 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     apiKey: process.env.EMBEDDING_API_KEY ?? config.llmApiKey,
     model: process.env.EMBEDDING_MODEL,
     baseURL: process.env.EMBEDDING_BASE_URL,
+    maxInputChars: process.env.EMBEDDING_MAX_INPUT_CHARS
+      ? parseInt(process.env.EMBEDDING_MAX_INPUT_CHARS, 10)
+      : undefined,
   });
   const vectorStore = new VectorStore(join(dataDir, "memory.db"), embeddingProvider);
 
@@ -341,7 +344,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   // --- 记忆工具注册 ---
   toolRegistry.register(createMemoryWriteTool(fileMemory, vectorStore));
   toolRegistry.register(createMemoryReadTool(fileMemory));
-  toolRegistry.register(createContextWriteTool(fileMemory, contextIndexer));
+  toolRegistry.register(createContextWriteTool(fileMemory, contextIndexer, contextMetaGenerator));
 
   // --- SpawnAgentTool 注册（只有 Main Agent 会在工具列表中看到它） ---
   const spawnAgentTool = createSpawnAgentTool({

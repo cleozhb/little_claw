@@ -360,6 +360,18 @@ uv run podcast_tool translate cancel --job-id "podcast_20260503_9f3a2c" --json
 
 当前 `SkillLoader` 会扫描这两个位置。项目级 `.little_claw/skills` 优先级高于全局 `~/.little_claw/skills`。
 
+本仓库的 canonical source 是：
+
+```text
+.little_claw/skills/podcast-translation-skill/SKILL.md
+```
+
+不要只手工维护 `~/.little_claw/skills/podcast-translation-skill/SKILL.md`，那是运行时安装副本，机器迁移或清理时可能丢失。需要重建全局副本和本机 env 配置时运行：
+
+```bash
+bun run skills:install:podcast -- /home/zhanghuibin02/code/podcast_translation
+```
+
 推荐 `SKILL.md` frontmatter：
 
 ```markdown
@@ -376,6 +388,25 @@ metadata:
 ---
 ```
 
+如果 Python CLI 仍然在一个外部仓库里，不要在 `SKILL.md` 里硬编码绝对路径，也不要让 agent 自己 `cd` 到任意目录。把外部目录作为 skill 专属配置注入，并显式授权给 shell：
+
+```json
+{
+  "skills": {
+    "entries": {
+      "podcast-translation-skill": {
+        "env": {
+          "PODCAST_TOOL_DIR": "/home/zhanghuibin02/code/podcast_translation",
+          "LITTLE_CLAW_SHELL_ALLOWED_ROOTS": "/home/zhanghuibin02/code/podcast_translation"
+        }
+      }
+    }
+  }
+}
+```
+
+`LITTLE_CLAW_SHELL_ALLOWED_ROOTS` 可以用 `:` 分隔多个目录。它只给当前 skill 的 shell 调用放行这些目录，不会恢复全局文件系统访问。
+
 `SKILL.md` body 应该只保留操作规则，不要写长篇背景。核心内容：
 
 ```markdown
@@ -384,18 +415,18 @@ metadata:
 Use the Python CLI through `shell`. All commands must include `--json`.
 
 ## RSS
-- Find RSS: `cd /path/to/python/repo && uv run podcast_tool rss find --query "<name or keywords>" --json`
-- List episodes: `cd /path/to/python/repo && uv run podcast_tool episodes list --rss-url "<rss_url>" --limit 10 --json`
+- Find RSS: `cd "$PODCAST_TOOL_DIR" && uv run podcast_tool rss find --query "<name or keywords>" --json`
+- List episodes: `cd "$PODCAST_TOOL_DIR" && uv run podcast_tool episodes list --rss-url "<rss_url>" --limit 10 --json`
 
 ## Translation
 - Start translation only after explicit human approval.
-- Start command: `cd /path/to/python/repo && uv run podcast_tool translate start --rss-url "<rss_url>" --episode-id "<episode_id>" --target-lang "zh-CN" --voice-clone true --json`
+- Start command: `cd "$PODCAST_TOOL_DIR" && uv run podcast_tool translate start --rss-url "<rss_url>" --episode-id "<episode_id>" --target-lang "zh-CN" --voice-clone true --json`
 - Never wait for the full translation in a single shell call.
 - After start returns, record `job_id` in `context-hub/3-projects/podcast-translation/active-jobs.md` or `active-jobs.json`.
 
 ## Status
-- Poll status: `cd /path/to/python/repo && uv run podcast_tool translate status --job-id "<job_id>" --json`
-- List active jobs: `cd /path/to/python/repo && uv run podcast_tool translate list --status active --json`
+- Poll status: `cd "$PODCAST_TOOL_DIR" && uv run podcast_tool translate status --job-id "<job_id>" --json`
+- List active jobs: `cd "$PODCAST_TOOL_DIR" && uv run podcast_tool translate list --status active --json`
 - When completed, deliver `audio_zh`, `shownotes_zh`, and a short Chinese summary.
 - When failed, report `error.code`, `error.message`, and whether it is retryable.
 ```

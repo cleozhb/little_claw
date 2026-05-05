@@ -137,7 +137,7 @@ export class SkillManager {
     if (!managed) return {};
 
     const envOverrides = this.configManager.getEnvOverrides(skillName);
-    const result: Record<string, string> = {};
+    const result: Record<string, string> = { ...envOverrides };
 
     // 收集该 Skill 声明的所有环境变量
     const requiredEnvs = managed.parsed.requires.env;

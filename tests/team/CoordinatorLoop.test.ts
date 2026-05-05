@@ -238,7 +238,7 @@ describe("CoordinatorLoop", () => {
     ).toBe(true);
   });
 
-  test("project channel constrains coordinator skill retrieval to the owning agent skills", async () => {
+  test("project channel messages are delegated to the owning agent instead of coordinator execution", async () => {
     const skillsDir = join(agentDir, "skills");
     const podcastSkillDir = join(skillsDir, "podcast-translation-skill");
     const codeSkillDir = join(skillsDir, "code-helper");
@@ -297,8 +297,12 @@ code scoped marker
 
     await loop.tick();
 
-    expect(llm.calls[0]?.system).toContain("podcast scoped marker");
-    expect(llm.calls[0]?.system).not.toContain("code scoped marker");
+    expect(llm.calls).toHaveLength(0);
+    const task = tasks.listTasks({ project: "podcast-translation" })[0];
+    expect(task?.assignedTo).toBe("podcast-curator");
+    expect(task?.status).toBe("assigned");
+    expect(task?.sourceMessageId).toBeDefined();
+    expect(task?.description).toContain("看看有什么更新的播客");
   });
 
   test("project channel task creation inherits project context when the tool omits it", async () => {

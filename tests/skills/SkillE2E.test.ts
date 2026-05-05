@@ -528,6 +528,36 @@ Parse the JSON output and present the IP address to the user.
     expect(prompt).not.toContain("{baseDir}");
   });
 
+  test("SkillManager injects explicitly configured env overrides even when not declared", async () => {
+    writeFileSync(
+      CONFIG_PATH,
+      JSON.stringify({
+        skills: {
+          entries: {
+            "hello-world": {
+              env: {
+                LITTLE_CLAW_SHELL_ALLOWED_ROOTS: "/tmp/podcast-tool",
+                PODCAST_TOOL_DIR: "/tmp/podcast-tool",
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const config = new SkillConfigFile(CONFIG_PATH);
+    await config.load();
+
+    const loader = new TestSkillLoader(SKILLS_DIR);
+    const manager = new SkillManager(loader, config);
+    await manager.initializeAll();
+
+    expect(manager.getSkillEnv("hello-world")).toMatchObject({
+      LITTLE_CLAW_SHELL_ALLOWED_ROOTS: "/tmp/podcast-tool",
+      PODCAST_TOOL_DIR: "/tmp/podcast-tool",
+    });
+  });
+
   test("multiple {baseDir} occurrences are all replaced", async () => {
     const builder = new SkillPromptBuilder();
     const fakeSkill = {

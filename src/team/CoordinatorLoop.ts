@@ -253,6 +253,12 @@ export class CoordinatorLoop {
         .filter((message) => message.senderType === "human" && !message.taskId);
       if (pendingMessages.length === 0) continue;
 
+      const owner = this.findSingleProjectOwner(channel.slug);
+      if (owner) {
+        this.createProjectOwnerTask(channel, owner, pendingMessages);
+        return true;
+      }
+
       log.step("Coordinator handling project channel inbox", {
         project: channel.slug,
         pendingMessages: pendingMessages.length,
@@ -459,6 +465,45 @@ export class CoordinatorLoop {
 
     return uniqueStrings(skills);
   }
+
+  private findSingleProjectOwner(project: string): RegisteredAgent | null {
+    const normalizedProject = normalizeRoutingToken(project);
+    const owners = this.listAssignableAgents().filter((agent) =>
+      agentOwnsProject(agent, normalizedProject),
+    );
+    return owners.length === 1 ? owners[0]! : null;
+  }
+
+  private createProjectOwnerTask(
+    channel: { id: string; slug: string },
+    owner: RegisteredAgent,
+    pendingMessages: TeamMessage[],
+  ): Task {
+    const firstHumanMessage = pendingMessages.find((message) => message.senderType === "human");
+    const title = firstHumanMessage
+      ? titleFromMessage(firstHumanMessage.content)
+      : `Handle #${channel.slug} project update`;
+
+    log.step("Coordinator delegated project channel inbox to owning agent", {
+      project: channel.slug,
+      agent: owner.config.name,
+      messageCount: pendingMessages.length,
+    });
+
+    return this.tasks.createTask({
+      title,
+      description:
+        `Handle the pending human request(s) in #${channel.slug}.\n\n` +
+        `Project workspace: context-hub/3-projects/${channel.slug}\n\n` +
+        `Messages:\n${formatMessages(pendingMessages)}`,
+      project: channel.slug,
+      channelId: channel.id,
+      sourceMessageId: pendingMessages.length === 1 ? pendingMessages[0]?.id : undefined,
+      assignedTo: owner.config.name,
+      createdBy: this.coordinatorName,
+      priority: 0,
+    });
+  }
 }
 
 export function buildCoordinatorSystemPrompt(agent: RegisteredAgent): string {
@@ -547,6 +592,12 @@ function agentOwnsProject(agent: RegisteredAgent, normalizedProject: string): bo
 
 function normalizeRoutingToken(value: string): string {
   return value.trim().toLowerCase().replace(/^[@#]/, "");
+}
+
+function titleFromMessage(content: string): string {
+  const compact = content.replace(/\s+/g, " ").trim();
+  if (!compact) return "Handle project request";
+  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact;
 }
 
 function sleep(ms: number): Promise<void> {

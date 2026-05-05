@@ -8,7 +8,8 @@
     "cli": "bun run src/cli.ts",
     "dev": "bun run src/main.ts",
     "build": "tsc",
-    "test": "bun test"
+    "test": "bun test",
+    "skills:install:podcast": "bun run scripts/install-podcast-translation-skill.ts"
   },
   "keywords": [
     "llm",

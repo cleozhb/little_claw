@@ -1,6 +1,7 @@
 import type { Tool, ToolResult } from "../types.ts";
 import type { FileMemoryManager } from "../../memory/FileMemoryManager.ts";
 import type { ContextIndexer } from "../../memory/ContextIndexer.ts";
+import type { ContextMetaGenerator } from "../../memory/ContextMetaGenerator.ts";
 
 // ---------------------------------------------------------------------------
 // context_write — Agent 写入 context-hub 的工具
@@ -19,6 +20,7 @@ import type { ContextIndexer } from "../../memory/ContextIndexer.ts";
 export function createContextWriteTool(
   fileMemory: FileMemoryManager,
   contextIndexer?: ContextIndexer,
+  contextMetaGenerator?: ContextMetaGenerator,
 ): Tool {
   return {
     name: "context_write",
@@ -126,13 +128,16 @@ export function createContextWriteTool(
           await contextHub.writeFile(path, content, "append");
         }
 
-        // 写入后更新 overview（如果文件是新的，追加到 .overview.md）
-        await updateOverviewIfNeeded(contextHub, path);
+        // 写入后刷新派生元文件，确保 L0/L1 能发现新内容。
+        const reindexDirs = await refreshMetaAfterWrite(
+          contextHub,
+          path,
+          contextMetaGenerator,
+        );
 
         // 触发检索索引增量更新
         if (contextIndexer) {
-          const dirPath = path.substring(0, path.lastIndexOf("/"));
-          if (dirPath) {
+          for (const dirPath of reindexDirs) {
             try {
               await contextIndexer.reindexDir(dirPath);
             } catch {
@@ -161,33 +166,63 @@ export function createContextWriteTool(
 }
 
 /**
- * 写入新文件后，检查目录的 .overview.md 是否已列出该文件。
- * 如果没有，追加一行文件描述。
+ * 写入后刷新对应目录的元文件。优先使用 LLM 驱动的 ContextMetaGenerator；
+ * 没有 generator 时退化为“确保 overview 至少列出文件名”。
  */
-async function updateOverviewIfNeeded(
+async function refreshMetaAfterWrite(
   contextHub: import("../../memory/ContextHub.ts").ContextHub,
   filePath: string,
-): Promise<void> {
+  contextMetaGenerator?: ContextMetaGenerator,
+): Promise<string[]> {
   const lastSlash = filePath.lastIndexOf("/");
-  if (lastSlash < 0) return;
+  if (lastSlash < 0) return [];
 
   const dirPath = filePath.substring(0, lastSlash);
   const fileName = filePath.substring(lastSlash + 1);
+  const isMetaFile = fileName === ".abstract.md" || fileName === ".overview.md";
+  const affectedDirs = affectedMetadataDirs(filePath, dirPath);
 
-  // 跳过元文件本身
-  if (fileName === ".abstract.md" || fileName === ".overview.md") return;
+  if (!isMetaFile && contextMetaGenerator) {
+    for (const dir of affectedDirs) {
+      await contextMetaGenerator.refreshDirectory(dir);
+    }
+    return affectedDirs;
+  }
 
+  if (!isMetaFile) {
+    for (const dir of affectedDirs) {
+      await updateOverviewIfNeeded(contextHub, dir, fileName);
+    }
+  }
+
+  return affectedDirs;
+}
+
+async function updateOverviewIfNeeded(
+  contextHub: import("../../memory/ContextHub.ts").ContextHub,
+  dirPath: string,
+  fileName: string,
+): Promise<void> {
   const overview = await contextHub.readOverview(dirPath);
   if (!overview) return;
-
-  // 检查 overview 中是否已列出这个文件
   if (overview.includes(fileName)) return;
 
-  // 追加一行
   const line = `\n- ${fileName} — (auto-added ${new Date().toISOString().slice(0, 10)})`;
   await contextHub.writeFile(
     `${dirPath}/.overview.md`,
     overview + line,
     "overwrite",
   );
+}
+
+function affectedMetadataDirs(filePath: string, directDir: string): string[] {
+  const dirs = new Set<string>();
+  if (directDir) dirs.add(directDir);
+
+  const parts = filePath.split("/");
+  if ((parts[0] === "3-projects" || parts[0] === "2-areas") && parts[1]) {
+    dirs.add(`${parts[0]}/${parts[1]}`);
+  }
+
+  return [...dirs];
 }
