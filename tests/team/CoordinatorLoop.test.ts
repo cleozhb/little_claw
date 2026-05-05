@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "../../src/db/Database.ts";
 import type { ChatOptions, LLMProvider } from "../../src/llm/types.ts";
+import { LocalEmbeddingProvider } from "../../src/memory/EmbeddingProvider.ts";
 import { AgentRegistry } from "../../src/team/AgentRegistry.ts";
 import { CoordinatorLoop } from "../../src/team/CoordinatorLoop.ts";
 import { ProjectChannelStore } from "../../src/team/ProjectChannelStore.ts";
+import { SkillConfigFile } from "../../src/skills/SkillConfigFile.ts";
+import { SkillLoader } from "../../src/skills/SkillLoader.ts";
+import { SkillManager } from "../../src/skills/SkillManager.ts";
+import { SkillMarkdownParser } from "../../src/skills/SkillMarkdownParser.ts";
 import { TaskQueue } from "../../src/team/TaskQueue.ts";
 import { TeamMessageStore } from "../../src/team/TeamMessageStore.ts";
 import { ToolRegistry } from "../../src/tools/ToolRegistry.ts";
@@ -21,6 +26,28 @@ let channels: ProjectChannelStore;
 let agents: AgentRegistry;
 let toolRegistry: ToolRegistry;
 let agentDir: string;
+
+class TestSkillLoader extends SkillLoader {
+  constructor(private testDir: string) {
+    super();
+  }
+
+  override async loadAll() {
+    const parser = new SkillMarkdownParser();
+    const glob = new Bun.Glob("*/SKILL.md");
+    const results = [];
+
+    for await (const match of glob.scan({
+      cwd: this.testDir,
+      absolute: true,
+    })) {
+      const parsed = await parser.parse(match);
+      results.push({ parsed, source: match });
+    }
+
+    return results;
+  }
+}
 
 beforeEach(() => {
   db = new Database(TEST_DB);
@@ -209,6 +236,69 @@ describe("CoordinatorLoop", () => {
         .listMessages(channel.slug)
         .some((message) => message.senderId === "coordinator" && message.content === "已创建调查任务。"),
     ).toBe(true);
+  });
+
+  test("project channel constrains coordinator skill retrieval to the owning agent skills", async () => {
+    const skillsDir = join(agentDir, "skills");
+    const podcastSkillDir = join(skillsDir, "podcast-translation-skill");
+    const codeSkillDir = join(skillsDir, "code-helper");
+    mkdirSync(podcastSkillDir, { recursive: true });
+    mkdirSync(codeSkillDir, { recursive: true });
+    writeFileSync(
+      join(podcastSkillDir, "SKILL.md"),
+      `---
+name: podcast-translation-skill
+description: Podcast curation and translation workflow for finding updated podcast episodes
+tags:
+  - podcast
+  - translation
+---
+
+# Podcast Skill
+
+podcast scoped marker
+`,
+    );
+    writeFileSync(
+      join(codeSkillDir, "SKILL.md"),
+      `---
+name: code-helper
+description: Podcast unrelated TypeScript coding workflow
+tags:
+  - podcast
+  - code
+---
+
+# Code Skill
+
+code scoped marker
+`,
+    );
+    writeFileSync(join(agentDir, "skill-config.json"), JSON.stringify({ skills: { entries: {} } }));
+    createPodcastCurator();
+
+    const config = new SkillConfigFile(join(agentDir, "skill-config.json"));
+    await config.load();
+    const skillManager = new SkillManager(
+      new TestSkillLoader(skillsDir),
+      config,
+      { db, embeddingProvider: new LocalEmbeddingProvider() },
+    );
+    await skillManager.initializeAll();
+
+    const channel = channels.createChannel({ slug: "podcast-translation", title: "Podcast Translation" });
+    channels.postMessage(channel.slug, {
+      senderType: "human",
+      senderId: "ceo",
+      content: "看看有什么更新的播客",
+    });
+    const llm = new ScriptedLLM([{ type: "text", text: "我会查看更新的播客。" }]);
+    const loop = coordinatorLoop(llm, { skillManager });
+
+    await loop.tick();
+
+    expect(llm.calls[0]?.system).toContain("podcast scoped marker");
+    expect(llm.calls[0]?.system).not.toContain("code scoped marker");
   });
 
   test("project channel task creation inherits project context when the tool omits it", async () => {
@@ -408,6 +498,23 @@ function createCoder() {
     },
     soul: "# Soul\nCoder soul.\n",
     operatingInstructions: "# Agent Operating Instructions\nImplement carefully.\n",
+  });
+}
+
+function createPodcastCurator() {
+  return agents.create("podcast-curator", {
+    config: {
+      name: "podcast-curator",
+      role: "Curate and translate podcasts.",
+      aliases: ["podcast", "curator"],
+      default_project: "podcast-translation",
+      tools: [],
+      skills: ["podcast-translation-skill"],
+      task_tags: ["podcast", "translation"],
+      timeout_minutes: 1,
+    },
+    soul: "# Soul\nPodcast curator soul.\n",
+    operatingInstructions: "# Agent Operating Instructions\nCurate podcast updates carefully.\n",
   });
 }
 

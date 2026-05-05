@@ -9,6 +9,8 @@ import { SkillConfigFile } from "../../src/skills/SkillConfigFile";
 import { AgentLoop } from "../../src/core/AgentLoop";
 import { EphemeralConversation } from "../../src/core/EphemeralConversation";
 import { ToolRegistry } from "../../src/tools/ToolRegistry";
+import { Database } from "../../src/db/Database";
+import { LocalEmbeddingProvider } from "../../src/memory/EmbeddingProvider";
 import type { ChatOptions, LLMProvider } from "../../src/llm/types";
 import type { Message, StreamEvent } from "../../src/types/message";
 
@@ -275,6 +277,133 @@ unconfigured skill body marker
     const firstSystem = llm.calls[0]?.system ?? "";
     expect(firstSystem).toContain("configured skill body marker");
     expect(firstSystem).not.toContain("unconfigured skill body marker");
+  });
+
+  test("AgentLoop does not inject all skills when retrieval is unavailable", async () => {
+    const isolatedSkillsDir = join(TEST_DIR, "no-retriever-skills");
+    const podcastDir = join(isolatedSkillsDir, "podcast-translation-skill");
+    const codeDir = join(isolatedSkillsDir, "code-helper");
+    mkdirSync(podcastDir, { recursive: true });
+    mkdirSync(codeDir, { recursive: true });
+    writeFileSync(
+      join(podcastDir, "SKILL.md"),
+      `---
+name: podcast-translation-skill
+description: Podcast curation and translation workflow
+---
+
+# Podcast Skill
+
+podcast body marker
+`,
+    );
+    writeFileSync(
+      join(codeDir, "SKILL.md"),
+      `---
+name: code-helper
+description: Coding help workflow
+---
+
+# Code Skill
+
+code body marker
+`,
+    );
+    writeFileSync(CONFIG_PATH, JSON.stringify({ skills: { entries: {} } }));
+
+    const config = new SkillConfigFile(CONFIG_PATH);
+    await config.load();
+    const manager = new SkillManager(new TestSkillLoader(isolatedSkillsDir), config);
+    await manager.initializeAll();
+
+    const llm = new CapturingLLM("done");
+    const loop = new AgentLoop(
+      llm,
+      new ToolRegistry(),
+      new EphemeralConversation("test no retriever skill scope"),
+      { skillManager: manager },
+    );
+
+    for await (const _event of loop.run("general coordinator message")) {}
+
+    const firstSystem = llm.calls[0]?.system ?? "";
+    expect(firstSystem).not.toContain("podcast body marker");
+    expect(firstSystem).not.toContain("code body marker");
+    expect(firstSystem).not.toContain("<available_skills>");
+  });
+
+  test("AgentLoop injects only relevant retrieved skills for unconfigured agents", async () => {
+    const isolatedSkillsDir = join(TEST_DIR, "retrieved-filter-skills");
+    const podcastDir = join(isolatedSkillsDir, "podcast-translation-skill");
+    const codeDir = join(isolatedSkillsDir, "code-helper");
+    mkdirSync(podcastDir, { recursive: true });
+    mkdirSync(codeDir, { recursive: true });
+    writeFileSync(
+      join(podcastDir, "SKILL.md"),
+      `---
+name: podcast-translation-skill
+description: Podcast curation and translation workflow for finding updated podcast episodes
+tags:
+  - podcast
+  - translation
+---
+
+# Podcast Skill
+
+podcast retrieved marker
+`,
+    );
+    writeFileSync(
+      join(codeDir, "SKILL.md"),
+      `---
+name: code-helper
+description: TypeScript implementation and testing workflow
+tags:
+  - code
+  - test
+---
+
+# Code Skill
+
+code retrieved marker
+`,
+    );
+    writeFileSync(CONFIG_PATH, JSON.stringify({ skills: { entries: {} } }));
+
+    const dbPath = join(TEST_DIR, "retrieved-filter-skills.db");
+    rmSync(dbPath, { force: true });
+    rmSync(`${dbPath}-wal`, { force: true });
+    rmSync(`${dbPath}-shm`, { force: true });
+    const db = new Database(dbPath);
+    try {
+      const config = new SkillConfigFile(CONFIG_PATH);
+      await config.load();
+      const manager = new SkillManager(
+        new TestSkillLoader(isolatedSkillsDir),
+        config,
+        { db, embeddingProvider: new LocalEmbeddingProvider() },
+      );
+      await manager.initializeAll();
+
+      const llm = new CapturingLLM("done");
+      const loop = new AgentLoop(
+        llm,
+        new ToolRegistry(),
+        new EphemeralConversation("test retrieved skill scope"),
+        { skillManager: manager },
+      );
+
+      for await (const _event of loop.run("project=podcast-translation\n看看有什么更新的播客")) {}
+
+      const firstSystem = llm.calls[0]?.system ?? "";
+      expect(firstSystem).toContain("podcast retrieved marker");
+      expect(firstSystem).not.toContain("code retrieved marker");
+    } finally {
+      db.close();
+      rmSync(dbPath, { force: true });
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+    }
   });
 
   test("SkillManager.reload() re-scans and picks up new skills", async () => {

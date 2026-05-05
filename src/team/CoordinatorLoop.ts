@@ -290,6 +290,9 @@ export class CoordinatorLoop {
       }),
       skillManager: this.skillManager,
       configuredSkillNames: coordinator.config.skills,
+      skillScopeNames: replyTarget.replyChannelType === "project"
+        ? this.inferProjectSkillScope(replyTarget.project)
+        : [],
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,
@@ -443,6 +446,19 @@ export class CoordinatorLoop {
       sourceMessageId: sourceMessages.length === 1 ? sourceMessages[0]?.id : undefined,
     };
   }
+
+  private inferProjectSkillScope(project: string): string[] {
+    const normalizedProject = normalizeRoutingToken(project);
+    const skills: string[] = [];
+
+    for (const agent of this.listActiveAgents()) {
+      if (agent.config.name === this.coordinatorName) continue;
+      if (!agentOwnsProject(agent, normalizedProject)) continue;
+      skills.push(...agent.config.skills);
+    }
+
+    return uniqueStrings(skills);
+  }
 }
 
 export function buildCoordinatorSystemPrompt(agent: RegisteredAgent): string {
@@ -516,6 +532,21 @@ function hasOverlap(left: string[], right: string[]): boolean {
 
 function uniqueStrings(items: readonly string[]): string[] {
   return [...new Set(items)];
+}
+
+function agentOwnsProject(agent: RegisteredAgent, normalizedProject: string): boolean {
+  const projectTokens = [
+    agent.config.name,
+    agent.config.default_project,
+    ...agent.config.aliases,
+    ...agent.config.cron_jobs.map((job) => job.project),
+    ...(agent.config.watchers ?? []).map((watcher) => watcher.project),
+  ];
+  return projectTokens.some((token) => token && normalizeRoutingToken(token) === normalizedProject);
+}
+
+function normalizeRoutingToken(value: string): string {
+  return value.trim().toLowerCase().replace(/^[@#]/, "");
 }
 
 function sleep(ms: number): Promise<void> {
