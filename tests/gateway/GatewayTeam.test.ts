@@ -180,7 +180,7 @@ describe("Gateway team protocol", () => {
     expect(pushed?.message.id).toBe(routed?.message.id);
   });
 
-  test("lists project channels and messages", () => {
+  test("lists project channels and messages", async () => {
     (gateway as any).dispatch("conn-1", {
       type: "send_project_message",
       project: "lovely-octopus",
@@ -194,6 +194,7 @@ describe("Gateway team protocol", () => {
       type: "get_project_channel",
       project: "lovely-octopus",
     });
+    await sleep(20);
 
     const channelsList = sent.find((msg) => msg.type === "project_channels_list");
     const loaded = sent.find((msg) => msg.type === "project_channel_loaded");
@@ -240,6 +241,33 @@ describe("Gateway team protocol", () => {
     expect(listed?.channels.map((channel: any) => channel.slug)).toContain("new-project");
     expect(await hub.readOverview("3-projects/new-project")).toContain("# New Project");
     expect(await hub.readFile("3-projects/new-project/status.md")).toContain("Project channel created");
+  });
+
+  test("imports manually created context-hub project directories into project channels", async () => {
+    const hub = new ContextHub(contextDir);
+    await hub.writeFile(
+      "3-projects/manual-import/.overview.md",
+      "# Manual Import\n\n## Status\nCreated outside Mission Control.\n",
+      "overwrite",
+    );
+    await hub.writeFile(
+      "3-projects/manual-import/.abstract.md",
+      "Project created directly in context-hub.",
+      "overwrite",
+    );
+
+    (gateway as any).dispatch("conn-1", {
+      type: "list_project_channels",
+    });
+    await sleep(20);
+
+    const listed = sent.find((msg) => msg.type === "project_channels_list");
+    const imported = listed?.channels.find((channel: any) => channel.slug === "manual-import");
+
+    expect(imported?.title).toBe("Manual Import");
+    expect(imported?.description).toBe("Project created directly in context-hub.");
+    expect(imported?.contextPath).toBe("context-hub/3-projects/manual-import");
+    expect(channels.getChannel("manual-import")?.title).toBe("Manual Import");
   });
 
   test("broadcasts non-human team messages created by workers", () => {

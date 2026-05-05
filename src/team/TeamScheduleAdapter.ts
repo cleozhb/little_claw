@@ -1,5 +1,6 @@
 import type { AgentRegistry } from "./AgentRegistry.ts";
 import type { Task, TaskQueue } from "./TaskQueue.ts";
+import type { ContextHub } from "../memory/ContextHub.ts";
 import type {
   TeamSchedule,
   TeamScheduleRun,
@@ -7,6 +8,8 @@ import type {
   TeamScheduleRunTriggerType,
 } from "./TeamScheduleStore.ts";
 import type { TeamScheduleTrigger } from "./TeamSchedulers.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export interface TeamScheduleAdapterResult {
   schedule: TeamSchedule;
@@ -20,18 +23,21 @@ export interface TeamScheduleAdapterOptions {
   schedules: TeamScheduleStore;
   agents: AgentRegistry;
   tasks: TaskQueue;
+  contextHub?: ContextHub;
 }
 
 export class TeamScheduleAdapter {
   private schedules: TeamScheduleStore;
   private agents: AgentRegistry;
   private tasks: TaskQueue;
+  private contextHub?: ContextHub;
   private handlers = new Set<TeamScheduleRunHandler>();
 
   constructor(options: TeamScheduleAdapterOptions) {
     this.schedules = options.schedules;
     this.agents = options.agents;
     this.tasks = options.tasks;
+    this.contextHub = options.contextHub;
   }
 
   onRun(handler: TeamScheduleRunHandler): () => void {
@@ -65,6 +71,10 @@ export class TeamScheduleAdapter {
     }
     if (agent.config.status !== "active") {
       return this.recordSkipped(schedule, options, `Agent is ${agent.config.status}`);
+    }
+    const skipReason = this.getPreflightSkipReason(schedule, options);
+    if (skipReason) {
+      return this.recordSkipped(schedule, options, skipReason);
     }
 
     try {
@@ -124,6 +134,20 @@ export class TeamScheduleAdapter {
     }
     return result;
   }
+
+  private getPreflightSkipReason(
+    schedule: TeamSchedule,
+    options: { triggerType: TeamScheduleRunTriggerType },
+  ): string | null {
+    if (options.triggerType === "manual") return null;
+    if (schedule.sourceKey !== "podcast-curator:cron:podcast-translation-status-check") {
+      return null;
+    }
+    if (hasActivePodcastTranslationJob(this.contextHub, schedule.project)) {
+      return null;
+    }
+    return "No active podcast translation jobs recorded; skipping status check.";
+  }
 }
 
 function buildScheduledTaskDescription(schedule: TeamSchedule, checkOutput?: string): string {
@@ -160,3 +184,75 @@ function buildTriggerPayload(schedule: TeamSchedule, checkOutput?: string): Reco
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim() !== "")));
 }
+
+function hasActivePodcastTranslationJob(contextHub: ContextHub | undefined, project: string | undefined): boolean {
+  if (!contextHub || project !== "podcast-translation") return false;
+
+  const projectDir = join(contextHub.getHubDir(), "3-projects", project);
+  const jsonPath = join(projectDir, "active-jobs.json");
+  const mdPath = join(projectDir, "active-jobs.md");
+
+  if (existsSync(jsonPath) && jsonHasActiveJob(readTextFile(jsonPath))) {
+    return true;
+  }
+  if (existsSync(mdPath) && markdownHasActiveJob(readTextFile(mdPath))) {
+    return true;
+  }
+  return false;
+}
+
+function readTextFile(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function jsonHasActiveJob(content: string): boolean {
+  if (!content.trim()) return false;
+  try {
+    return hasActiveJobRecord(JSON.parse(content));
+  } catch {
+    return false;
+  }
+}
+
+function hasActiveJobRecord(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(hasActiveJobRecord);
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.jobs)) {
+    return record.jobs.some(hasActiveJobRecord);
+  }
+  if (Object.values(record).some((item) => item && typeof item === "object" && hasActiveJobRecord(item))) {
+    return true;
+  }
+
+  const status = typeof record.status === "string" ? record.status.toLowerCase() : "";
+  if (!status) return typeof record.job_id === "string" || typeof record.jobId === "string";
+  return ACTIVE_JOB_STATUSES.has(status);
+}
+
+function markdownHasActiveJob(content: string): boolean {
+  const text = content.toLowerCase();
+  if (!text.includes("job_id") && !text.includes("job id")) return false;
+  return ACTIVE_MARKDOWN_STATUS_RE.test(text);
+}
+
+const ACTIVE_JOB_STATUSES = new Set([
+  "active",
+  "pending",
+  "queued",
+  "running",
+  "processing",
+  "in_progress",
+  "started",
+]);
+
+const ACTIVE_MARKDOWN_STATUS_RE = /\b(active|pending|queued|running|processing|in[_ -]?progress|started)\b/;

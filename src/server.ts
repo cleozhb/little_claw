@@ -166,6 +166,7 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     schedules: teamSchedules,
     agents: agentRegistry,
     tasks: taskQueue,
+    contextHub: options.contextHub,
   });
   teamCronScheduler.onTrigger((event) => {
     teamScheduleAdapter.handleTrigger(event);

@@ -86,7 +86,12 @@ const RETRO_COLORS = [
   "#ff6b35", // orange
 ];
 
+const AGENT_COLOR_OVERRIDES: Record<string, string> = {
+  "podcast-curator": "#9b5de5", // purple
+};
+
 function retroColor(name: string) {
+  if (AGENT_COLOR_OVERRIDES[name]) return AGENT_COLOR_OVERRIDES[name];
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
   return RETRO_COLORS[Math.abs(hash) % RETRO_COLORS.length];

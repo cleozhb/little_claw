@@ -148,6 +148,7 @@ export class GatewayServer {
   private onSessionSwitch?: (oldSessionId: string, newSessionId: string) => void;
   private port: number;
   private hostname: string;
+  private projectContextReconcile: Promise<void> | null = null;
 
   // 健康监控
   private healthChecker: HealthChecker;
@@ -250,6 +251,13 @@ export class GatewayServer {
       if (newStatus.status === "down" || newStatus.status === "degraded") {
         this.broadcastHealthAlert(name, oldStatus, newStatus);
       }
+    });
+
+    this.reconcileProjectContexts().catch((err) => {
+      console.error(
+        "[Gateway] Failed to reconcile context-hub projects:",
+        err instanceof Error ? err.message : String(err),
+      );
     });
   }
 
@@ -1189,10 +1197,19 @@ export class GatewayServer {
       this.sendToConnection(connectionId, { type: "project_channels_list", channels: [] });
       return;
     }
-    this.sendToConnection(connectionId, {
-      type: "project_channels_list",
-      channels: this.projectChannels.listChannels({ status, limit }).map(serializeProjectChannel),
-    });
+    this.reconcileProjectContexts({ forceFresh: true })
+      .then(() => {
+        this.sendToConnection(connectionId, {
+          type: "project_channels_list",
+          channels: this.projectChannels!.listChannels({ status, limit }).map(serializeProjectChannel),
+        });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Failed to list project channels: ${errorMessage(err)}`,
+        });
+      });
   }
 
   private handleGetProjectChannel(connectionId: string, project: string, limit?: number): void {
@@ -1409,6 +1426,46 @@ export class GatewayServer {
       `# ${channel.title} Status\n\n## Current State\n- Project channel created for #${channel.slug}.\n\n## Decisions\n\n## Next Actions\n`,
       "overwrite",
     );
+  }
+
+  private async reconcileProjectContexts(options: { forceFresh?: boolean } = {}): Promise<void> {
+    if (!this.projectChannels || !this.contextHub) return;
+    if (this.projectContextReconcile) {
+      await this.projectContextReconcile;
+      if (!options.forceFresh) return;
+    }
+
+    this.projectContextReconcile = this.importMissingProjectContexts()
+      .finally(() => {
+        this.projectContextReconcile = null;
+      });
+    return this.projectContextReconcile;
+  }
+
+  private async importMissingProjectContexts(): Promise<void> {
+    if (!this.projectChannels || !this.contextHub) return;
+
+    const dirs = await this.contextHub.listDirectories();
+    for (const dir of dirs) {
+      const match = /^context-hub\/3-projects\/([^/]+)$/.exec(dir);
+      if (!match) continue;
+
+      const slug = match[1]!;
+      if (!/^[a-z0-9][a-z0-9_-]*$/.test(slug)) continue;
+      if (this.projectChannels.getChannel(slug)) continue;
+
+      const overview = await this.contextHub.readOverview(`3-projects/${slug}`);
+      const abstract = await this.contextHub.readFile(`3-projects/${slug}/.abstract.md`);
+      const title = extractProjectTitle(overview) ?? titleFromSlug(slug);
+      const description = abstract?.trim() || undefined;
+
+      this.projectChannels.createChannel({
+        slug,
+        title,
+        description,
+        contextPath: defaultProjectContextPath(slug),
+      });
+    }
   }
 
   // ----------------------------------------------------------
@@ -2334,6 +2391,12 @@ function titleFromSlug(slug: string): string {
     .filter(Boolean)
     .map((part) => part[0]!.toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function extractProjectTitle(overview: string | null): string | null {
+  if (!overview) return null;
+  const match = /^#\s+(.+)\s*$/m.exec(overview);
+  return match?.[1]?.trim() || null;
 }
 
 function normalizeProjectContextPath(slug: string, contextPath?: string): string {

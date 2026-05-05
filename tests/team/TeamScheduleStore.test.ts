@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "../../src/db/Database.ts";
+import { ContextHub } from "../../src/memory/ContextHub.ts";
 import { AgentRegistry } from "../../src/team/AgentRegistry.ts";
 import { TaskQueue } from "../../src/team/TaskQueue.ts";
 import { TeamScheduleAdapter } from "../../src/team/TeamScheduleAdapter.ts";
@@ -189,6 +190,66 @@ describe("TeamScheduleAdapter", () => {
     expect(result.run.status).toBe("skipped");
     expect(result.run.error).toContain("paused");
     expect(tasks.listTasks()).toHaveLength(0);
+  });
+
+  test("automatic podcast translation status check skips when no active job is recorded", () => {
+    writeAgent("podcast-curator", validAgentYaml("podcast-curator", "active"));
+    const registry = new AgentRegistry(agentDir);
+    registry.loadAll();
+    const tasks = new TaskQueue(db);
+    const schedules = new TeamScheduleStore(db);
+    const contextHub = new ContextHub(agentDir);
+    const schedule = schedules.createSchedule({
+      source: "agent_yaml",
+      sourceKey: "podcast-curator:cron:podcast-translation-status-check",
+      type: "cron",
+      name: "Podcast Translation Status Check",
+      agentName: "podcast-curator",
+      prompt: "Check active podcast translation jobs",
+      cronExpr: "*/10 * * * *",
+      project: "podcast-translation",
+      tags: ["scheduled", "podcast", "translation", "status-check"],
+    });
+    const adapter = new TeamScheduleAdapter({ schedules, agents: registry, tasks, contextHub });
+
+    const result = adapter.handleTrigger({ type: "team_cron_trigger", schedule });
+
+    expect(result.run.status).toBe("skipped");
+    expect(result.run.error).toContain("No active podcast translation jobs");
+    expect(tasks.listTasks()).toHaveLength(0);
+  });
+
+  test("automatic podcast translation status check runs when an active job is recorded", () => {
+    writeAgent("podcast-curator", validAgentYaml("podcast-curator", "active"));
+    const registry = new AgentRegistry(agentDir);
+    registry.loadAll();
+    const tasks = new TaskQueue(db);
+    const schedules = new TeamScheduleStore(db);
+    const contextHub = new ContextHub(agentDir);
+    const projectDir = join(agentDir, "context-hub", "3-projects", "podcast-translation");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "active-jobs.json"),
+      JSON.stringify([{ job_id: "podcast_20260503_9f3a2c", status: "queued" }]),
+      "utf8",
+    );
+    const schedule = schedules.createSchedule({
+      source: "agent_yaml",
+      sourceKey: "podcast-curator:cron:podcast-translation-status-check",
+      type: "cron",
+      name: "Podcast Translation Status Check",
+      agentName: "podcast-curator",
+      prompt: "Check active podcast translation jobs",
+      cronExpr: "*/10 * * * *",
+      project: "podcast-translation",
+      tags: ["scheduled", "podcast", "translation", "status-check"],
+    });
+    const adapter = new TeamScheduleAdapter({ schedules, agents: registry, tasks, contextHub });
+
+    const result = adapter.handleTrigger({ type: "team_cron_trigger", schedule });
+
+    expect(result.run.status).toBe("created");
+    expect(tasks.listTasks()).toHaveLength(1);
   });
 });
 

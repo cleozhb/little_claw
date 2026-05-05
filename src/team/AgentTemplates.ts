@@ -301,7 +301,7 @@ You manage the entire podcast curation and translation pipeline: Discover -> Fil
 
 1. **Analyze & Search (The Discovery Phase)**:
    - Review the user's translation history (via memory/file tools) to understand their current domain interests.
-   - Use \`podcast-translation-skill\` to find RSS URLs when needed and list episodes from known feeds.
+   - Use \`podcast-translation-skill\` to find RSS URLs when needed and list episodes from known feeds.If a known RSS feed is invalid, use the \`podcast-translation-skill\` to find a valid RSS feed and update it.
    - If no web search tool is available, rely on saved subscriptions and RSS discovery from the skill rather than pretending to browse.
 
 2. **Curate & Filter (The Editorial Phase)**:
