@@ -216,7 +216,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const [selectedChannel, setSelectedChannel] = useState<ChannelSelection>({
     type: "all",
     id: "all",
-    label: "All team messages",
+    label: "Command Center",
   });
   const [error, setError] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<string | null>(null);
@@ -340,6 +340,21 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       const text = content.trim();
       if (!text) return;
 
+      const mentionedAgent = selectedChannel.type === "project" ? findLeadingAgentMention(text, agents) : undefined;
+      if (selectedChannel.type === "project" && mentionedAgent) {
+        send(
+          {
+            type: "send_agent_dm",
+            agentName: mentionedAgent.name,
+            project: selectedChannel.project,
+            content: text,
+            userId: "mission-control",
+          },
+          `已发送到 @${mentionedAgent.name}，并归入 #${selectedChannel.project}`,
+        );
+        return;
+      }
+
       if (shouldUseTeamRouter(text, selectedChannel)) {
         send(
           { type: "route_human_message", text, externalChannel: "websocket", userId: "mission-control" },
@@ -379,7 +394,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         "已提交团队消息",
       );
     },
-    [selectedChannel, send],
+    [selectedChannel, agents, send],
   );
 
   useEffect(() => {
@@ -891,9 +906,9 @@ export function ChannelsView() {
           <ChannelButton
             active={selectedChannel.type === "all"}
             icon={<Inbox className="h-3.5 w-3.5" />}
-            label="All team messages"
-            meta={`${timelineMessages.length} loaded`}
-            onClick={() => selectChannel({ type: "all", id: "all", label: "All team messages" })}
+            label="Command Center"
+            meta="Global entry"
+            onClick={() => selectChannel({ type: "all", id: "all", label: "Command Center" })}
           />
           <ChannelGroup title="Projects">
             {channels.length === 0 ? (
@@ -919,7 +934,7 @@ export function ChannelsView() {
               ))
             )}
           </ChannelGroup>
-          <ChannelGroup title="Agent DM">
+          <ChannelGroup title="Agent Threads">
             {agents.length === 0 ? (
               <EmptyLine text="No agents" />
             ) : (
@@ -952,7 +967,11 @@ export function ChannelsView() {
         <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{selectedChannel.label}</div>
-            <div className="text-[10px] text-muted-foreground">{timelineMessages.length} messages</div>
+            <div className="text-[10px] text-muted-foreground">
+              {selectedChannel.type === "all"
+                ? `${timelineMessages.length} messages · default to Coordinator`
+                : `${timelineMessages.length} messages`}
+            </div>
           </div>
         </div>
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
@@ -980,7 +999,11 @@ export function ChannelsView() {
               }}
               agents={agents}
               channels={channels}
-              placeholder="@coder review this, #lovely-octopus update, /task ..."
+              placeholder={
+                selectedChannel.type === "all"
+                  ? "Message Coordinator, @agent, #project, or /task ..."
+                  : "@agent, #project update, /task ..."
+              }
               className="max-h-32 min-h-12 resize-none text-sm"
               disabled={connectionStatus !== "connected"}
             />
@@ -2267,6 +2290,18 @@ function messageMatchesSelection(message: TeamMessageInfo, selection: ChannelSel
 
 function messageProjectKey(message: TeamMessageInfo) {
   return message.project ?? message.channelId;
+}
+
+function findLeadingAgentMention(text: string, agents: AgentInfo[]): AgentInfo | undefined {
+  const match = text.trim().match(/^@([\w-]+)/);
+  const rawMention = match?.[1];
+  if (!rawMention) return undefined;
+
+  const mention = rawMention.toLowerCase();
+  return agents.find((agent) => {
+    if (agent.name.toLowerCase() === mention) return true;
+    return agent.aliases?.some((alias: string) => alias.toLowerCase() === mention);
+  });
 }
 
 /**

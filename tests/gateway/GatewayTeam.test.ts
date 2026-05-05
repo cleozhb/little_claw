@@ -137,6 +137,13 @@ describe("Gateway team protocol", () => {
     })).type).toBe("create_project_channel");
 
     expect(parseClientMessage(JSON.stringify({
+      type: "send_agent_dm",
+      agentName: "coder",
+      content: "看一下项目里的这个问题",
+      project: "lovely-octopus",
+    })).type).toBe("send_agent_dm");
+
+    expect(parseClientMessage(JSON.stringify({
       type: "list_team_schedules",
       agentName: "coder",
     })).type).toBe("list_team_schedules");
@@ -202,6 +209,28 @@ describe("Gateway team protocol", () => {
     expect(channelsList?.channels.map((channel: any) => channel.slug)).toContain("lovely-octopus");
     expect(loaded?.channel.slug).toBe("lovely-octopus");
     expect(loaded?.messages[0].content).toBe("推进 Gateway 集成");
+  });
+
+  test("loads agent DMs with project context in project timeline", async () => {
+    (gateway as any).dispatch("conn-1", {
+      type: "send_agent_dm",
+      agentName: "coder",
+      project: "lovely-octopus",
+      content: "@coder 看一下这个项目问题",
+      userId: "ceo",
+    });
+    (gateway as any).dispatch("conn-1", {
+      type: "get_project_channel",
+      project: "lovely-octopus",
+    });
+    await sleep(20);
+
+    const loaded = sent.findLast((msg) => msg.type === "project_channel_loaded");
+
+    expect(loaded?.channel.slug).toBe("lovely-octopus");
+    expect(loaded?.messages.map((message: any) => message.content)).toContain("@coder 看一下这个项目问题");
+    expect(loaded?.messages[0].channelType).toBe("agent_dm");
+    expect(loaded?.messages[0].project).toBe("lovely-octopus");
   });
 
   test("loads team agent file details", () => {

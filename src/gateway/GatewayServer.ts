@@ -536,6 +536,7 @@ export class GatewayServer {
         return this.handleRouteHumanMessage(connectionId, msg);
       case "send_agent_dm":
         return this.handleSendAgentDm(connectionId, msg.agentName, msg.content, {
+          project: msg.project,
           userId: msg.userId,
           priority: msg.priority,
           taskId: msg.taskId,
@@ -1032,7 +1033,7 @@ export class GatewayServer {
     connectionId: string,
     agentName: string,
     content: string,
-    options: { userId?: string; priority?: TeamMessagePriority; taskId?: string },
+    options: { project?: string; userId?: string; priority?: TeamMessagePriority; taskId?: string },
   ): void {
     if (!this.teamMessages) {
       this.sendToConnection(connectionId, { type: "error", message: "Team mode not configured" });
@@ -1040,9 +1041,13 @@ export class GatewayServer {
     }
 
     try {
+      if (options.project && this.projectChannels) {
+        this.ensureProjectChannel(options.project);
+      }
       const message = this.teamMessages.createMessage({
         channelType: "agent_dm",
         channelId: agentName,
+        project: options.project,
         taskId: options.taskId,
         senderType: "human",
         senderId: options.userId ?? connectionId,
@@ -1137,7 +1142,7 @@ export class GatewayServer {
       this.sendToConnection(connectionId, {
         type: "project_channel_loaded",
         channel: serializeProjectChannel(channel),
-        messages: this.projectChannels.listMessages(channel.slug).map(serializeTeamMessage),
+        messages: this.listProjectTimelineMessages(channel.slug).map(serializeTeamMessage),
       });
     } catch (err) {
       this.sendToConnection(connectionId, {
@@ -1230,7 +1235,7 @@ export class GatewayServer {
       this.sendToConnection(connectionId, {
         type: "project_channel_loaded",
         channel: serializeProjectChannel(channel),
-        messages: this.projectChannels.listMessages(channel.slug, limit ?? 50).map(serializeTeamMessage),
+        messages: this.listProjectTimelineMessages(channel.slug, limit ?? 50).map(serializeTeamMessage),
       });
     } catch (err) {
       this.sendToConnection(connectionId, {
@@ -1262,6 +1267,13 @@ export class GatewayServer {
         limit: msg.limit,
       }).map(serializeTeamMessage),
     });
+  }
+
+  private listProjectTimelineMessages(project: string, limit = 50): TeamMessage[] {
+    if (this.teamMessages) {
+      return this.teamMessages.listMessages({ project, limit });
+    }
+    return this.projectChannels?.listMessages(project, limit) ?? [];
   }
 
   private handleListTasks(connectionId: string, msg: Extract<ClientMessage, { type: "list_tasks" }>): void {

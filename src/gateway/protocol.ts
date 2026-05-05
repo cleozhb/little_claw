@@ -234,6 +234,7 @@ export interface SendAgentDmMessage {
   type: "send_agent_dm";
   agentName: string;
   content: string;
+  project?: string;
   userId?: string;
   priority?: TeamMessagePriority;
   taskId?: string;
@@ -1348,6 +1349,7 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "send_agent_dm":
       requireString(msg, "agentName");
       requireString(msg, "content");
+      requireOptionalString(msg, "project");
       requireOptionalString(msg, "userId");
       requireOptionalString(msg, "taskId");
       requireOptionalPriority(msg.priority);

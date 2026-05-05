@@ -293,6 +293,7 @@ export interface SendAgentDmMessage {
   type: "send_agent_dm";
   agentName: string;
   content: string;
+  project?: string;
   userId?: string;
   priority?: TeamMessagePriority;
   taskId?: string;
