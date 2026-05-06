@@ -890,6 +890,13 @@ export interface TeamMessagesLoadedMessage {
   messages: TeamMessageInfo[];
 }
 
+export interface TaskProgressMessage {
+  type: "task_progress";
+  taskId: string;
+  agentName: string;
+  delta: string;
+}
+
 export interface TasksListMessage {
   type: "tasks_list";
   tasks: TaskInfo[];
@@ -986,6 +993,7 @@ export type ServerMessage =
   | ProjectChannelLoadedMessage
   | TeamMessagesLoadedMessage
   | TasksListMessage
+  | TaskProgressMessage
   | TaskUpdatedMessage
   | ApprovalNeededMessage
   | TeamSchedulesListMessage

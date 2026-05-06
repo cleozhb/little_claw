@@ -21,6 +21,8 @@ export const REQUEST_APPROVAL_TOOL = "request_approval";
 
 const log = createLogger("AgentWorker");
 
+export type TaskProgressCallback = (taskId: string, agentName: string, delta: string) => void;
+
 export interface AgentWorkerOptions {
   agent: RegisteredAgent;
   tasks: TaskQueue;
@@ -35,6 +37,7 @@ export interface AgentWorkerOptions {
   contextHub?: ContextHub;
   pollIntervalMs?: number;
   maxTurns?: number;
+  onTaskProgress?: TaskProgressCallback;
 }
 
 export type AgentWorkerState =
@@ -64,6 +67,7 @@ export class AgentWorker {
   private contextHub?: ContextHub;
   private pollIntervalMs: number;
   private maxTurns: number;
+  private onTaskProgress?: TaskProgressCallback;
 
   private stopped = true;
   private loopPromise: Promise<void> | null = null;
@@ -87,6 +91,7 @@ export class AgentWorker {
     this.contextHub = options.contextHub;
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.maxTurns = options.maxTurns ?? 10;
+    this.onTaskProgress = options.onTaskProgress;
 
     ensureTeamTaskTools(this.toolRegistry, this.tasks);
     log.info(
@@ -293,11 +298,28 @@ export class AgentWorker {
     // 任务运行期间后台检查新消息；真正注入仍由 AgentLoop 在 checkpoint 消费。
     this.startMessageMonitor();
 
+    // Throttled progress emission: batch deltas and flush every 100ms
+    let pendingDelta = "";
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushProgress = () => {
+      if (pendingDelta && this.onTaskProgress) {
+        this.onTaskProgress(running.id, agentName, pendingDelta);
+        pendingDelta = "";
+      }
+      flushTimer = null;
+    };
+
     try {
       for await (const event of loop.run(prompt)) {
         const action = this.handleAgentEvent(event);
         if (event.type === "text_delta") {
           assistantText += event.text;
+          if (this.onTaskProgress) {
+            pendingDelta += event.text;
+            if (!flushTimer) {
+              flushTimer = setTimeout(flushProgress, 100);
+            }
+          }
         } else if (event.type === "error") {
           log.warn(`AgentLoop 返回错误：${running.id}`, event.message);
           errorMessage = event.message;
@@ -308,6 +330,9 @@ export class AgentWorker {
         }
       }
     } finally {
+      // Flush any remaining delta
+      if (flushTimer) clearTimeout(flushTimer);
+      flushProgress();
       this.stopMessageMonitor();
       this.currentLoop = null;
       this.currentTaskId = null;

@@ -112,6 +112,11 @@ const ARRIVAL_DURATION_MS = 240;
 const TALK_DURATION_MS = 4000;
 const RETURN_DURATION_MS = 900;
 
+interface TaskStreamingState {
+  agentName: string;
+  text: string;
+}
+
 interface MissionControlContextValue {
   agents: AgentInfo[];
   agentActivities: Record<string, AgentActivity>;
@@ -133,6 +138,7 @@ interface MissionControlContextValue {
   selectedChannel: ChannelSelection;
   selectChannel: (selection: ChannelSelection) => void;
   sendChannelMessage: (content: string) => void;
+  taskStreaming: Record<string, TaskStreamingState>;
   teamScheduleRuns: TeamScheduleRunInfo[];
   teamSchedules: TeamScheduleInfo[];
   tasks: TaskInfo[];
@@ -210,6 +216,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const [agentDetail, setAgentDetail] = useState<AgentDetailInfo | null>(null);
   const [channels, setChannels] = useState<ProjectChannelInfo[]>([]);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
+  const [taskStreaming, setTaskStreaming] = useState<Record<string, TaskStreamingState>>({});
   const [teamSchedules, setTeamSchedules] = useState<TeamScheduleInfo[]>([]);
   const [teamScheduleRuns, setTeamScheduleRuns] = useState<TeamScheduleRunInfo[]>([]);
   const [timelineMessages, setTimelineMessages] = useState<TeamMessageInfo[]>([]);
@@ -482,6 +489,18 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         case "tasks_list":
           setTasks(message.tasks);
           break;
+        case "task_progress":
+          setTaskStreaming((prev) => {
+            const existing = prev[message.taskId];
+            return {
+              ...prev,
+              [message.taskId]: {
+                agentName: message.agentName,
+                text: (existing?.text ?? "") + message.delta,
+              },
+            };
+          });
+          break;
         case "team_schedules_list":
           setTeamSchedules(sortSchedules(message.schedules));
           break;
@@ -503,6 +522,14 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         case "task_updated":
           setLastAction(`任务 ${message.task.title} 已更新为 ${message.task.status}`);
           setTasks((current) => upsertById(current, message.task));
+          // Clear streaming state when task is no longer running
+          if (message.task.status !== "running" && message.task.status !== "assigned") {
+            setTaskStreaming((prev) => {
+              if (!prev[message.task.id]) return prev;
+              const { [message.task.id]: _, ...rest } = prev;
+              return rest;
+            });
+          }
           // Animate: coordinator walks to agent when assigning a task
           if (message.task.assignedTo && message.task.status === "assigned") {
             setAgentActivities((prev) => {
@@ -693,6 +720,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       selectedChannel,
       selectChannel,
       sendChannelMessage,
+      taskStreaming,
       teamScheduleRuns,
       teamSchedules,
       tasks,
@@ -716,6 +744,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       selectedChannel,
       selectChannel,
       sendChannelMessage,
+      taskStreaming,
       teamScheduleRuns,
       teamSchedules,
       tasks,
@@ -816,7 +845,7 @@ export function MissionControlFrame({ children }: { children: ReactNode }) {
 }
 
 export function TasksView() {
-  const { tasks, updateTaskApproval } = useMissionControl();
+  const { tasks, taskStreaming, updateTaskApproval } = useMissionControl();
 
   return (
     <section className="flex h-full flex-col overflow-hidden">
@@ -846,7 +875,7 @@ export function TasksView() {
                   </div>
                 ) : (
                   columnTasks.map((task) => (
-                    <TaskCard key={task.id} task={task} onApproval={updateTaskApproval} />
+                    <TaskCard key={task.id} task={task} streaming={taskStreaming[task.id]} onApproval={updateTaskApproval} />
                   ))
                 )}
               </div>
@@ -866,6 +895,8 @@ export function ChannelsView() {
     selectedChannel,
     selectChannel,
     sendChannelMessage,
+    taskStreaming,
+    tasks,
     timelineMessages,
   } = useMissionControl();
   const [draft, setDraft] = useState("");
@@ -982,6 +1013,33 @@ export function ChannelsView() {
           ) : (
             <>
               {timelineMessages.map((message) => <TimelineMessage key={message.id} message={message} />)}
+              {Object.entries(taskStreaming).map(([taskId, stream]) => {
+                const task = tasks.find((t) => t.id === taskId);
+                // In project channel, only show streaming for matching project tasks
+                if (selectedChannel.type === "project" && task?.project !== selectedChannel.project) return null;
+                // In agent_dm channel, only show streaming for matching agent
+                if (selectedChannel.type === "agent_dm" && stream.agentName !== selectedChannel.agentName) return null;
+                return (
+                  <article key={`stream-${taskId}`} className="rounded-lg border border-dashed border-blue-200 bg-blue-50/30 p-3">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+                      <span className="text-xs font-medium text-blue-700">@{stream.agentName}</span>
+                      {task ? <span className="text-[10px] text-muted-foreground">{task.title}</span> : null}
+                    </div>
+                    {stream.text ? (
+                      <div className="mt-2 max-h-32 overflow-y-auto text-sm leading-6 text-muted-foreground">
+                        <Markdown content={stream.text.slice(-800)} />
+                      </div>
+                    ) : (
+                      <div className="mt-2 flex gap-1">
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:0ms]" />
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:150ms]" />
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:300ms]" />
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
               <div ref={messagesEndRef} />
             </>
           )}
@@ -2080,9 +2138,11 @@ function RunTimelineItem({
 
 function TaskCard({
   task,
+  streaming,
   onApproval,
 }: {
   task: TaskInfo;
+  streaming?: TaskStreamingState;
   onApproval: (taskId: string, decision: "approve" | "reject") => void;
 }) {
   const projectColor = task.project ? channelColor(task.project) : null;
@@ -2117,6 +2177,17 @@ function TaskCard({
         <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">P{task.priority}</span>
       </div>
       <p className="mt-2 line-clamp-3 text-xs leading-5 text-muted-foreground">{task.description}</p>
+      {streaming ? (
+        <div className="mt-2 rounded-lg border border-dashed border-blue-200 bg-blue-50/50 p-2">
+          <div className="flex items-center gap-1.5 text-[10px] font-medium text-blue-700">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {streaming.agentName} is working...
+          </div>
+          <div className="mt-1.5 max-h-24 overflow-y-auto text-xs leading-5 text-muted-foreground">
+            <Markdown content={streaming.text.slice(-500)} />
+          </div>
+        </div>
+      ) : null}
       {task.approvalPrompt ? (
         <div className="mt-2 rounded-lg border bg-muted/30 p-2 text-xs leading-5">{task.approvalPrompt}</div>
       ) : null}
@@ -2188,7 +2259,7 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
   const colorKey = message.channelType === "project" ? message.project ?? message.channelId : message.channelId;
   const color = channelColor(colorKey);
   return (
-    <article className={cn("rounded-lg border bg-background p-3 border-l-2", color.border)}>
+    <article className={cn("rounded-lg border bg-background p-3 border-l-2 animate-in fade-in-0 slide-in-from-bottom-2 duration-300", color.border)}>
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn("h-2 w-2 shrink-0 rounded-full", color.dot)} />
         <Badge variant="secondary" className="h-5 rounded-lg text-[10px]">

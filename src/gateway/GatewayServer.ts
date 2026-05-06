@@ -356,7 +356,7 @@ export class GatewayServer {
     }
   }
 
-  private broadcastToAll(msg: ServerMessage): void {
+  broadcastToAll(msg: ServerMessage): void {
     for (const [connectionId] of this.connections) {
       this.sendToConnection(connectionId, msg);
     }

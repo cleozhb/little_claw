@@ -37,7 +37,7 @@ import { AgentRegistry, type RegisteredAgent } from "./team/AgentRegistry.ts";
 import { TaskQueue } from "./team/TaskQueue.ts";
 import { TeamMessageStore } from "./team/TeamMessageStore.ts";
 import { ProjectChannelStore } from "./team/ProjectChannelStore.ts";
-import { createAgentWorkers, type AgentWorker } from "./team/AgentWorker.ts";
+import { createAgentWorkers, type AgentWorker, type TaskProgressCallback } from "./team/AgentWorker.ts";
 import { CoordinatorLoop } from "./team/CoordinatorLoop.ts";
 import { TeamRouter } from "./team/TeamRouter.ts";
 import { TeamScheduleStore } from "./team/TeamScheduleStore.ts";
@@ -68,6 +68,7 @@ export interface LovelyOctopusRuntimeOptions {
   agentDir?: string;
   workerPollIntervalMs?: number;
   coordinatorPollIntervalMs?: number;
+  onTaskProgress?: TaskProgressCallback;
 }
 
 export interface LovelyOctopusRuntimeStatus {
@@ -140,6 +141,7 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     contextRetriever: options.contextRetriever,
     contextHub: options.contextHub,
     pollIntervalMs: options.workerPollIntervalMs,
+    onTaskProgress: options.onTaskProgress,
   });
   const coordinatorLoop = new CoordinatorLoop({
     agents: agentRegistry,
@@ -442,6 +444,9 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     contextRetriever,
   });
 
+  // Late-bound reference: gateway is created after the runtime, so use a closure.
+  let gatewayRef: GatewayServer | null = null;
+
   const lovelyOctopus = createLovelyOctopusRuntime({
     db,
     llmProvider,
@@ -451,6 +456,9 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     memoryManager,
     contextRetriever,
     contextHub,
+    onTaskProgress: (taskId, agentName, delta) => {
+      gatewayRef?.broadcastToAll({ type: "task_progress", taskId, agentName, delta });
+    },
   });
 
   const agentLoadErrors = lovelyOctopus.agentRegistry.getLoadErrors();
@@ -530,6 +538,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   });
 
   lovelyOctopus.start();
+  gatewayRef = gateway;
   gateway.start();
 
   // --- Scheduler → Agent 触发回调 ---
