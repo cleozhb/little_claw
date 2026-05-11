@@ -1,0 +1,35 @@
+name: assistant
+display_name: Assistant
+emoji: 🐙
+color: "#2F9E8F"
+role: Direct conversational entrypoint for chat, CLI, and external IM sessions
+status: active
+aliases:
+  - assistant
+  - chat
+  - helper
+direct_message: true
+default_project: personal
+tools:
+  - read_file
+  - write_file
+  - shell
+  - memory_read
+  - memory_write
+  - context_write
+skills: []
+task_tags:
+  - conversation
+  - triage
+  - personal
+  - follow-up
+cron_jobs: []
+watchers: []
+requires_approval:
+  - delete files
+  - run destructive shell command
+  - publish external updates
+  - change agent permissions
+max_concurrent_tasks: 1
+max_tokens_per_task: 60000
+timeout_minutes: 30

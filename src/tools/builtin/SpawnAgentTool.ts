@@ -1,10 +1,16 @@
 import type { Tool, ToolResult, ToolExecuteOptions } from "../types.ts";
+import type { ShellTool } from "../types.ts";
 import type { ToolRegistry } from "../ToolRegistry.ts";
 import type { LLMProvider } from "../../llm/types.ts";
 import type { AgentEvent } from "../../types/message.ts";
 import { AgentLoop } from "../../core/AgentLoop.ts";
 import { EphemeralConversation } from "../../core/EphemeralConversation.ts";
-import { getAgentConfig } from "../../agents/presets.ts";
+import { createAgentConfig } from "../../agents/AgentConfig.ts";
+import type { ContextRetriever } from "../../memory/ContextRetriever.ts";
+import type { MemoryManager } from "../../memory/MemoryManager.ts";
+import type { SkillManager } from "../../skills/SkillManager.ts";
+import type { AgentRegistry, RegisteredAgent } from "../../team/AgentRegistry.ts";
+import { buildTeamAgentSystemPrompt } from "../../team/AgentWorker.ts";
 import { createLogger } from "../../utils/logger.ts";
 
 const log = createLogger("SpawnAgent");
@@ -18,6 +24,11 @@ export type SubAgentEventCallback = (event: AgentEvent) => void;
 export interface SpawnAgentToolOptions {
   llmProvider: LLMProvider;
   toolRegistry: ToolRegistry;
+  getAgentRegistry?: () => AgentRegistry | undefined;
+  getSkillManager?: () => SkillManager | undefined;
+  shellTool?: ShellTool;
+  memoryManager?: MemoryManager;
+  contextRetriever?: ContextRetriever;
 }
 
 export interface SpawnAgentTool extends Tool {
@@ -28,7 +39,8 @@ export interface SpawnAgentTool extends Tool {
 export function createSpawnAgentTool(
   options: SpawnAgentToolOptions,
 ): SpawnAgentTool {
-  const { llmProvider, toolRegistry } = options;
+  const toolOptions = options;
+  const { llmProvider, toolRegistry } = toolOptions;
 
   /** session 级别的事件回调，由外部在每次 run 前设置 */
   let currentCallback: SubAgentEventCallback | undefined;
@@ -36,15 +48,14 @@ export function createSpawnAgentTool(
   return {
     name: "spawn_agent",
     description:
-      "Delegate a task to a specialized sub-agent. Use this when a task requires focused expertise. Available agent types: 'coder' (writes and modifies code), 'planner' (analyzes and creates plans, read-only), 'researcher' (gathers information). The sub-agent will work independently and return its results.",
+      "Delegate a task to a specialized team agent from the configured AgentRegistry. Use an active agent's name or alias as agent_type. The sub-agent will work independently with that agent's tools, skills, SOUL.md, and AGENTS.md, then return its result.",
     parameters: {
       type: "object",
       properties: {
         agent_type: {
           type: "string",
-          enum: ["coder", "planner", "researcher"],
           description:
-            "The type of specialist agent to spawn.",
+            "The name or alias of an active team agent to spawn.",
         },
         task: {
           type: "string",
@@ -76,20 +87,38 @@ export function createSpawnAgentTool(
         };
       }
 
+      const agentRegistry = toolOptions.getAgentRegistry?.();
+      const agent = resolveSpawnAgent(agentRegistry, agentType);
+      if (!agent) {
+        const available = listSpawnableAgentNames(agentRegistry);
+        return {
+          success: false,
+          output: "",
+          error: available.length > 0
+            ? `Unknown or inactive agent "${agentType}". Available agents: ${available.join(", ")}.`
+            : `Unknown or inactive agent "${agentType}". No active team agents are configured.`,
+        };
+      }
+
       log.step("Spawning sub-agent", {
         agentType,
+        resolvedAgent: agent.config.name,
         task,
         context: context ?? "(none)",
       });
 
-      const config = getAgentConfig(agentType);
+      const config = createAgentConfig({
+        name: agent.config.name,
+        systemPrompt: buildTeamAgentSystemPrompt(agent),
+        allowedTools: agent.config.tools,
+        maxTurns: 10,
+        canSpawnSubAgent: false,
+      });
 
-      // 在 sub-agent 的 system prompt 末尾追加强引导，防止完成任务后继续做多余的事
-      const subAgentPrompt =
-        config.systemPrompt +
+      config.systemPrompt +=
         "\n\nOnce you have completed the task, stop immediately and provide a brief summary of what you did. Do not perform additional verification, optimization, or cleanup unless explicitly asked. Do not create extra files beyond what is required.";
 
-      const conversation = new EphemeralConversation(subAgentPrompt);
+      const conversation = new EphemeralConversation("Team sub-agent execution.");
 
       // 如果有背景信息，作为第一条 user message 注入
       if (context) {
@@ -103,7 +132,14 @@ export function createSpawnAgentTool(
         llmProvider,
         toolRegistry,
         conversation,
-        { config },
+        {
+          config,
+          skillManager: toolOptions.getSkillManager?.(),
+          configuredSkillNames: agent.config.skills,
+          shellTool: toolOptions.shellTool,
+          memoryManager: toolOptions.memoryManager,
+          contextRetriever: toolOptions.contextRetriever,
+        },
       );
 
       const onEvent = currentCallback;
@@ -122,11 +158,11 @@ export function createSpawnAgentTool(
       // 通知外部：Sub-Agent 开始执行
       onEvent?.({
         type: "sub_agent_start",
-        agentName: agentType,
+        agentName: agent.config.name,
         task,
       });
 
-      log.info(`Sub-agent "${agentType}" started`, `task: ${task}\nconfig: ${JSON.stringify({ maxTurns: config.maxTurns, allowedTools: config.allowedTools })}`);
+      log.info(`Sub-agent "${agent.config.name}" started`, `task: ${task}\nconfig: ${JSON.stringify({ maxTurns: config.maxTurns, allowedTools: config.allowedTools })}`);
 
       // 收集 Sub-Agent 的文本输出
       let resultText = "";
@@ -136,7 +172,7 @@ export function createSpawnAgentTool(
       try {
         // 超时保护：5 分钟
         const result = await Promise.race([
-          collectAgentResult(subAgentLoop, task, agentType, onEvent),
+          collectAgentResult(subAgentLoop, task, agent.config.name, onEvent),
           timeout(SUB_AGENT_TIMEOUT_MS).then(() => {
             timedOut = true;
             return null;
@@ -153,13 +189,13 @@ export function createSpawnAgentTool(
         log.error(`Sub-agent "${agentType}" failed`, errMsg);
         onEvent?.({
           type: "sub_agent_done",
-          agentName: agentType,
+          agentName: agent.config.name,
           result: `Error: ${errMsg}`,
         });
         return {
           success: false,
           output: "",
-          error: `Sub-agent "${agentType}" failed: ${errMsg}`,
+          error: `Sub-agent "${agent.config.name}" failed: ${errMsg}`,
         };
       }
 
@@ -168,31 +204,31 @@ export function createSpawnAgentTool(
           options.signal.removeEventListener("abort", abortHandler);
         }
         const partial = resultText || "(no output before timeout)";
-        log.warn(`Sub-agent "${agentType}" timed out after ${SUB_AGENT_TIMEOUT_MS / 1000}s`, `partial result length: ${partial.length}`);
+        log.warn(`Sub-agent "${agent.config.name}" timed out after ${SUB_AGENT_TIMEOUT_MS / 1000}s`, `partial result length: ${partial.length}`);
         onEvent?.({
           type: "sub_agent_done",
-          agentName: agentType,
+          agentName: agent.config.name,
           result: `[TIMEOUT] ${partial}`,
         });
         return {
           success: true,
-          output: `[Sub-agent "${agentType}" timed out after 5 minutes]\n\nPartial result:\n${partial}`,
+          output: `[Sub-agent "${agent.config.name}" timed out after 5 minutes]\n\nPartial result:\n${partial}`,
         };
       }
 
       let output = hitMaxTurns
-        ? `[NOTE: Sub-agent "${agentType}" reached maximum iterations and returned partial results]\n\n${resultText}`
+        ? `[NOTE: Sub-agent "${agent.config.name}" reached maximum iterations and returned partial results]\n\n${resultText}`
         : resultText || "(sub-agent produced no text output)";
 
       // 结果长度控制：超过阈值时做摘要压缩
       if (output.length > SUMMARY_THRESHOLD) {
         const originalLength = output.length;
-        log.info(`Sub-agent "${agentType}" result too long (${originalLength} chars), summarizing...`);
+        log.info(`Sub-agent "${agent.config.name}" result too long (${originalLength} chars), summarizing...`);
         const summarized = await summarizeResult(llmProvider, output);
         output = `[Sub-agent returned ${originalLength} chars, summarized below]\n\n${summarized}`;
       }
 
-      log.step(`Sub-agent "${agentType}" completed`, {
+      log.step(`Sub-agent "${agent.config.name}" completed`, {
         resultLength: output.length,
         hitMaxTurns,
         result: output,
@@ -204,7 +240,7 @@ export function createSpawnAgentTool(
 
       onEvent?.({
         type: "sub_agent_done",
-        agentName: agentType,
+        agentName: agent.config.name,
         result: output,
       });
 
@@ -214,6 +250,25 @@ export function createSpawnAgentTool(
       };
     },
   };
+}
+
+function resolveSpawnAgent(agentRegistry: AgentRegistry | undefined, nameOrAlias: string): RegisteredAgent | null {
+  if (!agentRegistry) return null;
+  const normalized = normalizeAgentToken(nameOrAlias);
+  return (
+    agentRegistry.listActive().find((agent) => {
+      if (normalizeAgentToken(agent.config.name) === normalized) return true;
+      return agent.config.aliases.some((alias) => normalizeAgentToken(alias) === normalized);
+    }) ?? null
+  );
+}
+
+function listSpawnableAgentNames(agentRegistry: AgentRegistry | undefined): string[] {
+  return agentRegistry?.listActive().map((agent) => agent.config.name) ?? [];
+}
+
+function normalizeAgentToken(value: string): string {
+  return value.trim().replace(/^@/, "").toLowerCase();
 }
 
 /**

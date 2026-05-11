@@ -146,25 +146,39 @@ describe("AgentRegistry", () => {
     expect(readFileSync(join(coderDir, "AGENTS.md"), "utf8")).toContain("Process");
   });
 
-  test("creates agents from built-in templates", () => {
+  test("installs repository default agents without overwriting local edits", () => {
     const baseDir = makeBaseDir();
     const registry = new AgentRegistry(baseDir);
 
-    const agent = registry.createFromTemplate("coder");
+    const installed = registry.installDefaultAgents();
 
-    expect(agent.config.name).toBe("coder");
-    expect(agent.config.role).toContain("code");
-    expect(agent.config.aliases).toContain("dev");
-    expect(agent.config.tools).toContain("shell");
-    expect(agent.soul).toContain("pragmatic");
-    expect(agent.operatingInstructions).toContain("Read the relevant code");
+    expect(installed.map((agent) => agent.config.name).sort()).toEqual([
+      "assistant",
+      "coder",
+      "coordinator",
+      "podcast-curator",
+    ]);
+    expect(existsSync(join(baseDir, "assistant", "agent.yaml"))).toBe(true);
+    expect(readFileSync(join(baseDir, "assistant", "AGENTS.md"), "utf8")).toContain(
+      "default chat entrypoint",
+    );
+    expect(existsSync(join(baseDir, "coordinator", "agent.yaml"))).toBe(true);
+    expect(readFileSync(join(baseDir, "coordinator", "SOUL.md"), "utf8")).toContain(
+      "operationally clear",
+    );
+    expect(registry.get("coordinator")?.config.default_project).toBe("team-ops");
+
+    writeFileSync(join(baseDir, "coordinator", "SOUL.md"), "# Soul\nLocal edit.\n", "utf8");
+    registry.installDefaultAgents(["coordinator"]);
+
+    expect(readFileSync(join(baseDir, "coordinator", "SOUL.md"), "utf8")).toContain("Local edit");
   });
 
-  test("built-in schedule templates use explicit stable fields", () => {
+  test("repository default agents use explicit stable schedule fields", () => {
     const baseDir = makeBaseDir();
     const registry = new AgentRegistry(baseDir);
 
-    const agent = registry.createFromTemplate("coordinator");
+    const [agent] = registry.installDefaultAgents(["coordinator"]);
     const [job] = agent.config.cron_jobs;
     const yaml = readFileSync(join(baseDir, "coordinator", "agent.yaml"), "utf8");
 
@@ -179,17 +193,21 @@ describe("AgentRegistry", () => {
     expect(yaml).toContain("watchers: []");
   });
 
-  test("creates a custom-named agent from a template with overrides", () => {
+  test("creates a custom-named agent explicitly", () => {
     const baseDir = makeBaseDir();
     const registry = new AgentRegistry(baseDir);
 
-    const agent = registry.createFromTemplate("frontend-coder", {
-      templateName: "coder",
+    const agent = registry.create("frontend-coder", {
       config: {
+        name: "frontend-coder",
+        role: "Implement frontend code",
         display_name: "Frontend Coder",
         aliases: ["frontend"],
         default_project: "web",
+        tools: ["read_file", "write_file", "shell"],
       },
+      soul: "# Soul\nFrontend pragmatic.\n",
+      operatingInstructions: "# Agent Operating Instructions\nRead the relevant code.\n",
     });
 
     expect(agent.config.name).toBe("frontend-coder");
@@ -197,18 +215,6 @@ describe("AgentRegistry", () => {
     expect(agent.config.aliases).toEqual(["frontend"]);
     expect(agent.config.default_project).toBe("web");
     expect(readFileSync(join(baseDir, "frontend-coder", "SOUL.md"), "utf8")).toContain("pragmatic");
-  });
-
-  test("lists templates and rejects unknown templates", () => {
-    const baseDir = makeBaseDir();
-    const registry = new AgentRegistry(baseDir);
-
-    expect(registry.listTemplates().map((template) => template.name)).toContain("podcast-curator");
-    expect(() =>
-      registry.createFromTemplate("unknown-agent", {
-        templateName: "missing-template",
-      }),
-    ).toThrow("Unknown agent template");
   });
 
   test("update supports config, soul, and operating instructions independently", () => {

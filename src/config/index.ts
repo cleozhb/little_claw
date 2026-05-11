@@ -14,6 +14,9 @@ export interface Config {
   llmApiKey: string;
   llmModel: string;
   llmBaseUrl?: string;
+  chat: {
+    mainAgentName: string;
+  };
   feishu?: FeishuChannelConfig;
 }
 
@@ -31,6 +34,9 @@ export function loadConfig(): Config {
     llmApiKey: process.env.LLM_API_KEY ?? "",
     llmModel: process.env.LLM_MODEL ?? "deepseek-v3.2",
     llmBaseUrl: process.env.LLM_BASE_URL ?? undefined,
+    chat: {
+      mainAgentName: readAgentName(process.env.CHAT_MAIN_AGENT, "assistant"),
+    },
     feishu: process.env.FEISHU_ENABLED === "true"
       ? {
           enabled: true,
@@ -41,4 +47,9 @@ export function loadConfig(): Config {
         }
       : undefined,
   };
+}
+
+function readAgentName(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(trimmed) ? trimmed : fallback;
 }

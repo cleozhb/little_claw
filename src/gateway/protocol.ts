@@ -791,7 +791,7 @@ export interface AgentInfo {
   directMessage?: boolean;
   skills?: string[];
   taskTags?: string[];
-  source?: "preset" | "team";
+  source?: "team";
 }
 
 /** Server → Client: agent 配置列表 */

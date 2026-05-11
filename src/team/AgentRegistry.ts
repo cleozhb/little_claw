@@ -10,12 +10,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import YAML from "yaml";
-import {
-  getAgentTemplate,
-  listAgentTemplates,
-  type AgentTemplate,
-} from "./AgentTemplates.ts";
-
 export type AgentConfigStatus = "active" | "paused" | "disabled";
 export type AgentRuntimeStatus = "idle" | "working" | "waiting_approval" | "paused";
 
@@ -95,13 +89,6 @@ export interface UpdateAgentParams {
   operatingInstructions?: string;
 }
 
-export interface CreateFromTemplateParams {
-  templateName?: string;
-  config?: Partial<AgentYamlConfig>;
-  soul?: string;
-  operatingInstructions?: string;
-}
-
 const DEFAULT_SOUL = `# Soul
 
 Describe this agent's personality, tone, wording preferences, and communication style.
@@ -112,6 +99,7 @@ const DEFAULT_AGENTS = `# Agent Operating Instructions
 Describe how this agent should work: process, failure handling, approval rules, reporting, and handoff expectations.
 `;
 
+const DEFAULT_AGENT_SEED_DIR = resolve(import.meta.dir, "../agents/default-agents");
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
@@ -212,37 +200,46 @@ export class AgentRegistry {
   }
 
   /**
-   * Creates an agent from a built-in template. The agent name can either match
-   * the template name or be a new name using templateName plus overrides.
+   * Installs repository-backed default agent definitions into the local agent
+   * directory. Existing files are never overwritten, so user edits remain local.
    */
-  createFromTemplate(name: string, params: CreateFromTemplateParams = {}): RegisteredAgent {
-    this.assertValidAgentName(name);
-    const templateName = params.templateName ?? name;
-    const template = getAgentTemplate(templateName);
-    if (!template) {
-      throw new Error(
-        `Unknown agent template "${templateName}". Available templates: ${listAgentTemplates()
-          .map((item) => item.name)
-          .join(", ")}.`,
-      );
+  installDefaultAgents(names?: string[]): RegisteredAgent[] {
+    mkdirSync(this.baseDir, { recursive: true });
+    const seedNames = names ?? this.listDefaultAgentNames();
+    const installed: RegisteredAgent[] = [];
+
+    for (const name of seedNames) {
+      this.assertValidAgentName(name);
+      const seedDir = resolve(DEFAULT_AGENT_SEED_DIR, name);
+      if (!existsSync(seedDir) || !statSync(seedDir).isDirectory()) {
+        throw new Error(`Default agent seed not found: ${name}`);
+      }
+
+      const seed = this.loadAgentFromDir(seedDir, { guardInsideBase: false });
+      if (seed.config.name !== name) {
+        throw new Error(`Default agent seed "${name}" has mismatched config name "${seed.config.name}".`);
+      }
+
+      const agentDir = this.resolveAgentDir(name);
+      mkdirSync(agentDir, { recursive: true });
+      this.writeFileIfMissing(join(agentDir, "agent.yaml"), readFileSync(join(seedDir, "agent.yaml"), "utf8"));
+      this.writeFileIfMissing(join(agentDir, "SOUL.md"), seed.soul);
+      this.writeFileIfMissing(join(agentDir, "AGENTS.md"), seed.operatingInstructions);
+
+      const agent = this.loadAgentFromDir(agentDir);
+      this.agents.set(agent.config.name, agent);
+      installed.push(agent);
     }
 
-    const config: AgentYamlConfig = normalizeConfig({
-      ...template.config,
-      ...params.config,
-      name,
-      display_name: params.config?.display_name ?? template.config.display_name,
-    });
-
-    return this.create(name, {
-      config,
-      soul: params.soul ?? template.soul,
-      operatingInstructions: params.operatingInstructions ?? template.operatingInstructions,
-    });
+    return installed;
   }
 
-  listTemplates(): AgentTemplate[] {
-    return listAgentTemplates();
+  listDefaultAgentNames(): string[] {
+    if (!existsSync(DEFAULT_AGENT_SEED_DIR)) return [];
+    return readdirSync(DEFAULT_AGENT_SEED_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
   }
 
   /**
@@ -321,8 +318,13 @@ export class AgentRegistry {
   }
 
   /** Reads and validates the three files that make up a single agent. */
-  private loadAgentFromDir(agentDir: string): RegisteredAgent {
-    this.assertInsideBase(agentDir);
+  private loadAgentFromDir(
+    agentDir: string,
+    options: { guardInsideBase?: boolean } = {},
+  ): RegisteredAgent {
+    if (options.guardInsideBase ?? true) {
+      this.assertInsideBase(agentDir);
+    }
     const dirName = basename(agentDir);
     this.assertValidAgentName(dirName);
 

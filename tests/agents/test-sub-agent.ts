@@ -1,5 +1,5 @@
 /**
- * test-sub-agent.ts — 手动测试 CODER_AGENT 的 AgentLoop
+ * test-sub-agent.ts — 手动测试 coder AgentLoop
  *
  * 用法: bun tests/agents/test-sub-agent.ts
  *
@@ -12,7 +12,7 @@ import { ToolRegistry } from "../../src/tools/ToolRegistry.ts";
 import { createBuiltinTools } from "../../src/tools/builtin/index.ts";
 import { EphemeralConversation } from "../../src/core/EphemeralConversation.ts";
 import { AgentLoop } from "../../src/core/AgentLoop.ts";
-import { CODER_AGENT } from "../../src/agents/presets.ts";
+import { createAgentConfig } from "../../src/agents/AgentConfig.ts";
 
 async function main() {
   const config = loadConfig();
@@ -38,10 +38,19 @@ async function main() {
     toolRegistry.register(tool);
   }
 
-  const conversation = new EphemeralConversation(CODER_AGENT.systemPrompt);
+  const coderAgent = createAgentConfig({
+    name: "coder",
+    systemPrompt:
+      "You are a coding specialist. Your job is to implement, modify, or fix code based on the task description. Focus on writing clean, working code. Use the available tools to read existing code, write new code, and run tests.",
+    allowedTools: ["read_file", "write_file", "shell"],
+    maxTurns: 15,
+    canSpawnSubAgent: false,
+  });
+
+  const conversation = new EphemeralConversation(coderAgent.systemPrompt);
 
   const agentLoop = new AgentLoop(llmProvider, toolRegistry, conversation, {
-    config: CODER_AGENT,
+    config: coderAgent,
   });
 
   const userMessage =

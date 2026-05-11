@@ -1,4 +1,4 @@
-# Agent Templates
+# Agent Definitions
 
 Lovely Octopus agents live under:
 
@@ -9,16 +9,42 @@ Lovely Octopus agents live under:
 └── AGENTS.md
 ```
 
-`AgentRegistry` includes built-in templates for:
+The repository includes default agent seed files under:
 
+```text
+src/agents/default-agents/{agent-name}/
+├── agent.yaml
+├── SOUL.md
+└── AGENTS.md
+```
+
+On startup, if `~/.little_claw/agents` is empty, Lovely Octopus installs these repository defaults into the local agent directory without overwriting existing files. If local agents exist but `assistant` or `coordinator` is missing, startup installs only the missing required defaults.
+
+Current repository defaults:
+
+- `assistant`
 - `coordinator`
 - `coder`
-- `researcher`
-- `personal-assistant`
-- `podcast-translator`
-- `ops-monitor`
+- `podcast-curator`
 
-These templates are defined in `src/team/AgentTemplates.ts` and can be installed through `AgentRegistry.createFromTemplate()` once a CLI or UI calls it.
+To create a custom agent, call `AgentRegistry.create()` or add the three files manually under `~/.little_claw/agents/{agent-name}/`.
+
+## Interaction Surfaces
+
+Little Claw has two interaction surfaces over the same Agent runtime:
+
+- Chat Surface: direct conversational sessions, CLI-style interaction, and external IM adapters such as Feishu. This path uses `SessionRouter` and runs one registry-backed Agent through `AgentLoop`.
+- Team Surface: persistent channels, project rooms, Agent DMs, tasks, schedules, and workers. This path uses `TeamRouter`, `TeamMessageStore`, `TaskQueue`, `AgentWorker`, and `CoordinatorLoop`, then also runs registry-backed Agents through `AgentLoop`.
+
+Both surfaces share `AgentRegistry` and the same file-backed Agent definitions. They are not separate Agent configuration systems.
+
+The chat entry Agent defaults to `assistant`, but can be changed with:
+
+```bash
+CHAT_MAIN_AGENT=coordinator
+```
+
+The named Agent must exist in `~/.little_claw/agents`. This keeps chat persona choices inside the same registry instead of reintroducing chat-only presets.
 
 ## Minimal Manual Setup
 

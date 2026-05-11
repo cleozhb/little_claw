@@ -52,11 +52,12 @@ describe("Lovely Octopus server lifecycle", () => {
     });
 
     expect(runtime.registeredAgents.map((agent) => agent.config.name).sort()).toEqual([
+      "assistant",
       "coder",
       "coordinator",
       "podcast-curator",
     ]);
-    expect(runtime.agentWorkers).toHaveLength(3);
+    expect(runtime.agentWorkers).toHaveLength(4);
 
     runtime.start();
     await Bun.sleep(10);
@@ -66,18 +67,18 @@ describe("Lovely Octopus server lifecycle", () => {
     expect(runtime.coordinatorLoop.state).toBe("stopped");
 
     const status = runtime.getStatus();
-    expect(status.activeAgents).toBe(3);
-    expect(status.registeredAgents).toBe(3);
+    expect(status.activeAgents).toBe(4);
+    expect(status.registeredAgents).toBe(4);
     expect(status.projectChannels).toBe(0);
     expect(status.tasks.pending).toBe(0);
     expect(status.tasks.running).toBe(0);
     expect(status.tasks.awaitingApproval).toBe(0);
-    expect(formatLovelyOctopusStatus(status)).toContain("Lovely Octopus: 3/3 active agents");
+    expect(formatLovelyOctopusStatus(status)).toContain("Lovely Octopus: 4/4 active agents");
   });
 
   test("isolates malformed agent configs while starting healthy agents", async () => {
     const registry = new AgentRegistry(agentDir);
-    registry.createFromTemplate("coder");
+    registry.installDefaultAgents(["coder"]);
 
     const badDir = join(agentDir, "broken");
     mkdirSync(badDir, { recursive: true });
@@ -97,14 +98,18 @@ describe("Lovely Octopus server lifecycle", () => {
     });
 
     expect(runtime.agentRegistry.getLoadErrors()).toHaveLength(1);
-    expect(runtime.registeredAgents.map((agent) => agent.config.name)).toEqual(["coder"]);
-    expect(runtime.agentWorkers).toHaveLength(1);
+    expect(runtime.registeredAgents.map((agent) => agent.config.name).sort()).toEqual([
+      "assistant",
+      "coder",
+      "coordinator",
+    ]);
+    expect(runtime.agentWorkers).toHaveLength(3);
 
     runtime.start();
     await Bun.sleep(10);
     await runtime.stop();
 
-    expect(runtime.agentWorkers[0]?.state).toBe("stopped");
+    expect(runtime.agentWorkers.every((worker) => worker.state === "stopped")).toBe(true);
   });
 });
 

@@ -670,7 +670,7 @@ export interface AgentInfo {
   directMessage?: boolean;
   skills?: string[];
   taskTags?: string[];
-  source?: "preset" | "team";
+  source?: "team";
 }
 
 export interface AgentsListMessage {

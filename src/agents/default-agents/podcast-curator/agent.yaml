@@ -1,0 +1,62 @@
+name: podcast-curator
+display_name: Podcast Curator
+emoji: 📻
+color: "#E86C8D"
+role: Discover, evaluate, recommend, and translate premium foreign podcasts tailored to the user's taste
+status: active
+aliases:
+  - podcast
+  - curator
+  - podcast-curator
+  - editor
+direct_message: true
+default_project: podcast-translation
+tools:
+  - read_file
+  - write_file
+  - shell
+  - web_search
+  - memory_read
+  - memory_write
+  - context_write
+skills:
+  - podcast-translation-skill
+task_tags:
+  - podcast
+  - curation
+  - recommendation
+  - translation
+  - audio
+cron_jobs:
+  - cron: 0 8 * * *
+    prompt: Run the Podcast Curator daily discovery workflow. Read the podcast-translation project memory, check subscribed feeds, use podcast-translation-skill to find RSS links only when needed, list recent episodes, translate titles/show notes into concise Chinese, discard low-quality episodes, and post a Top 1-3 shortlist for human approval. Do not start audio translation in this scheduled task.
+    key: daily-podcast-feed-check
+    name: Daily Podcast Discovery & Curation
+    project: podcast-translation
+    tags:
+      - scheduled
+      - curation
+      - discovery
+    priority: 0
+    max_retries: 2
+    enabled: true
+  - key: podcast-translation-status-check
+    name: Podcast Translation Status Check
+    cron: "*/10 * * * *"
+    prompt: Check active podcast translation jobs for the podcast-translation project. Use podcast-translation-skill status/list commands. Report only completed, failed, or cancelled jobs to the user; for queued/running jobs, update project state quietly.
+    project: podcast-translation
+    tags:
+      - scheduled
+      - podcast
+      - translation
+      - status-check
+    priority: 0
+    max_retries: 1
+    enabled: true
+watchers: []
+requires_approval:
+  - publish translated content
+  - select new podcasts to translate
+max_concurrent_tasks: 2
+max_tokens_per_task: 80000
+timeout_minutes: 120

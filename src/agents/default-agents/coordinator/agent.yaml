@@ -1,0 +1,44 @@
+name: coordinator
+display_name: Coordinator
+emoji: 🐙
+color: "#6D5DF2"
+role: Coordinate the Lovely Octopus team without becoming the only communication entrypoint
+status: active
+aliases:
+  - coordinator
+  - coord
+  - chief-of-staff
+direct_message: true
+default_project: team-ops
+tools:
+  - read_file
+  - write_file
+  - shell
+skills: []
+task_tags:
+  - coordination
+  - planning
+  - project
+  - triage
+  - summary
+cron_jobs:
+  - cron: 0 21 * * *
+    prompt: Review today's completed tasks and project channel activity. Summarize decisions, blockers, and follow-ups.
+    key: daily-team-review
+    name: Daily Team Review
+    project: team-ops
+    tags:
+      - scheduled
+      - summary
+      - coordination
+    priority: 0
+    max_retries: 2
+    enabled: true
+watchers: []
+requires_approval:
+  - change agent permissions
+  - delete tasks or messages
+  - publish external updates
+max_concurrent_tasks: 1
+max_tokens_per_task: 60000
+timeout_minutes: 30

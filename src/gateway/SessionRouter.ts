@@ -6,9 +6,12 @@ import type { ServerMessage } from "./protocol";
 import type { SpawnAgentTool } from "../tools/builtin/SpawnAgentTool";
 import type { MemoryManager } from "../memory/MemoryManager";
 import type { ContextRetriever } from "../memory/ContextRetriever";
+import { createAgentConfig } from "../agents/AgentConfig";
 import { AgentLoop } from "../core/AgentLoop";
 import { Conversation } from "../core/Conversation";
 import type { SkillManager } from "../skills/SkillManager";
+import type { AgentRegistry } from "../team/AgentRegistry";
+import { buildTeamAgentSystemPrompt } from "../team/AgentWorker";
 import { createLogger } from "../utils/logger";
 
 const log = createLogger("SessionRouter");
@@ -26,6 +29,8 @@ export interface SessionRouterOptions {
   spawnAgentTool?: SpawnAgentTool;
   memoryManager?: MemoryManager;
   contextRetriever?: ContextRetriever;
+  getAgentRegistry?: () => AgentRegistry | undefined;
+  mainAgentName?: string;
   /** session 空闲超时（ms），默认 30 分钟 */
   idleTimeoutMs?: number;
   /** 清理扫描间隔（ms），默认 5 分钟 */
@@ -53,6 +58,8 @@ export class SessionRouter {
   private spawnAgentTool?: SpawnAgentTool;
   private memoryManager?: MemoryManager;
   private contextRetriever?: ContextRetriever;
+  private getAgentRegistry?: () => AgentRegistry | undefined;
+  private mainAgentName: string;
   private sessions = new Map<string, SessionEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimeoutMs: number;
@@ -66,6 +73,8 @@ export class SessionRouter {
     this.spawnAgentTool = options.spawnAgentTool;
     this.memoryManager = options.memoryManager;
     this.contextRetriever = options.contextRetriever;
+    this.getAgentRegistry = options.getAgentRegistry;
+    this.mainAgentName = options.mainAgentName ?? "assistant";
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60 * 1000;
 
     const cleanupIntervalMs = options.cleanupIntervalMs ?? 5 * 60 * 1000;
@@ -169,8 +178,19 @@ export class SessionRouter {
     log.info(`Session ${sessionId} not in cache, loading from DB`);
     // 从 DB 加载 session + 恢复对话历史
     const conversation = Conversation.loadExisting(this.db, sessionId);
+    const mainAgent = this.getAgentRegistry?.()?.get(this.mainAgentName);
     const agentLoop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
+      config: mainAgent
+        ? createAgentConfig({
+          name: mainAgent.config.name,
+          systemPrompt: buildTeamAgentSystemPrompt(mainAgent),
+          allowedTools: mainAgent.config.tools,
+          maxTurns: 25,
+          canSpawnSubAgent: true,
+        })
+        : undefined,
       skillManager: this.skillManager,
+      configuredSkillNames: mainAgent?.config.skills,
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,

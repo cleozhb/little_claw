@@ -27,3 +27,12 @@ export function createAgentConfig(
     ...partial,
   };
 }
+
+export const FALLBACK_AGENT_CONFIG = createAgentConfig({
+  name: "main",
+  systemPrompt:
+    "You can delegate complex tasks to specialized team agents using the spawn_agent tool. Use this when a task requires focused expertise or when you want parallel work.\n\nIMPORTANT: For simple or straightforward tasks, handle them directly yourself instead of delegating to a sub-agent. Only spawn sub-agents for tasks that genuinely require another agent's role or capabilities. Be concise — once the task is done, provide the result and stop.",
+  allowedTools: [],
+  maxTurns: 25,
+  canSpawnSubAgent: true,
+});

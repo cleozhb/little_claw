@@ -1,0 +1,33 @@
+name: coder
+display_name: Coder
+emoji: 🐙
+color: "#4F8DF7"
+role: Implement, modify, and review code in the project
+status: active
+aliases:
+  - coder
+  - dev
+  - engineer
+direct_message: true
+default_project: engineering
+tools:
+  - read_file
+  - write_file
+  - shell
+skills: []
+task_tags:
+  - code
+  - bugfix
+  - refactor
+  - test
+  - implementation
+cron_jobs: []
+watchers: []
+requires_approval:
+  - push code
+  - create pull request
+  - delete files
+  - run destructive shell command
+max_concurrent_tasks: 1
+max_tokens_per_task: 50000
+timeout_minutes: 30

@@ -785,7 +785,7 @@ Feishu webhook -> parse message -> TeamRouter.routeHumanMessage()
 7. GatewayServer 构造完成后再调用 runtime.start()，确保任务更新监听和广播先就位。
 8. cleanup 时调用 runtime.stop()，停止 AgentWorkers 和 CoordinatorLoop；cleanup 必须幂等。
 9. 启动日志打印 Lovely Octopus 团队状态、任务统计、项目频道数量和配置加载错误数量。
-10. 如果 agents 目录不存在或为空，创建默认 coordinator 和 coder 模板。
+10. 如果 agents 目录不存在或为空，创建默认 assistant、coordinator、coder 等仓库内置 Agent 种子。
 11. 如果某个 Agent 配置错误，不能导致整个服务崩溃；隔离错误并打印原因，其他合法 Agent 继续启动。
 12. 补充 lifecycle 测试，覆盖默认模板创建、坏 Agent 配置隔离、start/stop 和状态统计。
 ```

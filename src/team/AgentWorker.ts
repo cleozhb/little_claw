@@ -48,10 +48,15 @@ export type AgentWorkerState =
   | "stopped";
 
 /**
- * 单个常驻 Agent 的运行时适配器。
+ * 单个常驻 Agent 的运行时适配器（"员工"角色）。
  *
- * AgentWorker 只负责调度、查询任务/消息、组装上下文；真正的 LLM 流式响应、
- * 工具调用和工具结果回填都交给现有 AgentLoop，避免 Team 模式长出第二套执行循环。
+ * 核心职责：
+ * 1. 每 1 秒轮询一次，检查有没有活干（任务 > DM > 空闲）
+ * 2. 拿到任务后启动 AgentLoop 执行（ReAct 循环）
+ * 3. 运行期间持续监听新消息，通过 inject 机制插入 AgentLoop
+ * 4. 执行完毕后更新任务状态（完成/失败/等待审批），并通知项目频道
+ *
+ * 只负责调度、查询任务和消息、组装上下文；不直接操作 LLM/工具，全部委托给 AgentLoop，避免 Team 模式长出第二套执行循环。
  */
 export class AgentWorker {
   private agent: RegisteredAgent;
@@ -108,6 +113,7 @@ export class AgentWorker {
     return this.currentLoop?.isRunning ?? false;
   }
 
+  /** 启动后台轮询循环 */
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
@@ -134,9 +140,9 @@ export class AgentWorker {
   }
 
   /**
-   * 执行一次调度循环。
-   *
+   * 单次调度：决定这一轮干什么。
    * 测试和后续 server.ts 生命周期接入可以直接调用 tick()；start() 只是定时重复 tick()。
+   * 优先级：控制消息(cancel/pause) > 任务 > DM > 空闲
    */
   async tick(): Promise<void> {
     // agent.yaml 的 status 是运行准入开关；暂停的 Agent 不领取任务，也不处理 DM。
@@ -148,6 +154,7 @@ export class AgentWorker {
       return;
     }
 
+    // 正在干活 → 只检查有没有新消息可以注入
     if (this.currentLoop?.isRunning) {
       // 运行中的 AgentLoop 不被强行重启；只在 checkpoint 通过 inject() 补充人类新消息。
       log.debug(`Agent 正在运行，检查是否有可注入的人类消息：${this.agent.config.name}`);
@@ -155,12 +162,13 @@ export class AgentWorker {
       return;
     }
 
-    // 控制消息优先级最高，避免 cancel/pause 被普通任务执行阻塞。
+    // 控制消息（cancel/pause）优先级最高
     if (this.handleControlMessages()) {
       log.info(`已处理控制消息，跳过本轮普通调度：${this.agent.config.name}`);
       return;
     }
 
+    // 有分配给我的任务 → 去干活
     const task = this.nextTaskForAgent();
     if (task) {
       log.step("本轮调度选择任务", {
@@ -173,6 +181,7 @@ export class AgentWorker {
       return;
     }
 
+    // 没有任务，但有人给我发私信 → 回复 DM
     const directMessages = this.pendingDirectMessages();
     if (directMessages.length > 0) {
       log.step("本轮调度处理 Agent DM", {
@@ -183,9 +192,11 @@ export class AgentWorker {
       return;
     }
 
+    // 什么都没有 → 空闲
     this.stateValue = "idle";
   }
 
+  /** 外部中断：abort AgentLoop + 取消当前任务 */
   abortCurrent(reason = "Cancelled by human."): void {
     // 中断只通过 AgentLoop.abort() 进入底层执行；Worker 不直接取消 LLM/tool 实现细节。
     const taskId = this.currentTaskId;
@@ -203,6 +214,7 @@ export class AgentWorker {
     }
   }
 
+  /** 轮询主循环：每隔 pollIntervalMs（默认 1 秒）执行一次 tick */
   private async runLoop(): Promise<void> {
     while (!this.stopped) {
       await this.tick();
@@ -212,6 +224,10 @@ export class AgentWorker {
     }
   }
 
+  /**
+   * 查找下一个要执行的任务。
+   * 优先级：恢复审批后的任务(approved/rejected) > 已分配的(assigned) > 领取新的(pending)
+   */
   private nextTaskForAgent(): Task | null {
     const agentName = this.agent.config.name;
     // 先恢复已经分配或审批后待继续的任务，再领取新的 pending 任务。
@@ -238,6 +254,16 @@ export class AgentWorker {
     return this.tasks.assignTask(pending.id, agentName);
   }
 
+  /**
+   * 核心方法：执行一个任务的完整生命周期。
+   * 流程：startTask → 组装 prompt → AgentLoop.run() → 根据结果更新状态
+   *
+   * 任务结束后有 4 种可能：
+   * - awaiting_approval: agent 调了 request_approval，暂停等人类审批
+   * - cancelled: 被外部取消
+   * - failed: 执行出错（可能自动重试）
+   * - completed: 正常完成，通知项目频道
+   */
   private async runTask(task: Task): Promise<Task> {
     const agentName = this.agent.config.name;
     // startTask 会把 approved/rejected 改成 running，因此要先记住恢复来源。
@@ -399,6 +425,7 @@ export class AgentWorker {
     return completed;
   }
 
+  /** 处理私信：没有任务关联，不注入任务工具，回复写入 agent_dm 频道 */
   private async runDirectMessages(directMessages: TeamMessage[]): Promise<void> {
     const agentName = this.agent.config.name;
     log.step("开始处理 Agent DM", {
@@ -572,6 +599,7 @@ export class AgentWorker {
     return "none";
   }
 
+  /** 任务运行期间启动定时器，每秒检查新消息并 inject 到 AgentLoop */
   private startMessageMonitor(): void {
     this.stopMessageMonitor();
     log.debug(`启动运行中消息注入监视器：${this.agent.config.name}`);
@@ -589,6 +617,7 @@ export class AgentWorker {
     log.debug(`停止运行中消息注入监视器：${this.agent.config.name}`);
   }
 
+  /** 运行中注入：收集新的人类消息，通过 AgentLoop.inject() 塞进去 */
   private async injectPendingMessages(): Promise<void> {
     if (!this.currentLoop?.isRunning || !this.currentTaskId) return;
 
@@ -614,6 +643,7 @@ export class AgentWorker {
     }
   }
 
+  /** 从三个来源收集可注入的消息：Agent DM + 项目频道 + 任务直连，去重后返回 */
   private collectInjectableMessages(task: Task): TeamMessage[] {
     // 任务上下文同时吸收 Agent DM、项目频道和 task_id 直连消息，并去重防止同一消息重复出现。
     return uniqueMessages([
@@ -629,6 +659,7 @@ export class AgentWorker {
       .filter((message) => !isControlMessage(message));
   }
 
+  /** 处理控制消息：识别 "cancel"/"pause" 命令，执行中断或暂停 */
   private handleControlMessages(): boolean {
     let handled = false;
     for (const message of this.messages.getPendingForAgent(this.agent.config.name)) {

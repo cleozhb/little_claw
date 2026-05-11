@@ -1240,7 +1240,7 @@ export function TeamView() {
                     {agent.displayName || agent.name}
                   </span>
                   <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
-                    {agent.status ?? "preset"}
+                    {agent.status ?? "unknown"}
                   </Badge>
                 </div>
                 <div className="mt-2 line-clamp-2 text-xs text-muted-foreground">

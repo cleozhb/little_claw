@@ -1,4 +1,7 @@
-import { test, expect, beforeEach } from "bun:test";
+import { test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { LLMProvider, ChatOptions } from "../../src/llm/types.ts";
 import type { Message, StreamEvent } from "../../src/types/message.ts";
 import type { AgentEvent } from "../../src/types/message.ts";
@@ -8,6 +11,7 @@ import {
   createSpawnAgentTool,
   type SpawnAgentTool,
 } from "../../src/tools/builtin/SpawnAgentTool.ts";
+import { AgentRegistry } from "../../src/team/AgentRegistry.ts";
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -89,6 +93,8 @@ function createMockTool(
 // ---------------------------------------------------------------------------
 
 let toolRegistry: ToolRegistry;
+let agentRegistry: AgentRegistry;
+let agentDir: string;
 
 beforeEach(() => {
   toolRegistry = new ToolRegistry();
@@ -102,7 +108,30 @@ beforeEach(() => {
   toolRegistry.register(
     createMockTool("shell", { success: true, output: "shell output" }),
   );
+
+  agentDir = mkdtempSync(join(tmpdir(), "little-claw-spawn-agents-"));
+  agentRegistry = new AgentRegistry(agentDir);
+  createTestAgent("coder", "Coding specialist", ["read_file", "write_file", "shell"]);
+  createTestAgent("planner", "Planning specialist", ["read_file", "shell"]);
+  createTestAgent("researcher", "Research specialist", ["shell", "read_file"]);
+  agentRegistry.loadAll();
 });
+
+afterEach(() => {
+  rmSync(agentDir, { recursive: true, force: true });
+});
+
+function createTestAgent(name: string, role: string, tools: string[]) {
+  agentRegistry.create(name, {
+    config: {
+      name,
+      role,
+      tools,
+    },
+    soul: `# Soul\n\nYou are ${name}.`,
+    operatingInstructions: `# Agent Operating Instructions\n\nWork as ${name}.`,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -114,6 +143,7 @@ test("SpawnAgentTool: normal execution returns text result", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const result = await spawnTool.execute({
@@ -131,6 +161,7 @@ test("SpawnAgentTool: missing agent_type returns error", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const result = await spawnTool.execute({
@@ -147,6 +178,7 @@ test("SpawnAgentTool: missing task returns error", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const result = await spawnTool.execute({
@@ -163,6 +195,7 @@ test("SpawnAgentTool: event callback receives start -> progress -> done sequence
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const events: AgentEvent[] = [];
@@ -219,6 +252,7 @@ test("SpawnAgentTool: context is injected into conversation", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   await spawnTool.execute({
@@ -249,6 +283,7 @@ test("SpawnAgentTool: sub-agent with tool calls works end-to-end", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const result = await spawnTool.execute({
@@ -274,6 +309,7 @@ test("SpawnAgentTool: LLM error is propagated as failure", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const events: AgentEvent[] = [];
@@ -318,6 +354,7 @@ test("SpawnAgentTool: recursion prevention - sub-agent cannot see spawn_agent to
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
   toolRegistry.register(spawnTool);
 
@@ -363,6 +400,7 @@ test("SpawnAgentTool: planner agent only gets read_file and shell tools", async 
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   await spawnTool.execute({
@@ -378,12 +416,13 @@ test("SpawnAgentTool: planner agent only gets read_file and shell tools", async 
   expect(toolNames).not.toContain("spawn_agent");
 });
 
-test("SpawnAgentTool: unknown agent type gets generic config", async () => {
+test("SpawnAgentTool: unknown agent type returns registry error", async () => {
   const llm = createMockLLM([textReply("generic agent response")]);
 
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const result = await spawnTool.execute({
@@ -391,9 +430,9 @@ test("SpawnAgentTool: unknown agent type gets generic config", async () => {
     task: "Do something generic",
   });
 
-  // 未知类型不会报错，会使用 fallback 配置
-  expect(result.success).toBe(true);
-  expect(result.output).toContain("generic agent response");
+  expect(result.success).toBe(false);
+  expect(result.error).toContain("Unknown or inactive agent");
+  expect(result.error).toContain("coder");
 });
 
 test("SpawnAgentTool: empty output returns fallback message", async () => {
@@ -411,6 +450,7 @@ test("SpawnAgentTool: empty output returns fallback message", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   const result = await spawnTool.execute({
@@ -431,6 +471,7 @@ test("SpawnAgentTool: callback is per-session and clearable", async () => {
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   // 第一次执行带 callback
@@ -469,6 +510,7 @@ test("SpawnAgentTool: sub-agent does not trigger title generation", async () => 
   const spawnTool = createSpawnAgentTool({
     llmProvider: llm,
     toolRegistry,
+    getAgentRegistry: () => agentRegistry,
   });
 
   await spawnTool.execute({ agent_type: "coder", task: "Write code" });

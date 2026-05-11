@@ -44,9 +44,12 @@ export type CoordinatorLoopState = "idle" | "running" | "stopped";
 /**
  * Coordinator scheduler for Lovely Octopus team mode.
  *
- * The loop owns scanning, deterministic assignment, timeout escalation, and
- * context assembly. When coordination needs actual multi-turn reasoning or
- * tool use, it runs the coordinator as a normal AgentLoop with CoordinatorTools.
+ * 团队模式的调度中枢。核心职责：
+ * 1. 定时轮询（每 2 秒），巡检任务和消息状态
+ * 2. 确定性逻辑：超时检测、失败上报、任务分配（不需要 LLM）
+ * 3. 需要决策时：启动临时 AgentLoop，让 coordinator 用 LLM 推理 + 调用 CoordinatorTools
+ *
+ * 设计思路：能确定性处理的绝不调 LLM（省成本），只有需要"判断"时才启动推理。
  */
 export class CoordinatorLoop {
   private agents: AgentRegistry;
@@ -104,6 +107,7 @@ export class CoordinatorLoop {
     return this.currentLoop?.isRunning ?? false;
   }
 
+  /** 启动轮询循环，开始定时巡检 */
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
@@ -119,24 +123,29 @@ export class CoordinatorLoop {
     this.stateValue = "stopped";
   }
 
+  /**
+   * 单次巡检：按顺序执行 5 个步骤。
+   * 前 3 步是确定性逻辑（不需要 LLM），后 2 步可能触发 LLM 推理。
+   */
   async tick(): Promise<void> {
     if (this.currentLoop?.isRunning) return;
 
     this.stateValue = "running";
     try {
-      this.failTimedOutTasks();
-      this.escalateFailedTasks();
-      this.assignPendingTasks();
-      await this.summarizeBusyProjectChannels();
-      const handledCoordinatorInbox = await this.handleCoordinatorInbox();
+      this.failTimedOutTasks();                          // ① 超时任务标记失败
+      this.escalateFailedTasks();                        // ② 失败任务上报给 coordinator 频道
+      this.assignPendingTasks();                         // ③ 按 tag 匹配，将 pending 任务分配给空闲 agent
+      await this.summarizeBusyProjectChannels();         // ④ 消息过多的项目频道做摘要
+      const handledCoordinatorInbox = await this.handleCoordinatorInbox();  // ⑤ 处理 coordinator 收件箱
       if (!handledCoordinatorInbox) {
-        await this.handleProjectChannelInbox();
+        await this.handleProjectChannelInbox();          // ⑥ 处理项目频道中未处理的人类消息
       }
     } finally {
       this.stateValue = "idle";
     }
   }
 
+  /** 轮询主循环：每隔 pollIntervalMs（默认 2 秒）执行一次 tick */
   private async runLoop(): Promise<void> {
     while (!this.stopped) {
       await this.tick();
@@ -146,6 +155,7 @@ export class CoordinatorLoop {
     }
   }
 
+  /** ③ 确定性任务分配：遍历所有空闲 agent，按 tag 匹配将 pending 任务分配出去 */
   private assignPendingTasks(): void {
     const agents = this.listAssignableAgents();
     for (const agent of agents) {
@@ -164,6 +174,7 @@ export class CoordinatorLoop {
     }
   }
 
+  /** ① 超时检测：running 状态超过 agent 配置的 timeout_minutes 的任务标记为 failed */
   private failTimedOutTasks(): void {
     const running = this.tasks.listTasks({ status: "running" });
     const now = Date.now();
@@ -188,6 +199,7 @@ export class CoordinatorLoop {
     }
   }
 
+  /** ② 失败上报：failed 状态的任务生成一条消息到 coordinator 频道，等待 LLM 介入处理 */
   private escalateFailedTasks(): void {
     for (const task of this.tasks.listTasks({ status: "failed" })) {
       if (this.hasCoordinatorEscalation(task.id)) continue;
@@ -204,6 +216,7 @@ export class CoordinatorLoop {
     }
   }
 
+  /** ④ 频道摘要：项目频道消息超过阈值时，调 LLM 生成摘要并标记已处理 */
   private async summarizeBusyProjectChannels(): Promise<void> {
     for (const channel of this.channels.listChannels({ status: "active" })) {
       const pending = this.messages.getPendingForProject(channel.slug, this.projectSummaryThreshold);
@@ -231,6 +244,7 @@ export class CoordinatorLoop {
     }
   }
 
+  /** ⑤ 处理 coordinator 收件箱：有需要协调决策的消息时，启动 LLM 推理 */
   private async handleCoordinatorInbox(): Promise<boolean> {
     const pendingMessages = this.messages.listMessages({
       channelType: "coordinator",
@@ -244,6 +258,11 @@ export class CoordinatorLoop {
     return true;
   }
 
+  /**
+   * ⑥ 处理项目频道中未处理的人类消息。
+   * 快捷路径：项目只有唯一 owner agent 时，直接创建任务分配，跳过 LLM。
+   * 否则启动 coordinator LLM 推理决定如何处理。
+   */
   private async handleProjectChannelInbox(): Promise<boolean> {
     for (const channel of this.channels.listChannels({ status: "active" })) {
       if (this.hasWorkerOwnedProjectTask(channel.slug)) continue;
@@ -273,6 +292,10 @@ export class CoordinatorLoop {
     return false;
   }
 
+  /**
+   * 核心方法：启动一个临时 AgentLoop 让 coordinator 用 LLM 推理。
+   * 流程：组装上下文 → 运行 ReAct 循环（可调用 CoordinatorTools）→ 把回复写入频道。
+   */
   private async runCoordinatorOnMessages(
     pendingMessages: TeamMessage[],
     replyTarget: { replyChannelType: "coordinator"; replyChannelId: string } | {
@@ -466,6 +489,10 @@ export class CoordinatorLoop {
     return uniqueStrings(skills);
   }
 
+  /**
+   * 快捷路径优化：如果项目只有唯一一个负责的 agent，直接返回它。
+   * 避免为确定性结果浪费 LLM 调用。
+   */
   private findSingleProjectOwner(project: string): RegisteredAgent | null {
     const normalizedProject = normalizeRoutingToken(project);
     const owners = this.listAssignableAgents().filter((agent) =>

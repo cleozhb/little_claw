@@ -35,7 +35,6 @@ import type { ContextRetriever } from "../memory/ContextRetriever.ts";
 import type { ContextIndexer } from "../memory/ContextIndexer.ts";
 import type { ContextMetaGenerator } from "../memory/ContextMetaGenerator.ts";
 import type { SimulationManager } from "../simulation/SimulationManager.ts";
-import { getAllAgentConfigs } from "../agents/presets.ts";
 import type { FeishuAdapter } from "./adapters/FeishuAdapter.ts";
 import type { TeamRouter } from "../team/TeamRouter.ts";
 import type { TeamMessageStore, TeamMessage } from "../team/TeamMessageStore.ts";
@@ -934,34 +933,25 @@ export class GatewayServer {
   }
 
   private handleListAgents(connectionId: string): void {
-    if (this.agentRegistry) {
-      const agents: AgentInfo[] = this.agentRegistry.listAll().map((agent) => ({
-        name: agent.config.name,
-        displayName: agent.config.display_name,
-        description: agent.config.role,
-        role: agent.config.role,
-        status: agent.config.status,
-        aliases: [...agent.config.aliases],
-        directMessage: agent.config.direct_message,
-        allowedTools: [...agent.config.tools],
-        skills: [...agent.config.skills],
-        taskTags: [...agent.config.task_tags],
-        maxTurns: agent.config.max_concurrent_tasks,
-        canSpawnSubAgent: false,
-        source: "team",
-      }));
-      this.sendToConnection(connectionId, { type: "agents_list", agents });
+    if (!this.agentRegistry) {
+      this.sendToConnection(connectionId, { type: "error", message: "Agent registry not configured" });
       return;
     }
 
-    const configs = getAllAgentConfigs();
-    const agents: AgentInfo[] = configs.map((c) => ({
-      name: c.name,
-      description: c.systemPrompt.slice(0, 120),
-      allowedTools: c.allowedTools,
-      maxTurns: c.maxTurns,
-      canSpawnSubAgent: c.canSpawnSubAgent,
-      source: "preset",
+    const agents: AgentInfo[] = this.agentRegistry.listAll().map((agent) => ({
+      name: agent.config.name,
+      displayName: agent.config.display_name,
+      description: agent.config.role,
+      role: agent.config.role,
+      status: agent.config.status,
+      aliases: [...agent.config.aliases],
+      directMessage: agent.config.direct_message,
+      allowedTools: [...agent.config.tools],
+      skills: [...agent.config.skills],
+      taskTags: [...agent.config.task_tags],
+      maxTurns: agent.config.max_concurrent_tasks,
+      canSpawnSubAgent: false,
+      source: "team",
     }));
     this.sendToConnection(connectionId, { type: "agents_list", agents });
   }

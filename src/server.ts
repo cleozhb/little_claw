@@ -105,18 +105,18 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
   const agentRegistry = new AgentRegistry(options.agentDir);
   let registeredAgents = agentRegistry.loadAll();
   if (registeredAgents.length === 0) {
-    console.log("Lovely Octopus: no agents found, creating default coordinator, coder, and podcast-curator templates");
-    for (const name of ["coordinator", "coder", "podcast-curator"]) {
-      try {
-        agentRegistry.createFromTemplate(name);
-      } catch (err) {
-        console.error(
-          `Lovely Octopus: failed to create default agent ${name}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
+    console.log("Lovely Octopus: no agents found, installing repository default agents");
+    agentRegistry.installDefaultAgents();
     registeredAgents = agentRegistry.loadAll();
+  } else {
+    const missingRequiredAgents = ["assistant", "coordinator"].filter((name) => !agentRegistry.get(name));
+    if (missingRequiredAgents.length > 0) {
+      console.log(
+        `Lovely Octopus: missing required default agents, installing ${missingRequiredAgents.join(", ")}`,
+      );
+      agentRegistry.installDefaultAgents(missingRequiredAgents);
+      registeredAgents = agentRegistry.loadAll();
+    }
   }
 
   const teamMessages = new TeamMessageStore(options.db);
@@ -348,13 +348,6 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   toolRegistry.register(createMemoryReadTool(fileMemory));
   toolRegistry.register(createContextWriteTool(fileMemory, contextIndexer, contextMetaGenerator));
 
-  // --- SpawnAgentTool 注册（只有 Main Agent 会在工具列表中看到它） ---
-  const spawnAgentTool = createSpawnAgentTool({
-    llmProvider,
-    toolRegistry,
-  });
-  toolRegistry.register(spawnAgentTool);
-
   // --- Skill 系统初始化 ---
   const skillConfig = new SkillConfigFile();
   await skillConfig.load();
@@ -365,6 +358,20 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     embeddingProvider,
   });
   await skillManager.initializeAll();
+
+  let lovelyOctopusForSpawn: LovelyOctopusRuntime | undefined;
+
+  // --- SpawnAgentTool 注册（只有 Main Agent 会在工具列表中看到它） ---
+  const spawnAgentTool = createSpawnAgentTool({
+    llmProvider,
+    toolRegistry,
+    getAgentRegistry: () => lovelyOctopusForSpawn?.agentRegistry,
+    getSkillManager: () => skillManager,
+    shellTool: builtinTools.shellTool,
+    memoryManager,
+    contextRetriever,
+  });
+  toolRegistry.register(spawnAgentTool);
 
   // 打印 Skill 加载摘要
   const skillSummary = skillManager.getSummary();
@@ -442,6 +449,8 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     spawnAgentTool,
     memoryManager,
     contextRetriever,
+    getAgentRegistry: () => lovelyOctopusForSpawn?.agentRegistry,
+    mainAgentName: config.chat.mainAgentName,
   });
 
   // Late-bound reference: gateway is created after the runtime, so use a closure.
@@ -460,6 +469,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
       gatewayRef?.broadcastToAll({ type: "task_progress", taskId, agentName, delta });
     },
   });
+  lovelyOctopusForSpawn = lovelyOctopus;
 
   const agentLoadErrors = lovelyOctopus.agentRegistry.getLoadErrors();
   if (agentLoadErrors.length > 0) {
