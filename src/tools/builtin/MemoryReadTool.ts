@@ -13,7 +13,6 @@ export function createMemoryReadTool(
     description:
       "Read a persistent memory or context-hub file. Use this to check existing content before writing new entries.\n\n" +
       "Memory files:\n" +
-      "- SOUL.md (agent identity)\n" +
       "- memory/YYYY-MM-DD.md (daily logs)\n\n" +
       "Context Hub (three-layer system, navigate L0 → L1 → L2):\n" +
       '- context-hub/{path}/.overview.md — L1 directory index, "WHERE to look + WHAT each file contains"\n' +
@@ -29,7 +28,7 @@ export function createMemoryReadTool(
         file: {
           type: "string",
           description:
-            'The file to read. Examples: "SOUL.md", "memory/2026-04-04.md", "context-hub/3-projects/little-claw/.overview.md", "context-hub/4-knowledge/sops/deployment.md".',
+            'The file to read. Examples: "memory/2026-04-04.md", "context-hub/3-projects/little-claw/.overview.md", "context-hub/4-knowledge/sops/deployment.md".',
         },
       },
       required: ["file"],

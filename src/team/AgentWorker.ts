@@ -299,6 +299,9 @@ export class AgentWorker {
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,
       channelId: task.channelId,
+      runMode: "team_worker",
+      contextMode: "project",
+      projectContextPath: running.project ? `context-hub/3-projects/${running.project}` : undefined,
     });
 
     this.currentLoop = loop;
@@ -450,6 +453,8 @@ export class AgentWorker {
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,
       channelId: dmChannelId,
+      runMode: "agent_dm",
+      contextMode: "auto",
     });
 
     for (const message of directMessages) {

@@ -325,6 +325,11 @@ export class CoordinatorLoop {
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,
+      runMode: "coordinator",
+      contextMode: replyTarget.replyChannelType === "project" ? "project" : "always",
+      projectContextPath: replyTarget.replyChannelType === "project"
+        ? `context-hub/3-projects/${replyTarget.project}`
+        : undefined,
     });
 
     for (const message of pendingMessages) {

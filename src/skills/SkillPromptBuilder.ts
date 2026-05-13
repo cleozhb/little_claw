@@ -3,11 +3,18 @@ import type { ParsedSkill } from "./types";
 const DEFAULT_TOKEN_BUDGET = 20000;
 const CHARS_PER_TOKEN = 4;
 
+export interface SkillPromptOptions {
+  /** Number of skills whose full instruction body may be included. */
+  fullLimit?: number;
+  /** Number of remaining skills to include as name/description summaries. */
+  summaryLimit?: number;
+}
+
 /** 引导语，追加到基础 system prompt 之后、skill 列表之前 */
 export const SKILL_GUIDE =
   `Below are skills that provide specialized knowledge and instructions.
 IMPORTANT: Skills are NOT tools — do NOT attempt to call them via tool_use. Instead, when a user's request matches a skill's description, directly follow the skill's instructions in your response. You may use your available tools (shell, read_file, write_file, etc.) as needed to carry out the skill's instructions.
-When you decide to follow a skill's instructions, you MUST begin your response with a brief note indicating which skill you are using, in this exact format: "> {skill-name}". For example: "> elon-musk-perspective". This helps the user understand which skill is guiding your response.`;
+When you decide to follow a skill's instructions, you MUST begin your response with a brief note indicating which skill you are using, in this exact format: "> {skill-name}". For example: "> example-skill". This helps the user understand which skill is guiding your response.`;
 
 /**
  * 将 instructions 中的 {baseDir} 占位符替换为 Skill 的实际目录路径。
@@ -53,15 +60,25 @@ export class SkillPromptBuilder {
   buildSkillPrompt(
     skills: ParsedSkill[],
     tokenBudget = DEFAULT_TOKEN_BUDGET,
+    options: SkillPromptOptions = {},
   ): string {
     if (skills.length === 0) return "";
 
     const charBudget = tokenBudget * CHARS_PER_TOKEN;
+    const fullLimit = options.fullLimit ?? skills.length;
+    const summaryLimit = options.summaryLimit ?? skills.length;
+    const fullCandidates = Number.isFinite(fullLimit)
+      ? skills.slice(0, Math.max(0, fullLimit))
+      : skills;
+    const summaryCandidates = Number.isFinite(fullLimit)
+      ? skills.slice(Math.max(0, fullLimit), Math.max(0, fullLimit) + Math.max(0, summaryLimit))
+      : [];
 
     // 尝试全量包含（skill 少且预算够时直接全量）
-    const fullBlocks = skills.map(buildFullSkillBlock);
-    const fullContent = fullBlocks.join("\n");
-    const wrappedFull = `<available_skills>\n${fullContent}\n</available_skills>`;
+    const fullBlocks = fullCandidates.map(buildFullSkillBlock);
+    const summaryBlocks = summaryCandidates.map(buildSummarySkillBlock);
+    const allBlocks = [...fullBlocks, ...summaryBlocks];
+    const wrappedFull = `<available_skills>\n${allBlocks.join("\n")}\n</available_skills>`;
 
     if (wrappedFull.length <= charBudget) {
       return wrappedFull;
@@ -73,7 +90,7 @@ export class SkillPromptBuilder {
 
     const blocks: string[] = [];
 
-    for (const skill of skills) {
+    for (const skill of fullCandidates) {
       const fullBlock = buildFullSkillBlock(skill);
       if (fullBlock.length + 1 <= remaining) {
         blocks.push(fullBlock);
@@ -88,6 +105,14 @@ export class SkillPromptBuilder {
         remaining -= summary.length + 1;
       }
       // 摘要也放不下就跳过
+    }
+
+    for (const skill of summaryCandidates) {
+      const summary = buildSummarySkillBlock(skill);
+      if (summary.length + 1 <= remaining) {
+        blocks.push(summary);
+        remaining -= summary.length + 1;
+      }
     }
 
     if (blocks.length === 0) return "";

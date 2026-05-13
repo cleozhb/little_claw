@@ -69,6 +69,8 @@ export class Repl {
     this.agent = new AgentLoop(this.client, this.toolRegistry, conversation, {
       skillManager: this.skillManager,
       shellTool: this.shellTool,
+      runMode: "chat",
+      contextMode: "auto",
     });
   }
 

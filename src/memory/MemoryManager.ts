@@ -12,7 +12,7 @@ import type { FileMemoryManager } from "./FileMemoryManager.ts";
 /**
  * 同频道/无频道记忆的最低相似度阈值。
  *
- * 注意：LocalEmbeddingProvider 使用 256 维 bag-of-words hash 向量，
+ * 注意：当未配置远端 embedding API 时，LocalEmbeddingProvider 使用 256 维 bag-of-words hash 向量，
  * 中文中常见字（的、是、了等）会产生大量 hash 碰撞，导致无关文本之间
  * 也有 0.3-0.4 的虚假相似度。因此阈值不能设太低，0.5 是实测经验值：
  * 同主题文本通常 > 0.55，跨主题中文文本通常 < 0.45。
@@ -27,6 +27,18 @@ const RECALL_SIMILARITY_THRESHOLD = 0.5;
  * 0.65 的阈值足以过滤掉大部分跨频道的噪声记忆。
  */
 const CROSS_CHANNEL_SIMILARITY_THRESHOLD = 0.65;
+
+type FileMemoryContextLoadOptions = {
+  contextMap?: boolean;
+  identity?: boolean;
+  inbox?: boolean;
+};
+
+type FileMemoryContext = {
+  contextMap: string | null;
+  identity: string | null;
+  inbox: string | null;
+};
 
 export class MemoryManager {
   private vectorStore: VectorStore;
@@ -146,34 +158,28 @@ export class MemoryManager {
   /**
    * 加载文件记忆上下文。
    * 三层加载系统：
-   *   - SOUL.md（Agent 身份，必定加载）
-   *   - identity（0-identity/profile.md，必定加载）
-   *   - inbox（1-inbox/inbox.md，必定加载）
-   *   - contextMap（所有 .abstract.md 拼接的 L0 全局地图，必定加载）
-   *   - user / memory（旧系统 fallback，迁移后为 null）
+   *   - identity（0-identity/profile.md，按策略加载）
+   *   - inbox（1-inbox/inbox.md，按策略加载）
+   *   - contextMap（所有 .abstract.md 拼接的 L0 全局地图，按策略加载）
    */
-  async loadFileMemoryContext(): Promise<{
-    soul: string | null;
-    user: string | null;
-    memory: string | null;
-    contextMap: string | null;
-    identity: string | null;
-    inbox: string | null;
-  }> {
+  async loadFileMemoryContext(
+    options: FileMemoryContextLoadOptions = {
+      contextMap: true,
+      identity: true,
+      inbox: true,
+    },
+  ): Promise<FileMemoryContext> {
     if (!this.fileMemory) {
-      return { soul: null, user: null, memory: null, contextMap: null, identity: null, inbox: null };
+      return { contextMap: null, identity: null, inbox: null };
     }
 
-    const [soul, user, memory, contextMap, identity, inbox] = await Promise.all([
-      this.fileMemory.readSoul(),
-      this.fileMemory.readUser(),
-      this.fileMemory.readMemory(),
-      this.fileMemory.readContextMap(),
-      this.fileMemory.readIdentity(),
-      this.fileMemory.readInbox(),
+    const [contextMap, identity, inbox] = await Promise.all([
+      options.contextMap ? this.fileMemory.readContextMap() : Promise.resolve(null),
+      options.identity ? this.fileMemory.readIdentity() : Promise.resolve(null),
+      options.inbox ? this.fileMemory.readInbox() : Promise.resolve(null),
     ]);
 
-    return { soul, user, memory, contextMap, identity, inbox };
+    return { contextMap, identity, inbox };
   }
 
   /** 获取 VectorStore 实例（供 Gateway 直接查询统计/搜索） */

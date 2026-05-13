@@ -41,3 +41,5 @@ DESIGN.md
 .DS_Store
 .codex
 .comate/
+docs/project-architecture-interview-guide.md
+log/

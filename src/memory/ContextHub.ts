@@ -1,5 +1,5 @@
 import { join, relative } from "node:path";
-import { mkdirSync, existsSync, renameSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
 // ContextHub — 三层上下文加载系统的核心管理器
@@ -105,26 +105,11 @@ export class ContextHub {
 
   /**
    * 初始化 context-hub 目录结构。
-   * - 检测是否需要从旧 USER.md/MEMORY.md 迁移
-   * - 全新安装则创建模板
+   * 全新安装则创建模板；已存在的用户文件不会被覆盖。
    */
-  async initialize(): Promise<{ migrated: boolean }> {
-    const hubExists = existsSync(this.hubDir);
-    const oldUserMd = join(this.baseDir, "USER.md");
-    const oldMemoryMd = join(this.baseDir, "memory", "MEMORY.md");
-    const needsMigration = !hubExists && existsSync(oldUserMd);
-
-    // 创建目录结构
+  async initialize(): Promise<void> {
     this.createDirectoryStructure();
-
-    if (needsMigration) {
-      await this.migrate(oldUserMd, oldMemoryMd);
-      return { migrated: true };
-    }
-
-    // 全新安装或已迁移过 — 确保模板文件存在
     await this.ensureTemplates();
-    return { migrated: false };
   }
 
   /**
@@ -213,31 +198,6 @@ export class ContextHub {
       }
     }
     return files.sort();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Private: 迁移逻辑
-  // ---------------------------------------------------------------------------
-
-  private async migrate(oldUserMd: string, oldMemoryMd: string): Promise<void> {
-    // 迁移 USER.md → 0-identity/profile.md
-    const userContent = await this.readFileIfExists(oldUserMd);
-    if (userContent) {
-      const profilePath = join(this.hubDir, "0-identity", "profile.md");
-      await Bun.write(profilePath, userContent);
-      renameSync(oldUserMd, `${oldUserMd}.bak`);
-    }
-
-    // 迁移 MEMORY.md → 4-knowledge/memory-archive.md
-    const memoryContent = await this.readFileIfExists(oldMemoryMd);
-    if (memoryContent) {
-      const archivePath = join(this.hubDir, "4-knowledge", "memory-archive.md");
-      await Bun.write(archivePath, memoryContent);
-      renameSync(oldMemoryMd, `${oldMemoryMd}.bak`);
-    }
-
-    // 确保其余模板文件存在
-    await this.ensureTemplates();
   }
 
   // ---------------------------------------------------------------------------

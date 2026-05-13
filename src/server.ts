@@ -281,15 +281,15 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   // --- Memory 系统初始化 ---
   const embeddingProvider = createEmbeddingProvider({
     apiKey: process.env.EMBEDDING_API_KEY ?? config.llmApiKey,
-    model: process.env.EMBEDDING_MODEL,
-    baseURL: process.env.EMBEDDING_BASE_URL,
+    model: process.env.EMBEDDING_MODEL ?? "qwen3-embedding-8b",
+    baseURL: process.env.EMBEDDING_BASE_URL ?? "https://qianfan.baidubce.com/v2",
     maxInputChars: process.env.EMBEDDING_MAX_INPUT_CHARS
       ? parseInt(process.env.EMBEDDING_MAX_INPUT_CHARS, 10)
       : undefined,
   });
   const vectorStore = new VectorStore(join(dataDir, "memory.db"), embeddingProvider);
 
-  // 文件记忆层初始化（~/.little_claw/ 下的 SOUL.md, USER.md, memory/）
+  // 文件记忆层初始化（~/.little_claw/ 下的 context-hub/, memory/）
   const fileMemory = new FileMemoryManager();
   await fileMemory.initialize();
 

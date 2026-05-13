@@ -8,16 +8,10 @@ import type { Message } from "../types/message.ts";
 // ---------------------------------------------------------------------------
 //
 // 管理 ~/.little_claw/ 下的文件记忆：
-//   SOUL.md    — Agent 身份和行为准则（用户手动编辑，只读）
 //   context-hub/  — 三层上下文系统（L0 abstract / L1 overview / L2 files）
 //   memory/
 //     YYYY-MM-DD.md  — 每日日志
 // ---------------------------------------------------------------------------
-
-const SOUL_TEMPLATE = `# Soul
-
-Describe your agent's personality and behavior guidelines here.
-`;
 
 export class FileMemoryManager {
   private baseDir: string;
@@ -33,17 +27,10 @@ export class FileMemoryManager {
   /**
    * 首次启动时创建目录结构和模板文件。
    * 已存在的文件不会被覆盖。
-   * 自动检测旧 USER.md/MEMORY.md 并迁移到 context-hub。
    */
   async initialize(): Promise<void> {
     mkdirSync(this.memoryDir, { recursive: true });
-    await this.ensureFile(join(this.baseDir, "SOUL.md"), SOUL_TEMPLATE);
-
-    // 初始化 context-hub（含迁移检测）
-    const { migrated } = await this.contextHub.initialize();
-    if (migrated) {
-      console.log("Migrated USER.md and MEMORY.md to context-hub/");
-    }
+    await this.contextHub.initialize();
   }
 
   // --- Context Hub 读取接口 ---
@@ -76,31 +63,6 @@ export class FileMemoryManager {
    */
   async readInbox(): Promise<string | null> {
     return this.contextHub.readFile("1-inbox/inbox.md");
-  }
-
-  // --- 原有读取接口 ---
-
-  /** 读取 SOUL.md（Agent 身份准则），不存在返回 null */
-  async readSoul(): Promise<string | null> {
-    return this.readFileIfExists(join(this.baseDir, "SOUL.md"));
-  }
-
-  /**
-   * 读取 USER.md（用户偏好）。
-   * 迁移后 USER.md 已重命名为 .bak，此方法返回 null，
-   * 实际内容从 readIdentity() 获取。
-   */
-  async readUser(): Promise<string | null> {
-    return this.readFileIfExists(join(this.baseDir, "USER.md"));
-  }
-
-  /**
-   * 读取 memory/MEMORY.md（长期知识）。
-   * 迁移后 MEMORY.md 已重命名为 .bak，此方法返回 null，
-   * 实际内容从 context-hub/4-knowledge/ 获取。
-   */
-  async readMemory(): Promise<string | null> {
-    return this.readFileIfExists(join(this.memoryDir, "MEMORY.md"));
   }
 
   /** 读取指定的记忆文件（支持相对路径和绝对路径） */
@@ -203,8 +165,7 @@ export class FileMemoryManager {
     const glob = new Bun.Glob("*.{md,jsonl}");
     const files: string[] = [];
     for await (const path of glob.scan({ cwd: this.memoryDir })) {
-      // 排除 MEMORY.md，只返回日期日志
-      if (path !== "MEMORY.md") {
+      if (/^\d{4}-\d{2}-\d{2}\.(md|jsonl)$/.test(path)) {
         files.push(join(this.memoryDir, path));
       }
     }
@@ -225,9 +186,7 @@ export class FileMemoryManager {
 
   /**
    * 解析记忆文件路径。支持：
-   * - "SOUL.md" → ~/.little_claw/SOUL.md
    * - "memory/2026-04-04.md" → ~/.little_claw/memory/2026-04-04.md
-   * - "memory/MEMORY.md" → ~/.little_claw/memory/MEMORY.md
    * - 绝对路径但必须在 baseDir 下
    */
   private resolveMemoryPath(filePath: string): string {

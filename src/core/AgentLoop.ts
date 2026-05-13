@@ -16,8 +16,14 @@ import type { MemoryManager } from "../memory/MemoryManager.ts";
 import type { ContextRetriever, ScoredContext } from "../memory/ContextRetriever.ts";
 import { SkillPromptBuilder, SKILL_GUIDE } from "../skills/SkillPromptBuilder.ts";
 import { generateTitle } from "./TitleGenerator.ts";
-import { allocateBudget, formatLongTermMemory } from "../memory/TokenBudget.ts";
+import { allocateBudget, estimateTokens, formatLongTermMemory } from "../memory/TokenBudget.ts";
 import { createLogger } from "../utils/logger.ts";
+import {
+  buildContextPolicy,
+  type AgentRunMode,
+  type ContextMode,
+  type ContextPolicy,
+} from "./ContextPolicy.ts";
 
 const log = createLogger("AgentLoop");
 
@@ -37,7 +43,6 @@ const MEMORY_GUIDANCE = `You have a persistent memory system with two layers:
 ## File Memory (daily logs)
 - Important decisions, project facts → write to memory/YYYY-MM-DD.md (use today's date) via memory_write tool
 - You can read past memories using memory_read. At the start of conversations, relevant memories are automatically loaded.
-- SOUL.md is read-only and defines your identity/behavior — follow its guidelines.
 
 ## Context Hub (structured user context)
 Save structured information to the user's context-hub using the context_write tool.
@@ -87,6 +92,10 @@ When you spot one of these, mention it briefly in your reply:
 "Heads up: 3-projects/old-thing looks stale (last updated 2026-01). Want me to suggest archiving it?"
 NEVER write to 5-archive/ yourself — the user moves items there manually.`;
 
+const SHORT_MEMORY_GUIDANCE = `You have persistent memory and context-hub tools. Use them only when the user asks you to remember, recall, or work with saved context. Load specific files on demand instead of browsing broad memory areas.`;
+
+const PROJECT_MEMORY_GUIDANCE = `You have persistent memory and context-hub tools. For project work, use the project workspace named in the task context, and read or write only specific files that are relevant to the task. Use memory_read for exact context-hub paths and context_write for updates relative to context-hub/. Do not assume the global context map is loaded.`;
+
 export class AgentLoop {
   private client: LLMProvider;
   private toolRegistry: ToolRegistry;
@@ -101,20 +110,23 @@ export class AgentLoop {
   private contextRetriever?: ContextRetriever;
   /** 当前频道/项目 ID，用于记忆隔离 */
   private channelId?: string;
+  private runMode: AgentRunMode;
+  private contextMode: ContextMode;
+  private projectContextPath?: string;
+  private currentContextPolicy?: ContextPolicy;
   private cachedMemories: string[] = [];
   /** L1 检索命中的 .overview.md 内容，每次 run() 开始时刷新 */
   private cachedContextOverviews: ScoredContext[] = [];
+  /** Team/project 模式下直接加载的项目 overview */
+  private cachedProjectOverview: { path: string; content: string } | null = null;
   /** 文件记忆层缓存，每次 run() 开始时刷新 */
   private cachedFileMemory: {
-    soul: string | null;
-    user: string | null;
-    memory: string | null;
     contextMap: string | null;
     identity: string | null;
     inbox: string | null;
-  } = { soul: null, user: null, memory: null, contextMap: null, identity: null, inbox: null };
+  } = { contextMap: null, identity: null, inbox: null };
 
-  /** 当前轮次检索命中的 skill 列表（由 runInner 设置，getEffectiveSystemPrompt 使用） */
+  /** 当前轮次检索命中的 skill 列表（由 runInner 设置，getEffectiveLLMInput 使用） */
   private selectedSkills: ParsedSkill[] = [];
 
   /** 对话轮次计数器，每完成一次 run() 计数 +1 */
@@ -153,6 +165,9 @@ export class AgentLoop {
       contextRetriever?: ContextRetriever;
       /** 当前频道/项目 ID，用于记忆的频道隔离。Team 模式下传入 project 频道 ID。 */
       channelId?: string;
+      runMode?: AgentRunMode;
+      contextMode?: ContextMode;
+      projectContextPath?: string;
     },
   ) {
     this.client = client;
@@ -166,6 +181,9 @@ export class AgentLoop {
     this.memoryManager = options?.memoryManager;
     this.contextRetriever = options?.contextRetriever;
     this.channelId = options?.channelId;
+    this.runMode = options?.runMode ?? "chat";
+    this.contextMode = options?.contextMode ?? "auto";
+    this.projectContextPath = options?.projectContextPath;
   }
 
   // ----------------------------------------------------------
@@ -254,14 +272,34 @@ export class AgentLoop {
       isFirstRound,
     });
 
+    const contextPolicy = buildContextPolicy({
+      userMessage,
+      runMode: this.runMode,
+      contextMode: this.contextMode,
+      hasProjectContext: !!this.projectContextPath,
+      hasConfiguredSkills: this.configuredSkillNames.length > 0,
+    });
+    this.currentContextPolicy = contextPolicy;
+
     // 每轮对话开始时，加载文件记忆层 + 从向量数据库检索相关上下文
     if (this.memoryManager) {
       try {
-        // 并行加载文件记忆和向量检索
+        // 并行加载文件记忆和向量检索。
         const sessionId = this.conversation.getSessionId();
         const [fileMemoryCtx, memories] = await Promise.all([
-          this.memoryManager.loadFileMemoryContext(),
-          this.memoryManager.recall(userMessage, sessionId, 5, this.channelId),
+          this.memoryManager.loadFileMemoryContext({
+            contextMap: contextPolicy.loadContextMap,
+            identity: contextPolicy.loadIdentity,
+            inbox: contextPolicy.loadInbox,
+          }),
+          contextPolicy.retrieveLongTermMemory && contextPolicy.memoryRecallTopK > 0
+            ? this.memoryManager.recall(
+              userMessage,
+              sessionId,
+              contextPolicy.memoryRecallTopK,
+              this.channelId,
+            )
+            : Promise.resolve([]),
         ]);
         this.cachedFileMemory = fileMemoryCtx;
         this.cachedMemories = memories;
@@ -270,14 +308,33 @@ export class AgentLoop {
           console.error(`[debug] Memory recall failed:`, err);
         }
         this.cachedMemories = [];
-        this.cachedFileMemory = { soul: null, user: null, memory: null, contextMap: null, identity: null, inbox: null };
+        this.cachedFileMemory = { contextMap: null, identity: null, inbox: null };
+      }
+    }
+
+    this.cachedProjectOverview = null;
+    if (contextPolicy.loadProjectOverview && this.projectContextPath && this.memoryManager) {
+      try {
+        const overview = await this.memoryManager.getFileMemory()
+          ?.getContextHub()
+          .readOverview(this.projectContextPath);
+        if (overview) {
+          this.cachedProjectOverview = {
+            path: this.projectContextPath,
+            content: overview,
+          };
+        }
+      } catch (err) {
+        if (process.env.DEBUG) {
+          console.error(`[debug] Project overview load failed:`, err);
+        }
       }
     }
 
     // Context Hub L1 overview 检索
-    if (this.contextRetriever && userMessage) {
+    if (this.contextRetriever && userMessage && contextPolicy.retrieveContextOverviews) {
       try {
-        const matched = await this.contextRetriever.retrieve(userMessage, 2);
+        const matched = await this.contextRetriever.retrieve(userMessage, contextPolicy.contextOverviewTopK);
         this.cachedContextOverviews = matched;
       } catch (err) {
         if (process.env.DEBUG) {
@@ -285,6 +342,8 @@ export class AgentLoop {
         }
         this.cachedContextOverviews = [];
       }
+    } else {
+      this.cachedContextOverviews = [];
     }
 
     // Skill 选择：Team agent 可通过 agent.yaml.skills 固定注入；未配置时走检索。
@@ -325,16 +384,17 @@ export class AgentLoop {
             const matched = (await retriever.retrieve(query, retrievalLimit))
               .filter((match) => this.isSkillInScope(match.skill.name))
               .filter(isRelevantSkillMatch);
+            const selectedMatches = this.selectRetrievedSkills(matched);
             // 合并 pinned + retrieved（去重）。不保留上一轮未命中的 skill，避免上下文漂移。
-            const matchedNames = new Set(matched.map(m => m.skill.name));
+            const matchedNames = new Set(selectedMatches.map(m => m.skill.name));
             const extraPinned = pinned.filter(s => !matchedNames.has(s.name));
 
-            this.selectedSkills = [...extraPinned, ...matched.map(m => m.skill)];
+            this.selectedSkills = [...extraPinned, ...selectedMatches.map(m => m.skill)];
 
-            if (matched.length > 0) {
+            if (selectedMatches.length > 0) {
               const matchedEvent: AgentSkillsMatchedEvent = {
                 type: "skills_matched",
-                skills: matched.map(m => ({
+                skills: selectedMatches.map(m => ({
                   name: m.skill.name,
                   score: m.score,
                   matchReason: m.matchReason,
@@ -409,17 +469,18 @@ export class AgentLoop {
         this.currentAbortController = abortController;
 
         try {
-          const systemPrompt = this.getEffectiveSystemPrompt();
+          const llmInput = this.getEffectiveLLMInput();
+          const systemPrompt = llmInput.systemPrompt;
           const filteredTools = this.getFilteredToolDefinitions();
 
           log.llmCall(`Turn ${i + 1} (attempt ${attempt})`, {
             system: systemPrompt,
-            messages: this.conversation.getMessages(),
+            messages: llmInput.messages,
             tools: filteredTools,
           });
 
           const chatStream = this.client.chat(
-            this.conversation.getMessages(),
+            llmInput.messages,
             {
               system: systemPrompt,
               tools: filteredTools,
@@ -791,25 +852,41 @@ export class AgentLoop {
     return [currentMessage, ...recentUserMsgs.reverse()].join("\n");
   }
 
+  private selectRetrievedSkills(matches: ScoredSkill[]): ScoredSkill[] {
+    if (matches.length === 0) return [];
+    const policy = this.currentContextPolicy;
+
+    const fullLimit = Math.max(1, policy?.skillFullLimit ?? 1);
+    const summaryLimit = Math.max(0, policy?.skillSummaryLimit ?? 0);
+    return matches.slice(0, fullLimit + summaryLimit);
+  }
+
   /**
    * 构建完整的 LLM 输入上下文，按优先级分配 token 预算：
    *
    * Context Assembler 加载顺序：
-   *   1. SOUL.md — Agent 身份准则（每次必定加载，如果存在）
-   *   2. USER.md — 用户偏好（每次必定加载，如果存在）
-   *   3. MEMORY.md — 长期知识（每次必定加载，如果存在）
-   *   4. System prompt（角色定义 + workspace + scheduler）
-   *   5. 向量检索结果 — 根据用户新消息检索相关的日志片段
-   *   6. Skill 指令（来自 SkillPromptBuilder）
-   *   7. 对话历史（来自 Conversation）
-   *   8. 用户新消息
+   *   1. identity / inbox / contextMap — 按 ContextPolicy 加载
+   *   2. contextOverviews — 按 ContextPolicy 检索或加载项目 overview
+   *   3. System prompt（角色定义 + workspace + scheduler）
+   *   4. 向量检索结果 — 根据用户新消息检索相关的日志片段
+   *   5. Skill 指令（来自 SkillPromptBuilder）
+   *   6. 对话历史（来自 Conversation）
+   *   7. 用户新消息
    *
    * 如果总量超预算，从 Skill 指令和向量检索开始砍。
    */
-  private getEffectiveSystemPrompt(): string {
+  private getEffectiveLLMInput(): { systemPrompt: string; messages: ReturnType<ConversationLike["getMessages"]> } {
     // 基础 system prompt = 会话 prompt + 角色定义 + scheduler 指导 + 记忆指引
     const basePrompt = this.conversation.getSystemPrompt();
-    const coreSystemPrompt = `${basePrompt}\n\n${this.config.systemPrompt}\n\n${SCHEDULER_GUIDANCE}\n\n${MEMORY_GUIDANCE}`;
+    const policy = this.currentContextPolicy ?? buildContextPolicy({
+      userMessage: "",
+      runMode: this.runMode,
+      contextMode: this.contextMode,
+      hasProjectContext: !!this.projectContextPath,
+      hasConfiguredSkills: this.configuredSkillNames.length > 0,
+    });
+    const memoryGuidance = this.getMemoryGuidance(policy);
+    const coreSystemPrompt = `${basePrompt}\n\n${this.config.systemPrompt}\n\n${SCHEDULER_GUIDANCE}\n\n${memoryGuidance}`;
 
     // 获取当前对话中最后一条用户消息（用于 skill 相关性匹配和预算分配）
     const messages = this.conversation.getMessages();
@@ -831,17 +908,20 @@ export class AgentLoop {
         const raw = builder.buildSkillPrompt(
           skills,
           this.skillManager.getTokenBudget(),
+          {
+            fullLimit: this.configuredSkillNames.length > 0
+              ? Number.POSITIVE_INFINITY
+              : policy.skillFullLimit,
+            summaryLimit: this.configuredSkillNames.length > 0
+              ? 0
+              : policy.skillSummaryLimit,
+          },
         );
         if (raw) {
           skillPrompt = `${SKILL_GUIDE}\n\n${raw}`;
         }
       }
     }
-
-    // 构建文件记忆层 prompt
-    const soulPrompt = this.cachedFileMemory.soul
-      ? `<soul>\n${this.cachedFileMemory.soul}\n</soul>`
-      : "";
 
     // 三层上下文系统：identity + inbox + contextMap
     const identityPrompt = this.cachedFileMemory.identity
@@ -854,21 +934,19 @@ export class AgentLoop {
       ? `<context_map>\nThe following is the user's context hub directory map (L0 abstracts):\n${this.cachedFileMemory.contextMap}\n</context_map>`
       : "";
 
-    // 旧系统 fallback（迁移后为空）
-    const userPreferences = this.cachedFileMemory.user
-      ? `<user_preferences>\n${this.cachedFileMemory.user}\n</user_preferences>`
-      : "";
-    const fileMemory = this.cachedFileMemory.memory
-      ? `<file_memory>\n${this.cachedFileMemory.memory}\n</file_memory>`
-      : "";
-
     // L1 检索命中的 .overview.md
     let contextOverviewsPrompt = "";
+    const overviewBlocks: string[] = [];
+    if (this.cachedProjectOverview) {
+      overviewBlocks.push(`## ${this.cachedProjectOverview.path}/.overview.md\n${this.cachedProjectOverview.content}`);
+    }
     if (this.cachedContextOverviews.length > 0) {
-      const blocks = this.cachedContextOverviews.map(
+      overviewBlocks.push(...this.cachedContextOverviews.map(
         (ctx) => `## ${ctx.dirPath}/.overview.md\n${ctx.overviewContent}`,
-      );
-      contextOverviewsPrompt = `<context_overviews>\nThe following overviews were retrieved based on your conversation. Use them to decide which L2 files to read.\n\n${blocks.join("\n\n")}\n</context_overviews>`;
+      ));
+    }
+    if (overviewBlocks.length > 0) {
+      contextOverviewsPrompt = `<context_overviews>\nThe following overviews were loaded for this turn. Use them to decide which L2 files to read.\n\n${overviewBlocks.join("\n\n")}\n</context_overviews>`;
     }
 
     // 使用 TokenBudget 进行预算分配
@@ -878,9 +956,6 @@ export class AgentLoop {
       conversationHistory: messages,
       longTermMemory: this.cachedMemories,
       skillPrompt,
-      soulPrompt,
-      userPreferences,
-      fileMemory,
       identity: identityPrompt,
       inbox: inboxPrompt,
       contextMap: contextMapPrompt,
@@ -888,12 +963,8 @@ export class AgentLoop {
     });
 
     // 组装最终的 system prompt，按加载顺序：
-    // SOUL.md → identity → inbox → contextMap → contextOverviews → fallback → core → 向量检索 → skill
+    // identity → inbox → contextMap → contextOverviews → core → 向量检索 → skill
     let finalPrompt = "";
-
-    if (allocation.soulPrompt) {
-      finalPrompt += allocation.soulPrompt + "\n\n";
-    }
 
     if (allocation.identity) {
       finalPrompt += allocation.identity + "\n\n";
@@ -911,15 +982,6 @@ export class AgentLoop {
       finalPrompt += allocation.contextOverviews + "\n\n";
     }
 
-    // 旧系统 fallback（迁移后这两个都是空的）
-    if (allocation.userPreferences) {
-      finalPrompt += allocation.userPreferences + "\n\n";
-    }
-
-    if (allocation.fileMemory) {
-      finalPrompt += allocation.fileMemory + "\n\n";
-    }
-
     finalPrompt += allocation.systemPrompt;
 
     const memoryBlock = formatLongTermMemory(allocation.longTermMemory);
@@ -931,7 +993,53 @@ export class AgentLoop {
       finalPrompt += `\n\n${allocation.skillPrompt}`;
     }
 
-    return finalPrompt;
+    this.logContextAssembly(finalPrompt, allocation, policy);
+
+    return {
+      systemPrompt: finalPrompt,
+      messages: allocation.conversationHistory,
+    };
+  }
+
+  private logContextAssembly(
+    systemPrompt: string,
+    allocation: ReturnType<typeof allocateBudget>,
+    policy: ContextPolicy,
+  ): void {
+    log.step("Context assembly", {
+      runMode: policy.runMode,
+      contextMode: policy.contextMode,
+      reason: policy.reason,
+      systemTokens: estimateTokens(systemPrompt),
+      messageCount: allocation.conversationHistory.length,
+      includedBlocks: [
+        allocation.identity ? { name: "identity", tokens: estimateTokens(allocation.identity) } : null,
+        allocation.inbox ? { name: "inbox", tokens: estimateTokens(allocation.inbox) } : null,
+        allocation.contextMap ? { name: "context_map", tokens: estimateTokens(allocation.contextMap) } : null,
+        allocation.contextOverviews ? { name: "context_overviews", tokens: estimateTokens(allocation.contextOverviews) } : null,
+        allocation.longTermMemory.length > 0
+          ? { name: "long_term_memory", count: allocation.longTermMemory.length }
+          : null,
+        allocation.skillPrompt ? { name: "skills", tokens: estimateTokens(allocation.skillPrompt) } : null,
+      ].filter(Boolean),
+      skippedBlocks: [
+        !policy.loadContextMap ? { name: "context_map", reason: "policy disabled global map" } : null,
+        !policy.retrieveContextOverviews && !policy.loadProjectOverview
+          ? { name: "context_overviews", reason: "policy disabled overview retrieval" }
+          : null,
+        !policy.retrieveLongTermMemory ? { name: "long_term_memory", reason: "policy disabled recall" } : null,
+      ].filter(Boolean),
+    });
+  }
+
+  private getMemoryGuidance(policy: ContextPolicy): string {
+    if (policy.useFullMemoryGuidance && policy.loadContextMap) {
+      return MEMORY_GUIDANCE;
+    }
+    if (policy.loadProjectOverview || policy.contextMode === "project" || policy.runMode === "team_worker") {
+      return PROJECT_MEMORY_GUIDANCE;
+    }
+    return SHORT_MEMORY_GUIDANCE;
   }
 
   /**

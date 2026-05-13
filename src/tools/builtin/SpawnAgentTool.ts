@@ -139,6 +139,8 @@ export function createSpawnAgentTool(
           shellTool: toolOptions.shellTool,
           memoryManager: toolOptions.memoryManager,
           contextRetriever: toolOptions.contextRetriever,
+          runMode: "agent_dm",
+          contextMode: "auto",
         },
       );
 

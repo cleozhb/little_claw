@@ -194,6 +194,8 @@ export class SessionRouter {
       shellTool: this.shellTool,
       memoryManager: this.memoryManager,
       contextRetriever: this.contextRetriever,
+      runMode: "chat",
+      contextMode: "auto",
     });
 
     const entry: SessionEntry = {

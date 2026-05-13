@@ -199,7 +199,7 @@ If the user specifies a language, respond with only that language's greeting.
     const manager = new SkillManager(loader, config);
     await manager.initializeAll();
 
-    // 模拟 AgentLoop.getEffectiveSystemPrompt() 的逻辑
+    // 模拟 AgentLoop.getEffectiveLLMInput() 中的 skill prompt 拼装逻辑
     const basePrompt = "You are a helpful AI assistant.";
     const loadedSkills = manager.getLoadedSkills();
     expect(loadedSkills.length).toBe(1);

@@ -50,7 +50,7 @@ export class ContextIndexer {
 
       indexedPaths.add(relativePath);
       const old = existing.get(relativePath);
-      const contentHash = simpleHash(overview);
+      const contentHash = this.indexHash(overview);
 
       // 变更检测
       if (old && old.content_hash === contentHash) continue;
@@ -74,7 +74,7 @@ export class ContextIndexer {
     overviewContent: string,
     contentHash?: string,
   ): Promise<void> {
-    const hash = contentHash ?? simpleHash(overviewContent);
+    const hash = contentHash ?? this.indexHash(overviewContent);
     const keywords = extractKeywords(dirPath, overviewContent);
     const embeddingVec = await this.embedding.embed(overviewContent);
 
@@ -100,6 +100,10 @@ export class ContextIndexer {
       return;
     }
     await this.indexOne(dirPath, overview);
+  }
+
+  private indexHash(text: string): string {
+    return simpleHash(`${this.embedding.getSignature?.() ?? "unknown"}\n${text}`);
   }
 }
 

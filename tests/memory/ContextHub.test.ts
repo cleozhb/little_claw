@@ -42,28 +42,20 @@ describe("ContextHub.initialize", () => {
     expect(readFileSync(profilePath, "utf8")).toContain("important stuff");
   });
 
-  test("migrates legacy USER.md and memory/MEMORY.md on first run", async () => {
+  test("does not migrate legacy USER.md or memory/MEMORY.md", async () => {
     writeFileSync(join(TMP, "USER.md"), "# Legacy User\nLikes pizza.\n");
     mkdirSync(join(TMP, "memory"), { recursive: true });
     writeFileSync(join(TMP, "memory", "MEMORY.md"), "## Past\nold notes\n");
 
-    const r = await hub.initialize();
-    expect(r.migrated).toBe(true);
-    expect(existsSync(join(TMP, "USER.md.bak"))).toBe(true);
-    expect(existsSync(join(TMP, "memory", "MEMORY.md.bak"))).toBe(true);
+    await hub.initialize();
+    expect(existsSync(join(TMP, "USER.md"))).toBe(true);
+    expect(existsSync(join(TMP, "USER.md.bak"))).toBe(false);
+    expect(existsSync(join(TMP, "memory", "MEMORY.md"))).toBe(true);
+    expect(existsSync(join(TMP, "memory", "MEMORY.md.bak"))).toBe(false);
 
     const profile = readFileSync(join(TMP, "context-hub", "0-identity", "profile.md"), "utf8");
-    expect(profile).toContain("Likes pizza");
-    const archive = readFileSync(join(TMP, "context-hub", "4-knowledge", "memory-archive.md"), "utf8");
-    expect(archive).toContain("old notes");
-  });
-
-  test("second initialize after migration does not re-migrate", async () => {
-    writeFileSync(join(TMP, "USER.md"), "# x\n");
-    const first = await hub.initialize();
-    expect(first.migrated).toBe(true);
-    const second = await hub.initialize();
-    expect(second.migrated).toBe(false);
+    expect(profile).not.toContain("Likes pizza");
+    expect(existsSync(join(TMP, "context-hub", "4-knowledge", "memory-archive.md"))).toBe(false);
   });
 });
 

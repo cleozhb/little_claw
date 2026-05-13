@@ -6,10 +6,15 @@ import OpenAI from "openai";
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
+  getSignature?(): string;
 }
 
+export const DEFAULT_EMBEDDING_MODEL = "qwen3-embedding-8b";
+export const DEFAULT_EMBEDDING_BASE_URL = "https://qianfan.baidubce.com/v2";
+const DEFAULT_MAX_INPUT_CHARS = 8192;
+
 // ---------------------------------------------------------------------------
-// OpenAI-compatible provider (works with 百度 qianfan embedding-v1 etc.)
+// OpenAI-compatible provider (works with 百度 qianfan qwen3-embedding-8b etc.)
 // ---------------------------------------------------------------------------
 
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
@@ -18,20 +23,28 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private maxInputTokens: number;
   private cache = new Map<string, number[]>();
 
-  constructor(apiKey: string, model: string = "embedding-v1", baseURL?: string, maxInputTokens: number = 900) {
+  constructor(
+    apiKey: string,
+    model: string = DEFAULT_EMBEDDING_MODEL,
+    baseURL?: string,
+    maxInputChars: number = DEFAULT_MAX_INPUT_CHARS,
+  ) {
     this.model = model;
-    this.maxInputTokens = Number.isFinite(maxInputTokens) && maxInputTokens > 0
-      ? Math.floor(maxInputTokens)
-      : 900;
+    this.maxInputTokens = Number.isFinite(maxInputChars) && maxInputChars > 0
+      ? Math.floor(maxInputChars)
+      : DEFAULT_MAX_INPUT_CHARS;
     this.client = new OpenAI({
       apiKey,
-      baseURL: baseURL ?? "https://qianfan.baidubce.com/v2",
+      baseURL: baseURL ?? DEFAULT_EMBEDDING_BASE_URL,
     });
   }
 
+  getSignature(): string {
+    return `openai-compatible:${this.client.baseURL}:${this.model}`;
+  }
+
   async embed(text: string): Promise<number[]> {
-    // 粗略截断：embedding API 有单条 input token 上限（qianfan embedding-v1 为 1000）
-    // 按 1 token ≈ 2 中文字符 / 4 英文字符 的保守估计截断
+    // 粗略截断：不同 embedding 模型都有单条 input 上限，这里按字符数保守截断。
     const truncated = truncateForEmbedding(text, this.maxInputTokens);
 
     const key = await hashText(truncated);
@@ -40,7 +53,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
     const response = await this.client.embeddings.create({
       model: this.model,
-      input: [truncated],
+      input: truncated,
       encoding_format: "float",
     });
 
@@ -63,6 +76,10 @@ const LOCAL_VECTOR_DIM = 256;
 
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   private cache = new Map<string, number[]>();
+
+  getSignature(): string {
+    return `local-hash:${LOCAL_VECTOR_DIM}`;
+  }
 
   async embed(text: string): Promise<number[]> {
     const key = await hashText(text);
@@ -139,8 +156,7 @@ async function hashText(text: string): Promise<string> {
 
 /**
  * 截断文本以满足 embedding API 的输入上限。
- * qianfan embedding-v1 的错误信息按 input length 报 1000，因此这里用字符数
- * 做保守截断，而不是把 token 上限再换算成更长的字符数。
+ * 这里用字符数做保守截断，避免不同供应商对 token/input length 的口径差异。
  */
 export function truncateForEmbedding(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;

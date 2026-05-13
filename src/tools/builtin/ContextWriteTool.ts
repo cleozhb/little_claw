@@ -13,7 +13,7 @@ import type { ContextMetaGenerator } from "../../memory/ContextMetaGenerator.ts"
 //   2-areas/{area}/: 只写已有目录
 //   3-projects/{project}/: 只写已有目录，可在目录内创建新文件
 //   4-knowledge/: 可创建新文件
-//   NEVER: SOUL.md, 5-archive/
+//   NEVER: 5-archive/
 //   NEVER: 创建 2-areas/ 或 3-projects/ 下的新顶层子目录
 // ---------------------------------------------------------------------------
 
@@ -38,7 +38,7 @@ export function createContextWriteTool(
       "Only write to EXISTING project directories. Can create new files within.\n\n" +
       "- 4-knowledge/{file}: Reference information, SOPs, research notes. " +
       "Can create new files here when user shares reusable knowledge.\n\n" +
-      "NEVER write to: SOUL.md, 5-archive/\n" +
+      "NEVER write to: 5-archive/\n" +
       "NEVER create new top-level directories under 2-areas/ or 3-projects/.\n\n" +
       "After writing, the overview index is automatically updated.",
     parameters: {
@@ -72,15 +72,6 @@ export function createContextWriteTool(
       const mode = (params.mode as string) ?? "append";
 
       // --- 验证规则 ---
-
-      // SOUL.md 保护
-      if (path.includes("SOUL.md")) {
-        return {
-          success: false,
-          output: "",
-          error: "SOUL.md is read-only. It can only be edited by the user manually.",
-        };
-      }
 
       // 5-archive 保护
       if (path.startsWith("5-archive")) {

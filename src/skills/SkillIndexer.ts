@@ -27,7 +27,7 @@ export class SkillIndexer {
 
     for (const skill of skills) {
       const old = existing.get(skill.name);
-      const descHash = simpleHash(skill.description);
+      const descHash = this.indexHash(skill.description);
 
       // 变更检测：description hash 存在 instructions_summary 字段中
       if (old && old.instructions_summary === descHash) {
@@ -56,13 +56,17 @@ export class SkillIndexer {
     const row: SkillIndexRow = {
       skill_name: skill.name,
       description: skill.description,
-      instructions_summary: descHash ?? simpleHash(skill.description),
+      instructions_summary: descHash ?? this.indexHash(skill.description),
       keywords,
       embedding: JSON.stringify(embeddingVec),
       updated_at: new Date().toISOString(),
     };
 
     this.db.upsertSkillIndex(row);
+  }
+
+  private indexHash(text: string): string {
+    return simpleHash(`${this.embedding.getSignature?.() ?? "unknown"}\n${text}`);
   }
 }
 
