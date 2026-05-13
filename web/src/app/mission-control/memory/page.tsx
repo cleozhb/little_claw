@@ -1,5 +1,5 @@
-import { PlaceholderView } from "@/components/mission-control/MissionControl";
+import { MemoryView } from "@/components/mission-control/MemoryView";
 
 export default function MissionControlMemoryPage() {
-  return <PlaceholderView title="Memory" />;
+  return <MemoryView />;
 }
