@@ -75,3 +75,34 @@ test("context_write refreshes project overview after writing a project file", as
     "Podcast translation feeds",
   );
 });
+
+test("context_write refreshes the parent projects overview", async () => {
+  const hub = fileMemory.getContextHub();
+  await hub.writeFile(
+    "3-projects/podcast-translation/.abstract.md",
+    "Podcast translation project.",
+    "overwrite",
+  );
+  await hub.writeFile(
+    "3-projects/podcast-translation/.overview.md",
+    "# Podcast Translation\n\n## Key files\n- status.md — project status.\n",
+    "overwrite",
+  );
+  await hub.writeFile(
+    "3-projects/podcast-translation/status.md",
+    "# Status\n\nActive.\n",
+    "overwrite",
+  );
+
+  const metaGenerator = new ContextMetaGenerator(hub, new FakeLLMProvider());
+  const tool = createContextWriteTool(fileMemory, undefined, metaGenerator);
+
+  const result = await tool.execute({
+    path: "3-projects/podcast-translation/notes.md",
+    content: "# Notes\n\nFresh idea.",
+    mode: "overwrite",
+  });
+
+  expect(result.success).toBe(true);
+  expect(await hub.readOverview("3-projects")).toContain("podcast-translation/");
+});

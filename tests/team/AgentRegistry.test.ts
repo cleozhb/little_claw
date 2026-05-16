@@ -157,6 +157,7 @@ describe("AgentRegistry", () => {
       "coder",
       "coordinator",
       "podcast-curator",
+      "tinker",
     ]);
     expect(existsSync(join(baseDir, "assistant", "agent.yaml"))).toBe(true);
     expect(readFileSync(join(baseDir, "assistant", "AGENTS.md"), "utf8")).toContain(
@@ -190,6 +191,45 @@ describe("AgentRegistry", () => {
     expect(job?.enabled).toBe(true);
     expect(agent.config.watchers).toEqual([]);
     expect(yaml).toContain("key: daily-team-review");
+    expect(yaml).toContain("watchers: []");
+  });
+
+  test("repository tinker default is a safe isolated inspiration agent", () => {
+    const baseDir = makeBaseDir();
+    const registry = new AgentRegistry(baseDir);
+
+    const [agent] = registry.installDefaultAgents(["tinker"]);
+    const [job] = agent.config.cron_jobs;
+    const yaml = readFileSync(join(baseDir, "tinker", "agent.yaml"), "utf8");
+
+    expect(agent.config.name).toBe("tinker");
+    expect(agent.config.default_project).toBeUndefined();
+    expect(agent.config.aliases).toEqual(["tinker", "lab", "experimenter"]);
+    expect(agent.config.tools).toEqual([
+      "read_file",
+      "write_file",
+      "web_search",
+      "memory_read",
+      "memory_write",
+      "context_write",
+    ]);
+    expect(agent.config.tools).not.toContain("shell");
+    expect(job?.key).toBe("nightly-tinker-spark");
+    expect(job?.name).toBe("Nightly Tinker Spark");
+    expect(job?.project).toBeUndefined();
+    expect(job?.tags).toContain("scheduled");
+    expect(job?.tags).toContain("tinker");
+    expect(job?.enabled).toBe(true);
+    expect(agent.config.requires_approval).toContain("run code");
+    expect(agent.config.requires_approval).toContain("enable shell");
+    expect(agent.config.watchers).toEqual([]);
+    expect(agent.config.max_turns).toBe(25);
+    expect(agent.config.context_mode).toBe("always");
+    expect(job?.prompt).toContain("task_context execution_date");
+    expect(job?.prompt).toContain("~/.little_claw/tinker/runs/{execution_date}/");
+    expect(job?.prompt).toContain("attempts.md");
+    expect(job?.prompt).toContain("retry_count and max_retries");
+    expect(job?.prompt).toContain("Do not create run directories using dates from source material");
     expect(yaml).toContain("watchers: []");
   });
 

@@ -9,7 +9,7 @@ import type {
 } from "../types/message.ts";
 
 const TIMEOUT_MS = 30_000;
-const STREAM_CHUNK_TIMEOUT_MS = 300_000;
+const DEFAULT_STREAM_CHUNK_TIMEOUT_MS = 300_000;
 
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
@@ -70,14 +70,15 @@ export class OpenAIProvider implements LLMProvider {
 
     // 逐块读取 SSE 流，每个 chunk 带超时保护（60s 无数据则报错）
     const iterator = stream[Symbol.asyncIterator]();
+    const streamChunkTimeoutMs = options?.streamChunkTimeoutMs ?? DEFAULT_STREAM_CHUNK_TIMEOUT_MS;
     while (true) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([
         iterator.next(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error("Stream timeout: no data received for 300s")),
-            STREAM_CHUNK_TIMEOUT_MS,
+            () => reject(new Error(`Stream timeout: no data received for ${Math.round(streamChunkTimeoutMs / 1000)}s`)),
+            streamChunkTimeoutMs,
           );
         }),
       ]).finally(() => clearTimeout(timer));

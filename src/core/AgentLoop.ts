@@ -30,6 +30,8 @@ const log = createLogger("AgentLoop");
 const SPAWN_AGENT_TOOL_NAME = "spawn_agent";
 const MAX_STREAM_RETRIES = 2;
 const RETRY_DELAY_MS = 1_000;
+const DEFAULT_STREAM_CHUNK_TIMEOUT_MS = 300_000;
+const DEFAULT_BACKGROUND_STREAM_CHUNK_TIMEOUT_MS = 900_000;
 const SKILL_RETRIEVAL_TOP_K = 5;
 const MIN_SKILL_SCORE = 0.25;
 const MIN_SKILL_VECTOR_SCORE = 0.35;
@@ -485,6 +487,7 @@ export class AgentLoop {
               system: systemPrompt,
               tools: filteredTools,
               signal: abortController.signal,
+              streamChunkTimeoutMs: this.getStreamChunkTimeoutMs(),
             },
           );
           for await (const event of chatStream) {
@@ -1065,6 +1068,17 @@ export class AgentLoop {
     return tools;
   }
 
+  private getStreamChunkTimeoutMs(): number {
+    const envKey = this.runMode === "team_worker"
+      ? "LLM_BACKGROUND_STREAM_CHUNK_TIMEOUT_MS"
+      : "LLM_STREAM_CHUNK_TIMEOUT_MS";
+    const configured = readPositiveIntegerEnv(envKey);
+    if (configured) return configured;
+    return this.runMode === "team_worker"
+      ? DEFAULT_BACKGROUND_STREAM_CHUNK_TIMEOUT_MS
+      : DEFAULT_STREAM_CHUNK_TIMEOUT_MS;
+  }
+
   /**
    * 收集所有已加载 Skill 的环境变量，合并为一个 Record。
    * 项目级 Skill 的值覆盖全局级（由 SkillLoader 的加载顺序保证）。
@@ -1110,6 +1124,13 @@ export class AgentLoop {
 
 function uniqueNonEmpty(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function readPositiveIntegerEnv(key: string): number | null {
+  const raw = process.env[key];
+  if (!raw) return null;
+  const value = Number.parseInt(raw, 10);
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function isRelevantSkillMatch(match: ScoredSkill): boolean {

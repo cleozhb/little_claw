@@ -15,6 +15,8 @@ export interface ChatOptions {
   system?: string;
   /** AbortSignal for cancelling the request */
   signal?: AbortSignal;
+  /** Maximum time to wait for the next streaming chunk from the model. */
+  streamChunkTimeoutMs?: number;
 }
 
 // --- LLM Provider interface ---

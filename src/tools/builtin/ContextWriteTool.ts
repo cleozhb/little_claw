@@ -212,6 +212,7 @@ function affectedMetadataDirs(filePath: string, directDir: string): string[] {
 
   const parts = filePath.split("/");
   if ((parts[0] === "3-projects" || parts[0] === "2-areas") && parts[1]) {
+    dirs.add(parts[0]);
     dirs.add(`${parts[0]}/${parts[1]}`);
   }
 

@@ -46,4 +46,22 @@ describe("ContextPolicy", () => {
     expect(policy.loadContextMap).toBe(false);
     expect(policy.retrieveContextOverviews).toBe(false);
   });
+
+  test("projectless team worker can use broad context", () => {
+    const policy = buildContextPolicy({
+      userMessage: "Create one isolated morning spark for the user.",
+      runMode: "team_worker",
+      contextMode: "always",
+      hasProjectContext: false,
+      hasConfiguredSkills: false,
+    });
+
+    expect(policy.loadIdentity).toBe(true);
+    expect(policy.loadInbox).toBe(true);
+    expect(policy.loadContextMap).toBe(true);
+    expect(policy.retrieveContextOverviews).toBe(true);
+    expect(policy.loadProjectOverview).toBe(false);
+    expect(policy.memoryRecallTopK).toBe(5);
+    expect(policy.contextOverviewTopK).toBe(3);
+  });
 });

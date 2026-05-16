@@ -32,16 +32,15 @@ export class ContextMetaGenerator {
 
       // 跳过有默认模板的目录
       if (SKIP_DIRS.some((p) => relativePath.startsWith(p))) continue;
-      // 跳过顶层没有实际内容的目录（如 2-areas/ 本身，只有子目录有内容）
-      const files = await this.contextHub.listFiles(relativePath);
-      if (files.length === 0) continue;
+      const entries = await this.listIndexableEntries(relativePath);
+      if (entries.length === 0) continue;
 
       const existingAbstract = await this.contextHub.readFile(
         `${relativePath}/.abstract.md`,
       );
       const existingOverview = await this.contextHub.readOverview(relativePath);
 
-      if (!existingAbstract || !existingOverview || hasMissingFileEntries(existingOverview, files)) {
+      if (!existingAbstract || !existingOverview || hasMissingFileEntries(existingOverview, entries)) {
         const updated = await this.refreshDirectory(relativePath);
         generated += updated;
       }
@@ -60,14 +59,14 @@ export class ContextMetaGenerator {
     const relativePath = stripContextHubPrefix(dirPath);
     if (SKIP_DIRS.some((p) => relativePath.startsWith(p))) return 0;
 
-    const files = await this.contextHub.listFiles(relativePath);
-    if (files.length === 0) return 0;
+    const entries = await this.listIndexableEntries(relativePath);
+    if (entries.length === 0) return 0;
 
     let updated = 0;
 
     const abstract =
-      (await this.generateAbstract(relativePath, files)) ??
-      fallbackAbstract(relativePath, files);
+      (await this.generateAbstract(relativePath, entries)) ??
+      fallbackAbstract(relativePath, entries);
     if (abstract) {
       await this.contextHub.writeFile(
         `${relativePath}/.abstract.md`,
@@ -78,12 +77,12 @@ export class ContextMetaGenerator {
     }
 
     const overview =
-      (await this.generateOverview(relativePath, files)) ??
-      (await this.fallbackOverview(relativePath, files));
+      (await this.generateOverview(relativePath, entries)) ??
+      (await this.fallbackOverview(relativePath, entries));
     if (overview) {
       await this.contextHub.writeFile(
         `${relativePath}/.overview.md`,
-        ensureOverviewListsFiles(overview, files),
+        ensureOverviewListsFiles(overview, entries),
         "overwrite",
       );
       updated++;
@@ -97,13 +96,13 @@ export class ContextMetaGenerator {
    */
   async generateAbstract(
     dirPath: string,
-    files: string[],
+    entries: string[],
   ): Promise<string | null> {
     const dirName = dirPath.split("/").pop() ?? dirPath;
     const prompt = `Generate a single line (under 100 characters) describing what this folder contains. Be concise and informative. Do not use quotes or line breaks.
 
 Folder name: ${dirName}
-Files: ${files.join(", ")}
+Entries: ${entries.join(", ")}
 
 One-line description:`;
 
@@ -128,26 +127,33 @@ One-line description:`;
    */
   async generateOverview(
     dirPath: string,
-    files: string[],
+    entries: string[],
   ): Promise<string | null> {
     // 读取每个文件的前 200 字符作为上下文
-    const filePreviews: string[] = [];
-    for (const file of files.slice(0, 20)) {
-      const content = await this.contextHub.readFile(`${dirPath}/${file}`);
+    const entryPreviews: string[] = [];
+    for (const entry of entries.slice(0, 20)) {
+      if (entry.endsWith("/")) {
+        const childDir = `${dirPath}/${entry.slice(0, -1)}`;
+        const abstract = await this.contextHub.readFile(`${childDir}/.abstract.md`);
+        entryPreviews.push(`- ${entry}: ${abstract?.trim() || "directory"}`);
+        continue;
+      }
+
+      const content = await this.contextHub.readFile(`${dirPath}/${entry}`);
       if (content) {
         const preview = content.slice(0, 200).replace(/\n/g, " ");
-        filePreviews.push(`- ${file}: ${preview}`);
+        entryPreviews.push(`- ${entry}: ${preview}`);
       } else {
-        filePreviews.push(`- ${file}: (empty)`);
+        entryPreviews.push(`- ${entry}: (empty)`);
       }
     }
 
     const dirName = dirPath.split("/").pop() ?? dirPath;
-    const prompt = `Generate a structured overview of this folder for AI navigation. For each file, write a one-line description. Include current status if applicable. Keep under 100 lines. Use markdown format with ## headers.
+    const prompt = `Generate a structured overview of this folder for AI navigation. For each entry, write a one-line description. Include current status if applicable. Keep under 100 lines. Use markdown format with ## headers.
 
 Folder: ${dirName} (${dirPath})
-File previews:
-${filePreviews.join("\n")}
+Entry previews:
+${entryPreviews.join("\n")}
 
 Overview:`;
 
@@ -167,17 +173,40 @@ Overview:`;
 
   private async fallbackOverview(
     dirPath: string,
-    files: string[],
+    entries: string[],
   ): Promise<string> {
     const title = titleFromDir(dirPath);
-    const lines = [`# ${title}`, "", "## Key files"];
+    const lines = [`# ${title}`, "", "## Key entries"];
 
-    for (const file of files) {
-      const content = await this.contextHub.readFile(`${dirPath}/${file}`);
-      lines.push(`- ${file} — ${describeFile(file, content)}`);
+    for (const entry of entries) {
+      if (entry.endsWith("/")) {
+        const childDir = `${dirPath}/${entry.slice(0, -1)}`;
+        const abstract = await this.contextHub.readFile(`${childDir}/.abstract.md`);
+        lines.push(`- ${entry} — ${abstract?.trim() || "directory."}`);
+        continue;
+      }
+      const content = await this.contextHub.readFile(`${dirPath}/${entry}`);
+      lines.push(`- ${entry} — ${describeFile(entry, content)}`);
     }
 
     return lines.join("\n");
+  }
+
+  private async listIndexableEntries(dirPath: string): Promise<string[]> {
+    const files = await this.contextHub.listFiles(dirPath);
+    const childDirs = await this.listImmediateChildDirs(dirPath);
+    return [...childDirs.map((dir) => `${dir}/`), ...files].sort();
+  }
+
+  private async listImmediateChildDirs(dirPath: string): Promise<string[]> {
+    const relativePath = stripContextHubPrefix(dirPath).replace(/\/$/, "");
+    const prefix = relativePath ? `context-hub/${relativePath}/` : "context-hub/";
+    const dirs = await this.contextHub.listDirectories();
+    return dirs
+      .filter((dir) => dir.startsWith(prefix))
+      .map((dir) => dir.slice(prefix.length))
+      .filter((rest) => rest !== "" && !rest.includes("/"))
+      .sort();
   }
 }
 
@@ -216,6 +245,7 @@ function titleFromDir(dirPath: string): string {
 }
 
 function describeFile(fileName: string, content: string | null): string {
+  if (fileName.endsWith("/")) return "directory.";
   if (fileName.endsWith(".json")) return "structured project data.";
   if (fileName === "status.md") return "current state, decisions, and next actions.";
   if (fileName.endsWith(".md")) {

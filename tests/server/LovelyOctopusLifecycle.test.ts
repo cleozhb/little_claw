@@ -56,8 +56,9 @@ describe("Lovely Octopus server lifecycle", () => {
       "coder",
       "coordinator",
       "podcast-curator",
+      "tinker",
     ]);
-    expect(runtime.agentWorkers).toHaveLength(4);
+    expect(runtime.agentWorkers).toHaveLength(5);
 
     runtime.start();
     await Bun.sleep(10);
@@ -67,13 +68,13 @@ describe("Lovely Octopus server lifecycle", () => {
     expect(runtime.coordinatorLoop.state).toBe("stopped");
 
     const status = runtime.getStatus();
-    expect(status.activeAgents).toBe(4);
-    expect(status.registeredAgents).toBe(4);
+    expect(status.activeAgents).toBe(5);
+    expect(status.registeredAgents).toBe(5);
     expect(status.projectChannels).toBe(0);
     expect(status.tasks.pending).toBe(0);
     expect(status.tasks.running).toBe(0);
     expect(status.tasks.awaitingApproval).toBe(0);
-    expect(formatLovelyOctopusStatus(status)).toContain("Lovely Octopus: 4/4 active agents");
+    expect(formatLovelyOctopusStatus(status)).toContain("Lovely Octopus: 5/5 active agents");
   });
 
   test("isolates malformed agent configs while starting healthy agents", async () => {

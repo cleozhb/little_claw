@@ -79,6 +79,34 @@ const INBOX_OVERVIEW = `# Inbox Overview
 Temporary ideas, todos, and fleeting thoughts.
 `;
 
+const AREAS_OVERVIEW = `# Areas Overview
+
+Ongoing life areas with no fixed end date.
+
+## Key directories
+`;
+
+const PROJECTS_OVERVIEW = `# Projects Overview
+
+Active time-bound projects.
+
+## Key directories
+`;
+
+const KNOWLEDGE_OVERVIEW = `# Knowledge Overview
+
+Reusable knowledge, SOPs, research, and collections.
+
+## Key files
+`;
+
+const ARCHIVE_OVERVIEW = `# Archive Overview
+
+Completed or deprecated items.
+
+## Key directories
+`;
+
 const PROFILE_TEMPLATE = `# Profile
 
 Tell me about yourself and I'll remember.
@@ -251,6 +279,24 @@ export class ContextHub {
     await this.ensureFile(
       join(this.hubDir, "1-inbox", "inbox.md"),
       INBOX_TEMPLATE,
+    );
+
+    // Navigable L1 indexes for top-level sections that do not have seed files.
+    await this.ensureFile(
+      join(this.hubDir, "2-areas", ".overview.md"),
+      AREAS_OVERVIEW,
+    );
+    await this.ensureFile(
+      join(this.hubDir, "3-projects", ".overview.md"),
+      PROJECTS_OVERVIEW,
+    );
+    await this.ensureFile(
+      join(this.hubDir, "4-knowledge", ".overview.md"),
+      KNOWLEDGE_OVERVIEW,
+    );
+    await this.ensureFile(
+      join(this.hubDir, "5-archive", ".overview.md"),
+      ARCHIVE_OVERVIEW,
     );
   }
 

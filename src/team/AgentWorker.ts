@@ -95,7 +95,7 @@ export class AgentWorker {
     this.contextRetriever = options.contextRetriever;
     this.contextHub = options.contextHub;
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
-    this.maxTurns = options.maxTurns ?? 10;
+    this.maxTurns = options.maxTurns ?? this.agent.config.max_turns ?? 10;
     this.onTaskProgress = options.onTaskProgress;
 
     ensureTeamTaskTools(this.toolRegistry, this.tasks);
@@ -300,7 +300,7 @@ export class AgentWorker {
       contextRetriever: this.contextRetriever,
       channelId: task.channelId,
       runMode: "team_worker",
-      contextMode: "project",
+      contextMode: running.project ? "project" : this.agent.config.context_mode ?? "auto",
       projectContextPath: running.project ? `context-hub/3-projects/${running.project}` : undefined,
     });
 
@@ -731,10 +731,15 @@ export function buildTaskUserPrompt(task: Task, teamMessages: TeamMessage[], sou
   const sourceSection = sourceMessage
     ? `\nsource_message:\n- [${sourceMessage.channelType}:${sourceMessage.channelId}] ${sourceMessage.senderId}: ${sourceMessage.content}\n`
     : "";
+  const executionDate = formatTaskExecutionDate(task.createdAt);
   return `<task_context>
 id: ${task.id}
 title: ${task.title}
 description: ${task.description}
+created_at: ${task.createdAt}
+execution_date: ${executionDate}
+retry_count: ${task.retryCount}
+max_retries: ${task.maxRetries}
 project: ${task.project ?? "none"}
 project_workspace: ${task.project ? `context-hub/3-projects/${task.project}` : "none"}
 workspace_instruction: ${task.project ? `Create and edit project files under context-hub/3-projects/${task.project}/ unless the task explicitly names another path.` : "No project workspace is attached to this task."}
@@ -742,6 +747,20 @@ approval_response: ${task.approvalResponse ?? "none"}${sourceSection}
 recent_team_messages:
 ${formatTeamMessages(teamMessages)}
 </task_context>`;
+}
+
+function formatTaskExecutionDate(createdAt: string): string {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) {
+    return createdAt.slice(0, 10);
+  }
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(date);
 }
 
 export function buildTaskResumePrompt(

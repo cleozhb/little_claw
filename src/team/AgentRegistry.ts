@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import YAML from "yaml";
+import type { ContextMode } from "../core/ContextPolicy.ts";
 export type AgentConfigStatus = "active" | "paused" | "disabled";
 export type AgentRuntimeStatus = "idle" | "working" | "waiting_approval" | "paused";
 
@@ -61,6 +62,8 @@ export interface AgentYamlConfig {
   max_concurrent_tasks: number;
   max_tokens_per_task: number;
   timeout_minutes: number;
+  max_turns?: number;
+  context_mode?: ContextMode;
 }
 
 export interface RegisteredAgent {
@@ -413,6 +416,8 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
   const maxConcurrentTasks = readPositiveInteger(raw.max_concurrent_tasks, 1, "max_concurrent_tasks");
   const maxTokensPerTask = readPositiveInteger(raw.max_tokens_per_task, 50000, "max_tokens_per_task");
   const timeoutMinutes = readPositiveInteger(raw.timeout_minutes, 30, "timeout_minutes");
+  const maxTurns = readOptionalInteger(raw.max_turns, "max_turns", { min: 1 });
+  const contextMode = readOptionalContextMode(raw.context_mode);
 
   return {
     name,
@@ -433,6 +438,8 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
     max_concurrent_tasks: maxConcurrentTasks,
     max_tokens_per_task: maxTokensPerTask,
     timeout_minutes: timeoutMinutes,
+    max_turns: maxTurns,
+    context_mode: contextMode,
   };
 }
 
@@ -508,6 +515,14 @@ function readOptionalInteger(value: unknown, key: string, options: { min?: numbe
     throw new Error(`agent.yaml field "${key}" must be an integer >= ${min}.`);
   }
   return value;
+}
+
+function readOptionalContextMode(value: unknown): ContextMode | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === "auto" || value === "always" || value === "project" || value === "off") {
+    return value;
+  }
+  throw new Error('agent.yaml field "context_mode" must be one of: auto, always, project, off.');
 }
 
 function readCronJobs(value: unknown): AgentCronJob[] {

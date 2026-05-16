@@ -13,8 +13,10 @@ export function createMemoryReadTool(
     description:
       "Read a persistent memory or context-hub file. Use this to check existing content before writing new entries.\n\n" +
       "Memory files:\n" +
-      "- memory/YYYY-MM-DD.md (daily logs)\n\n" +
+      "- memory/YYYY-MM-DD.md (agent-written daily notes)\n" +
+      "- memory/YYYY-MM-DD.jsonl (conversation/task event logs, when present)\n\n" +
       "Context Hub (three-layer system, navigate L0 → L1 → L2):\n" +
+      "- context-hub/.overview.md — global context-hub overview\n" +
       '- context-hub/{path}/.overview.md — L1 directory index, "WHERE to look + WHAT each file contains"\n' +
       "- context-hub/0-identity/profile.md — user profile (always preloaded)\n" +
       "- context-hub/1-inbox/inbox.md — todos / fleeting ideas (always preloaded)\n" +
@@ -28,7 +30,7 @@ export function createMemoryReadTool(
         file: {
           type: "string",
           description:
-            'The file to read. Examples: "memory/2026-04-04.md", "context-hub/3-projects/little-claw/.overview.md", "context-hub/4-knowledge/sops/deployment.md".',
+            'The file to read. Examples: "memory/2026-04-04.md", "memory/2026-04-04.jsonl", "context-hub/.overview.md", "context-hub/3-projects/little-claw/.overview.md", "context-hub/4-knowledge/sops/deployment.md".',
         },
       },
       required: ["file"],

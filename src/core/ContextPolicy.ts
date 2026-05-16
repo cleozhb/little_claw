@@ -85,6 +85,25 @@ export function buildContextPolicy(input: ContextPolicyInput): ContextPolicy {
   }
 
   if (input.runMode === "team_worker") {
+    if (input.contextMode === "always" && !input.hasProjectContext) {
+      return {
+        runMode: input.runMode,
+        contextMode: input.contextMode,
+        loadIdentity: true,
+        loadInbox: true,
+        loadContextMap: true,
+        retrieveContextOverviews: true,
+        loadProjectOverview: false,
+        retrieveLongTermMemory: true,
+        useFullMemoryGuidance: true,
+        memoryRecallTopK: 5,
+        contextOverviewTopK: 3,
+        skillFullLimit: input.hasConfiguredSkills ? Number.POSITIVE_INFINITY : 1,
+        skillSummaryLimit: 0,
+        reason: "projectless team worker uses broad context",
+      };
+    }
+
     return {
       runMode: input.runMode,
       contextMode: input.contextMode,

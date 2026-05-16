@@ -29,6 +29,10 @@ describe("ContextHub.initialize", () => {
     await hub.initialize();
     expect(existsSync(join(TMP, "context-hub", ".abstract.md"))).toBe(true);
     expect(existsSync(join(TMP, "context-hub", "0-identity", ".abstract.md"))).toBe(true);
+    expect(existsSync(join(TMP, "context-hub", "2-areas", ".overview.md"))).toBe(true);
+    expect(existsSync(join(TMP, "context-hub", "3-projects", ".overview.md"))).toBe(true);
+    expect(existsSync(join(TMP, "context-hub", "4-knowledge", ".overview.md"))).toBe(true);
+    expect(existsSync(join(TMP, "context-hub", "5-archive", ".overview.md"))).toBe(true);
     expect(existsSync(join(TMP, "context-hub", "0-identity", "profile.md"))).toBe(true);
     expect(existsSync(join(TMP, "context-hub", "1-inbox", "inbox.md"))).toBe(true);
   });

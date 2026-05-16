@@ -18,6 +18,13 @@ export function createReadFileTool(workspaceRoot: string): Tool {
 
     async execute(params: Record<string, unknown>): Promise<ToolResult> {
       const rawPath = params.path as string;
+      if (typeof rawPath !== "string" || rawPath.trim() === "") {
+        return {
+          success: false,
+          output: "",
+          error: "read_file path must be a non-empty string.",
+        };
+      }
 
       let safePath: string;
       try {

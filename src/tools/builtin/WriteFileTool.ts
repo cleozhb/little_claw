@@ -20,6 +20,20 @@ export function createWriteFileTool(workspaceRoot: string): Tool {
     async execute(params: Record<string, unknown>): Promise<ToolResult> {
       const rawPath = params.path as string;
       const content = params.content as string;
+      if (typeof rawPath !== "string" || rawPath.trim() === "") {
+        return {
+          success: false,
+          output: "",
+          error: "write_file path must be a non-empty string.",
+        };
+      }
+      if (typeof content !== "string") {
+        return {
+          success: false,
+          output: "",
+          error: "write_file content must be a string.",
+        };
+      }
 
       let safePath: string;
       try {

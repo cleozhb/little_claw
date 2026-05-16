@@ -128,6 +128,10 @@ describe("AgentWorker", () => {
     expect(llm.lastSystem).toContain("Use the team task context.");
     expect(String(llm.lastMessages[0]?.content)).toContain("<task_context>");
     expect(String(llm.lastMessages[0]?.content)).toContain("Fix routing bug");
+    expect(String(llm.lastMessages[0]?.content)).toContain(`created_at: ${task.createdAt}`);
+    expect(String(llm.lastMessages[0]?.content)).toMatch(/execution_date: \d{4}-\d{2}-\d{2}/);
+    expect(String(llm.lastMessages[0]?.content)).toContain("retry_count: 0");
+    expect(String(llm.lastMessages[0]?.content)).toContain("max_retries: 2");
     expect(String(llm.lastMessages[0]?.content)).toContain("project_workspace: context-hub/3-projects/lovely-octopus");
     expect(String(llm.lastMessages[0]?.content)).toContain("Create and edit project files under context-hub/3-projects/lovely-octopus/");
     expect(String(llm.lastMessages[0]?.content)).toContain(projectMessage.content);
