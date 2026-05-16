@@ -19,6 +19,8 @@ test("read_file rejects missing or non-string paths with a clear error", async (
 
   const result = await tool.execute({});
 
+  expect(tool.description).toContain("concrete non-empty file path");
+  expect(tool.parameters.properties?.path?.description).toContain("Never omit this field");
   expect(result.success).toBe(false);
   expect(result.error).toBe("read_file path must be a non-empty string.");
 });
@@ -29,6 +31,9 @@ test("write_file rejects invalid arguments with clear errors", async () => {
   const badPath = await tool.execute({ content: "hello" });
   const badContent = await tool.execute({ path: "note.md", content: { text: "hello" } });
 
+  expect(tool.description).toContain("concrete non-empty file path");
+  expect(tool.parameters.properties?.path?.description).toContain("Never omit this field");
+  expect(tool.parameters.properties?.content?.description).toContain("Never omit this field");
   expect(badPath.success).toBe(false);
   expect(badPath.error).toBe("write_file path must be a non-empty string.");
   expect(badContent.success).toBe(false);

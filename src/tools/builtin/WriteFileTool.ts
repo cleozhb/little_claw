@@ -7,12 +7,19 @@ export function createWriteFileTool(workspaceRoot: string): Tool {
   return {
     name: "write_file",
     description:
-      "Write content to a file at the given path. Creates the file if it doesn't exist, overwrites if it does. Use this to create or modify files. Paths are relative to the workspace root.",
+      "Write content to one file at the given path. You must provide both a concrete non-empty file path and string content. Creates the file if it doesn't exist, overwrites if it does. Do not call write_file with empty input, a directory path, or placeholder content. Paths are relative to the workspace root.",
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "The file path to write to (relative to workspace root)" },
-        content: { type: "string", description: "The content to write" },
+        path: {
+          type: "string",
+          description:
+            "Required concrete file path to write, relative to workspace root. Never omit this field.",
+        },
+        content: {
+          type: "string",
+          description: "Required string content to write. Never omit this field.",
+        },
       },
       required: ["path", "content"],
     },

@@ -7,11 +7,15 @@ export function createReadFileTool(workspaceRoot: string): Tool {
   return {
     name: "read_file",
     description:
-      "Read the contents of a file at the given path. Use this when you need to examine existing code or files. Paths are relative to the workspace root.",
+      "Read the contents of one existing file at the given path. You must provide a concrete non-empty file path in the path argument. Do not call read_file with empty input, a directory path, or a guessed placeholder. Paths are relative to the workspace root.",
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "The file path to read (relative to workspace root)" },
+        path: {
+          type: "string",
+          description:
+            "Required concrete file path to read, relative to workspace root. Never omit this field.",
+        },
       },
       required: ["path"],
     },
