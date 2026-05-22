@@ -69,4 +69,20 @@ export class EphemeralConversation {
   updateSessionTitle(_title: string): void {
     // no-op: ephemeral conversations don't have persistent titles
   }
+
+  replaceLastToolResult(toolUseId: string, output: string, isError: boolean): boolean {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i]!;
+      if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+      const blocks = msg.content as ToolResultBlock[];
+      for (const block of blocks) {
+        if (block.type === "tool_result" && block.tool_use_id === toolUseId) {
+          block.content = output;
+          block.is_error = isError;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 }

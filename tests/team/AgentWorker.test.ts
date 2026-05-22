@@ -308,7 +308,7 @@ describe("AgentWorker", () => {
     expect(tasks.getTask(task.id)?.status).toBe("completed");
     expect(tasks.getTask(task.id)?.result).toContain("published after approval");
     const resumePrompt = String(llm.calls[1]?.messages.at(-1)?.content);
-    expect(resumePrompt).toContain("Human approval status: approved");
+    expect(resumePrompt).toContain("Human approval decision: **APPROVED**");
     expect(resumePrompt).toContain("Approved by CEO.");
   });
 
@@ -342,7 +342,7 @@ describe("AgentWorker", () => {
 
     expect(tasks.getTask(task.id)?.status).toBe("completed");
     const resumePrompt = String(llm.calls[1]?.messages.at(-1)?.content);
-    expect(resumePrompt).toContain("Human approval status: rejected");
+    expect(resumePrompt).toContain("Human approval decision: **REJECTED**");
     expect(resumePrompt).toContain("换一个技术向节目。");
   });
 
@@ -502,6 +502,104 @@ describe("AgentWorker", () => {
     expect(tasks.getTask(task.id)?.status).toBe("completed");
     expect(String(llm.lastMessages[0]?.content)).toContain(source.content);
   });
+
+  test("persists task session to DB and recovers conversation across approval cycles", async () => {
+    const task = tasks.createTask({
+      title: "Persistent approval task",
+      description: "Verify DB session persistence across approval.",
+      createdBy: "human",
+      assignedTo: "coder",
+    });
+    const llm = new ScriptedLLM([
+      {
+        type: "tool",
+        name: REQUEST_APPROVAL_TOOL,
+        input: { task_id: task.id, prompt: "Shall I proceed?" },
+      },
+      { type: "text", text: "completed with persistence" },
+    ]);
+    const worker = new AgentWorker({
+      agent: agent("coder", []),
+      tasks,
+      messages,
+      db,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 3,
+    });
+
+    await worker.tick();
+    expect(tasks.getTask(task.id)?.status).toBe("awaiting_approval");
+
+    // Verify sessionId was persisted
+    const taskAfterApproval = tasks.getTask(task.id)!;
+    expect(taskAfterApproval.sessionId).toBeDefined();
+    const sessionId = taskAfterApproval.sessionId!;
+
+    // Verify session exists in DB
+    const session = db.getSession(sessionId);
+    expect(session).not.toBeNull();
+
+    // Verify messages were persisted
+    const dbMessages = db.getMessages(sessionId);
+    expect(dbMessages.length).toBeGreaterThan(0);
+
+    // Approve and resume — second worker run recovers from DB
+    tasks.approveTask(task.id, "Go ahead.", "human");
+    await worker.tick();
+
+    expect(tasks.getTask(task.id)?.status).toBe("completed");
+    expect(tasks.getTask(task.id)?.result).toContain("completed with persistence");
+  });
+
+  test("hard approval gate persists to session_approvals and recovers approvedCalls from DB", async () => {
+    toolRegistry.register(fakeTool("dangerous_tool"));
+    const task = tasks.createTask({
+      title: "Gate approval task",
+      description: "Test hard gate persistence.",
+      createdBy: "human",
+      assignedTo: "gated",
+    });
+    const llm = new ScriptedLLM([
+      { type: "tool", name: "dangerous_tool", input: { action: "rm -rf" } },
+      { type: "text", text: "done after gate" },
+    ]);
+    const gatedAgent = agent("gated", ["dangerous_tool"]);
+    gatedAgent.config.approval_rules = [
+      { tool: "dangerous_tool", message: "Dangerous action requires approval." },
+    ];
+    const worker = new AgentWorker({
+      agent: gatedAgent,
+      tasks,
+      messages,
+      db,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 3,
+    });
+
+    await worker.tick();
+    expect(tasks.getTask(task.id)?.status).toBe("awaiting_approval");
+
+    const taskWithSession = tasks.getTask(task.id)!;
+    expect(taskWithSession.sessionId).toBeDefined();
+
+    // Verify session_approvals has a pending record
+    const pending = db.getSessionPendingApproval(taskWithSession.sessionId!);
+    expect(pending).not.toBeNull();
+    expect(pending?.tool_name).toBe("dangerous_tool");
+    expect(pending?.status).toBe("pending");
+
+    // Approve
+    tasks.approveTask(task.id, "OK", "human");
+    await worker.tick();
+
+    expect(tasks.getTask(task.id)?.status).toBe("completed");
+
+    // Verify session_approvals was resolved
+    const approvedKeys = db.getApprovedCallKeys(taskWithSession.sessionId!);
+    expect(approvedKeys.length).toBeGreaterThan(0);
+  });
 });
 
 function agent(name: string, tools: string[]): RegisteredAgent {
@@ -518,6 +616,7 @@ function agent(name: string, tools: string[]): RegisteredAgent {
       task_tags: ["code"],
       cron_jobs: [],
       requires_approval: [],
+      approval_rules: [],
       max_concurrent_tasks: 2,
       max_tokens_per_task: 50000,
       timeout_minutes: 30,

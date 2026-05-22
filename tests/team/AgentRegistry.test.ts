@@ -206,6 +206,7 @@ describe("AgentRegistry", () => {
     expect(agent.config.default_project).toBeUndefined();
     expect(agent.config.aliases).toEqual(["tinker", "lab", "experimenter"]);
     expect(agent.config.tools).toEqual([
+      "shell",
       "read_file",
       "write_file",
       "web_search",
@@ -213,20 +214,21 @@ describe("AgentRegistry", () => {
       "memory_write",
       "context_write",
     ]);
-    expect(agent.config.tools).not.toContain("shell");
     expect(job?.key).toBe("nightly-tinker-spark");
     expect(job?.name).toBe("Nightly Tinker Spark");
     expect(job?.project).toBeUndefined();
     expect(job?.tags).toContain("scheduled");
     expect(job?.tags).toContain("tinker");
     expect(job?.enabled).toBe(true);
-    expect(agent.config.requires_approval).toContain("run code");
-    expect(agent.config.requires_approval).toContain("enable shell");
+    expect(agent.config.requires_approval).toContain("modify formal project files");
+    expect(agent.config.requires_approval).toContain("spend more than $5");
+    expect(agent.config.approval_rules).toHaveLength(1);
+    expect(agent.config.approval_rules[0]?.tool).toBe("shell");
     expect(agent.config.watchers).toEqual([]);
     expect(agent.config.max_turns).toBe(25);
     expect(agent.config.context_mode).toBe("always");
     expect(job?.prompt).toContain("task_context execution_date");
-    expect(job?.prompt).toContain("~/.little_claw/tinker/runs/{execution_date}/");
+    expect(job?.prompt).toContain("tinker/runs/{execution_date}/");
     expect(job?.prompt).toContain("attempts.md");
     expect(job?.prompt).toContain("retry_count and max_retries");
     expect(job?.prompt).toContain("Do not create run directories using dates from source material");

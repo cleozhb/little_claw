@@ -13,6 +13,7 @@ interface ChatAreaProps {
   messages: DisplayMessage[];
   isStreaming: boolean;
   activeSkills: Array<{ name: string; score: number; matchReason: string }>;
+  sessionId?: string | null;
   onMenuClick: () => void;
   onSend: (content: string) => void;
   onAbort: () => void;
@@ -23,6 +24,7 @@ export function ChatArea({
   messages,
   isStreaming,
   activeSkills,
+  sessionId,
   onMenuClick,
   onSend,
   onAbort,
@@ -94,6 +96,7 @@ export function ChatArea({
                 message={msg}
                 isStreaming={isLastAssistantText}
                 activeSkills={isLastAssistantText ? activeSkills : undefined}
+                sessionId={sessionId}
               />
             );
           })}

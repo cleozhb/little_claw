@@ -4,6 +4,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Markdown } from "@/components/markdown";
 import { ToolCallCard } from "@/components/chat/ToolCallCard";
 import { SubAgentCard } from "@/components/chat/SubAgentCard";
+import { ApprovalCard } from "@/components/chat/ApprovalCard";
 import { MemoryRecallBanner } from "@/components/chat/MemoryRecallBanner";
 import { ModeratorMessage } from "@/components/chat/ModeratorMessage";
 import { StreamingCursor } from "@/components/chat/StreamingCursor";
@@ -16,9 +17,11 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
   /** Active skills for the current turn (only passed to the streaming assistant message) */
   activeSkills?: Array<{ name: string; score: number; matchReason: string }>;
+  /** Session ID for approval actions */
+  sessionId?: string | null;
 }
 
-export function MessageBubble({ message, isStreaming, activeSkills }: MessageBubbleProps) {
+export function MessageBubble({ message, isStreaming, activeSkills, sessionId }: MessageBubbleProps) {
   // ---- Memory recall banner ----
   if (message.type === "memory_recall") {
     return <MemoryRecallBanner memories={message.meta?.memories ?? []} />;
@@ -68,6 +71,9 @@ export function MessageBubble({ message, isStreaming, activeSkills }: MessageBub
       <div className="min-w-0 flex-1 space-y-1.5">
         {message.type === "tool_call" && <ToolCallCard message={message} />}
         {message.type === "tool_result" && <ToolResultBlock message={message} />}
+        {message.type === "approval_needed" && (
+          <ApprovalCard message={message} sessionId={sessionId ?? null} />
+        )}
         {(message.type === "sub_agent_start" || message.type === "sub_agent_progress") && (
           <SubAgentCard message={message} isRunning />
         )}

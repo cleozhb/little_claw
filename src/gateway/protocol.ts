@@ -346,6 +346,14 @@ export interface RejectTaskMessage {
   userId?: string;
 }
 
+export interface ChatApprovalResponseMessage {
+  type: "chat_approval_response";
+  sessionId: string;
+  approvalId: string;
+  approved: boolean;
+  reason?: string;
+}
+
 export interface CancelTaskMessage {
   type: "cancel_task";
   taskId: string;
@@ -589,6 +597,7 @@ export type ClientMessage =
   | GetTeamScheduleRunsMessage
   | ApproveTaskMessage
   | RejectTaskMessage
+  | ChatApprovalResponseMessage
   | CancelTaskMessage
   | PingMessage
   | HealthCheckMessage;
@@ -1039,6 +1048,15 @@ export interface ApprovalNeededMessage {
   task: TaskInfo;
 }
 
+export interface ChatApprovalNeededMessage {
+  type: "chat_approval_needed";
+  sessionId: string;
+  approvalId: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  message: string;
+}
+
 export interface TeamSchedulesListMessage {
   type: "team_schedules_list";
   schedules: TeamScheduleInfo[];
@@ -1118,6 +1136,7 @@ export type ServerMessage =
   | TaskProgressMessage
   | TaskUpdatedMessage
   | ApprovalNeededMessage
+  | ChatApprovalNeededMessage
   | TeamSchedulesListMessage
   | TeamScheduleUpdatedMessage
   | TeamScheduleTriggeredMessage
@@ -1185,6 +1204,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "get_team_schedule_runs",
   "approve_task",
   "reject_task",
+  "chat_approval_response",
   "cancel_task",
   "ping",
   "health_check",
@@ -1442,6 +1462,14 @@ export function parseClientMessage(raw: string): ClientMessage {
       requireString(msg, "taskId");
       requireOptionalString(msg, "response");
       requireOptionalString(msg, "userId");
+      break;
+    case "chat_approval_response":
+      requireString(msg, "sessionId");
+      requireString(msg, "approvalId");
+      if (typeof msg.approved !== "boolean") {
+        throw new Error("'approved' must be a boolean");
+      }
+      requireOptionalString(msg, "reason");
       break;
     case "cancel_task":
       requireString(msg, "taskId");

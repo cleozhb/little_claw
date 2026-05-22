@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import YAML from "yaml";
 import type { ContextMode } from "../core/ContextPolicy.ts";
+import type { ApprovalRule } from "./ApprovalGate.ts";
 export type AgentConfigStatus = "active" | "paused" | "disabled";
 export type AgentRuntimeStatus = "idle" | "working" | "waiting_approval" | "paused";
 
@@ -58,6 +59,7 @@ export interface AgentYamlConfig {
   task_tags: string[];
   cron_jobs: AgentCronJob[];
   watchers?: AgentWatcher[];
+  approval_rules: ApprovalRule[];
   requires_approval: string[];
   max_concurrent_tasks: number;
   max_tokens_per_task: number;
@@ -434,7 +436,7 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
     task_tags: readStringArray(raw.task_tags, "task_tags"),
     cron_jobs: readCronJobs(raw.cron_jobs),
     watchers: readWatchers(raw.watchers),
-    requires_approval: readStringArray(raw.requires_approval, "requires_approval"),
+    ...readApprovalConfig(raw.requires_approval),
     max_concurrent_tasks: maxConcurrentTasks,
     max_tokens_per_task: maxTokensPerTask,
     timeout_minutes: timeoutMinutes,
@@ -523,6 +525,42 @@ function readOptionalContextMode(value: unknown): ContextMode | undefined {
     return value;
   }
   throw new Error('agent.yaml field "context_mode" must be one of: auto, always, project, off.');
+}
+
+// --- Approval config parsing ---
+
+const SHORTHAND_RE = /^([a-z_]+)\((.+)\)$/;
+
+function readApprovalConfig(value: unknown): { approval_rules: ApprovalRule[]; requires_approval: string[] } {
+  if (!value || !Array.isArray(value)) return { approval_rules: [], requires_approval: [] };
+
+  const rules: ApprovalRule[] = [];
+  const soft: string[] = [];
+
+  for (const item of value) {
+    if (typeof item === "string") {
+      const match = item.match(SHORTHAND_RE);
+      if (match) {
+        rules.push({ tool: match[1]!, pattern: globToRegex(match[2]!) });
+      } else {
+        soft.push(item);
+      }
+    } else if (isRecord(item) && typeof item.tool === "string") {
+      rules.push({
+        tool: item.tool,
+        pattern: readOptionalString(item.pattern),
+        field: readOptionalString(item.field),
+        message: readOptionalString(item.message),
+        action: readOptionalString(item.action) as "pause" | "deny" | undefined,
+      });
+    }
+  }
+  return { approval_rules: rules, requires_approval: soft };
+}
+
+function globToRegex(glob: string): string {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return "^" + escaped.replace(/\*/g, ".*") + "$";
 }
 
 function readCronJobs(value: unknown): AgentCronJob[] {

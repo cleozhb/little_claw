@@ -12,6 +12,7 @@ import type { ParsedSkill, ScoredSkill } from "../skills/types.ts";
 import type { ShellTool } from "../tools/types.ts";
 import type { AgentConfig } from "../agents/AgentConfig.ts";
 import { FALLBACK_AGENT_CONFIG } from "../agents/AgentConfig.ts";
+import { checkApprovalGate } from "../team/ApprovalGate.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
 import type { ContextRetriever, ScoredContext } from "../memory/ContextRetriever.ts";
 import { SkillPromptBuilder, SKILL_GUIDE } from "../skills/SkillPromptBuilder.ts";
@@ -150,6 +151,9 @@ export class AgentLoop {
   /** 待注入的消息队列 */
   private pendingInjections: string[] = [];
 
+  /** 审批放行：记录已被人类批准的工具调用签名，同一次 run 内不再重复拦截 */
+  private approvedCalls = new Set<string>();
+
   /** 当前是否正在 run() 中 */
   private _isRunning = false;
 
@@ -186,6 +190,21 @@ export class AgentLoop {
     this.runMode = options?.runMode ?? "chat";
     this.contextMode = options?.contextMode ?? "auto";
     this.projectContextPath = options?.projectContextPath;
+  }
+
+  // ----------------------------------------------------------
+  // Approval gate — 放行机制
+  // ----------------------------------------------------------
+
+  /** 批准一次工具调用，下次执行时跳过 gate 拦截 */
+  approveToolCall(toolName: string, params?: Record<string, unknown>): void {
+    const key = params ? `${toolName}:${JSON.stringify(params)}` : toolName;
+    this.approvedCalls.add(key);
+  }
+
+  /** 直接添加预构建的 callKey（用于从 DB 恢复已批准记录） */
+  approveCallKey(callKey: string): void {
+    this.approvedCalls.add(callKey);
   }
 
   // ----------------------------------------------------------
@@ -621,8 +640,10 @@ export class AgentLoop {
 
         // Auto-generate session title after first round (fire-and-forget)
         // 只有主 Agent 才需要生成 title，sub-agent 的 EphemeralConversation 无需标题
-        if (isFirstRound && this.config.canSpawnSubAgent) {
-          this.maybeGenerateTitle(userMessage, textContent);
+        if (!this.pendingTitleGeneration && this.config.canSpawnSubAgent) {
+          const firstUserMsg = this.conversation.getMessages().find((m) => m.role === "user");
+          const titleInput = (firstUserMsg?.content as string) ?? userMessage;
+          this.maybeGenerateTitle(titleInput, textContent);
         }
 
         // === 注入检查（end_turn 场景）===
@@ -703,6 +724,29 @@ export class AgentLoop {
         yield { type: "tool_call", name: block.name, params: block.input };
         log.toolCall(block.name, block.input);
 
+        // --- Pre-execute approval gate ---
+        if (this.config.approvalRules?.length) {
+          const callKey = `${block.name}:${JSON.stringify(block.input)}`;
+          if (!this.approvedCalls.has(callKey) && !this.approvedCalls.has(block.name)) {
+            const gateResult = checkApprovalGate(this.config.approvalRules, block.name, block.input);
+            if (gateResult.action !== "allow") {
+              const msg = (gateResult.rule as { message?: string })?.message
+                ?? `Tool "${block.name}" requires human approval (matched: ${(gateResult.rule as { pattern?: string })?.pattern ?? "all calls"}).`;
+              const result = { success: true, output: `[APPROVAL REQUIRED] ${msg}` };
+              yield { type: "tool_result", name: block.name, result };
+              yield { type: "approval_gate_triggered", rule: gateResult.rule, toolName: block.name, params: block.input };
+              toolResultParams.push({
+                toolUseId: block.id,
+                toolName: block.name,
+                input: block.input,
+                output: result.output,
+                isError: false,
+              });
+              continue;
+            }
+          }
+        }
+
         const tool = this.toolRegistry.get(block.name);
         if (!tool) {
           const result = {
@@ -770,7 +814,6 @@ export class AgentLoop {
       if (this.aborted) {
         log.warn("Aborted after all tools executed");
         this.conversation.addToolResults(messageId, toolResultParams);
-        yield { type: "text_delta", text: "\n\n[Aborted by user]" };
         yield { type: "done", usage: { totalInputTokens, totalOutputTokens } };
         return;
       }

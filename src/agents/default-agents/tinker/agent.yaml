@@ -11,6 +11,7 @@ aliases:
 direct_message: true
 context_mode: always
 tools:
+  - shell
   - read_file
   - write_file
   - web_search
@@ -27,7 +28,7 @@ task_tags:
   - delight
 cron_jobs:
   - cron: 0 3 * * *
-    prompt: Create one isolated morning spark for the user. Keep this run small and finish the artifact package promptly. Pick exactly one good-enough idea grounded in available context or recent memory; do not keep searching for the perfect project or perfect idea. Start from the loaded context_map and context_overviews; if they mention projects or knowledge areas, treat them as real context and read the specific relevant files before declaring context empty. If context is genuinely sparse, say which exact paths were checked. Read context only when useful, and if a context or memory file is missing, record that in research.md and move on without retrying the same missing file. Do not use web_search unless local context is clearly insufficient. Do not modify project directories, run commands, execute code, install dependencies, delete files, publish externally, or spend money. Use the task_context execution_date as the stable run id. Write the package only under ~/.little_claw/tinker/runs/{execution_date}/ with attempts.md, brief.md, research.md, prototype.md, result.md, and promotion.md. Do not create run directories using dates from source material, memory entries, project history, or idea names. Use task_context retry_count and max_retries to maintain attempts.md. On every attempt, record the attempt number, task id, what was already present, and what you changed. If retry_count is greater than 0, read existing files in the same run directory first, then repair or complete them instead of starting a new idea. Update ~/.little_claw/tinker/latest.md only after the required artifacts are complete, with a concise Chinese morning summary and the run directory path. Write all generated documents and user-facing messages in Chinese. Use Markdown sketches, pseudocode, interface drafts, or workflow notes only. Prefer completing these files over further investigation.
+    prompt: Create one isolated morning spark for the user. Keep this run small and finish the artifact package promptly. Pick exactly one good-enough idea grounded in available context or recent memory; do not keep searching for the perfect project or perfect idea. Start from the loaded context_map and context_overviews; if they mention projects or knowledge areas, treat them as real context and read the specific relevant files before declaring context empty. If context is genuinely sparse, say which exact paths were checked. Read context only when useful, and if a context or memory file is missing, record that in research.md and move on without retrying the same missing file. Do not use web_search unless local context is clearly insufficient. Do not modify project directories, run commands, execute code, install dependencies, delete files, publish externally, or spend money. Use the task_context execution_date as the stable run id. Write the package only under tinker/runs/{execution_date}/ (relative to cwd) with attempts.md, brief.md, research.md, prototype.md, result.md, and promotion.md. Do not create run directories using dates from source material, memory entries, project history, or idea names. Use task_context retry_count and max_retries to maintain attempts.md. On every attempt, record the attempt number, task id, what was already present, and what you changed. If retry_count is greater than 0, read existing files in the same run directory first, then repair or complete them instead of starting a new idea. Update tinker/latest.md (relative to cwd) only after the required artifacts are complete, with a concise Chinese morning summary and the run directory path. Write all generated documents and user-facing messages in Chinese. Use Markdown sketches, pseudocode, interface drafts, or workflow notes only. Prefer completing these files over further investigation.
     key: nightly-tinker-spark
     name: Nightly Tinker Spark
     tags:
@@ -41,12 +42,10 @@ cron_jobs:
     enabled: true
 watchers: []
 requires_approval:
+  - tool: shell
+    message: "Tinker 不允许直接执行 shell 命令，需要人类确认"
   - modify formal project files
-  - run code
-  - enable shell
   - spend more than $5
-  - delete files
-  - publish external updates
 max_concurrent_tasks: 1
 max_tokens_per_task: 60000
 timeout_minutes: 45

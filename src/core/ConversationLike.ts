@@ -26,4 +26,5 @@ export interface ConversationLike {
   getSystemPrompt(): string;
   getSessionId(): string;
   updateSessionTitle(title: string): void;
+  replaceLastToolResult?(toolUseId: string, output: string, isError: boolean): boolean;
 }

@@ -412,6 +412,14 @@ export interface CancelTaskMessage {
   userId?: string;
 }
 
+export interface ChatApprovalResponseMessage {
+  type: "chat_approval_response";
+  sessionId: string;
+  approvalId: string;
+  approved: boolean;
+  reason?: string;
+}
+
 export type ClientMessage =
   | ChatMessage
   | CreateSessionMessage
@@ -464,6 +472,7 @@ export type ClientMessage =
   | ApproveTaskMessage
   | RejectTaskMessage
   | CancelTaskMessage
+  | ChatApprovalResponseMessage
   | PingMessage
   | HealthCheckMessage;
 
@@ -913,6 +922,15 @@ export interface ApprovalNeededMessage {
   task: TaskInfo;
 }
 
+export interface ChatApprovalNeededMessage {
+  type: "chat_approval_needed";
+  sessionId: string;
+  approvalId: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  message: string;
+}
+
 export interface TeamSchedulesListMessage {
   type: "team_schedules_list";
   schedules: TeamScheduleInfo[];
@@ -996,6 +1014,7 @@ export type ServerMessage =
   | TaskProgressMessage
   | TaskUpdatedMessage
   | ApprovalNeededMessage
+  | ChatApprovalNeededMessage
   | TeamSchedulesListMessage
   | TeamScheduleUpdatedMessage
   | TeamScheduleTriggeredMessage

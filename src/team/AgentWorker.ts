@@ -1,6 +1,9 @@
 import { createAgentConfig } from "../agents/AgentConfig.ts";
 import { AgentLoop } from "../core/AgentLoop.ts";
+import { Conversation } from "../core/Conversation.ts";
 import { EphemeralConversation } from "../core/EphemeralConversation.ts";
+import type { ConversationLike } from "../core/ConversationLike.ts";
+import type { Database } from "../db/Database.ts";
 import type { ContextRetriever } from "../memory/ContextRetriever.ts";
 import type { ContextHub } from "../memory/ContextHub.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
@@ -8,7 +11,7 @@ import type { LLMProvider } from "../llm/types.ts";
 import type { SkillManager } from "../skills/SkillManager.ts";
 import type { ToolRegistry } from "../tools/ToolRegistry.ts";
 import type { ShellTool, Tool } from "../tools/types.ts";
-import type { AgentEvent } from "../types/message.ts";
+import type { AgentEvent, ToolUseBlock } from "../types/message.ts";
 import type { RegisteredAgent } from "./AgentRegistry.ts";
 import type { Task } from "./TaskQueue.ts";
 import { TaskQueue } from "./TaskQueue.ts";
@@ -28,6 +31,7 @@ export interface AgentWorkerOptions {
   tasks: TaskQueue;
   messages: TeamMessageStore;
   projectChannels?: ProjectChannelStore;
+  db?: Database;
   llmProvider: LLMProvider;
   toolRegistry: ToolRegistry;
   skillManager?: SkillManager;
@@ -63,6 +67,7 @@ export class AgentWorker {
   private tasks: TaskQueue;
   private messages: TeamMessageStore;
   private projectChannels?: ProjectChannelStore;
+  private db?: Database;
   private llmProvider: LLMProvider;
   private toolRegistry: ToolRegistry;
   private skillManager?: SkillManager;
@@ -79,7 +84,7 @@ export class AgentWorker {
   private monitorTimer: ReturnType<typeof setInterval> | null = null;
   private currentLoop: AgentLoop | null = null;
   private currentTaskId: string | null = null;
-  private taskConversations = new Map<string, EphemeralConversation>();
+  private currentSessionId: string | null = null;
   private stateValue: AgentWorkerState = "idle";
 
   constructor(options: AgentWorkerOptions) {
@@ -87,6 +92,7 @@ export class AgentWorker {
     this.tasks = options.tasks;
     this.messages = options.messages;
     this.projectChannels = options.projectChannels;
+    this.db = options.db;
     this.llmProvider = options.llmProvider;
     this.toolRegistry = options.toolRegistry;
     this.skillManager = options.skillManager;
@@ -278,33 +284,56 @@ export class AgentWorker {
     this.currentTaskId = running.id;
     this.stateValue = "running";
 
-    // 每个任务复用一段临时 Conversation；审批恢复时能保留审批前的工具调用上下文。
+    // 每个任务复用一段持久化 Conversation；审批恢复时能从 DB 完整重建对话上下文。
     const conversation = this.getTaskConversation(running.id);
-    const loop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
-      config: createAgentConfig({
-        name: agentName,
-        systemPrompt: buildTeamAgentSystemPrompt(this.agent),
-        // 普通工具由 agent.yaml.tools 控制，团队任务工具由 Worker 显式补入。
-        allowedTools: uniqueStrings([
-          ...this.agent.config.tools,
-          REPORT_PROGRESS_TOOL,
-          REQUEST_APPROVAL_TOOL,
-        ]),
-        maxTurns: this.maxTurns,
-        canSpawnSubAgent: false,
-      }),
-      skillManager: this.skillManager,
-      configuredSkillNames: this.agent.config.skills,
-      shellTool: this.shellTool,
-      memoryManager: this.memoryManager,
-      contextRetriever: this.contextRetriever,
-      channelId: task.channelId,
-      runMode: "team_worker",
-      contextMode: running.project ? "project" : this.agent.config.context_mode ?? "auto",
-      projectContextPath: running.project ? `context-hub/3-projects/${running.project}` : undefined,
-    });
+    this.currentSessionId = conversation.getSessionId();
+
+    // --- Approved: 直接执行被拦截的工具调用，跳过 LLM ---
+    let directExecuted = false;
+    if (approvalResumeStatus === "approved") {
+      const directResult = await this.directExecuteApprovedTool(running, conversation);
+      if (directResult) {
+        directExecuted = true;
+        if (this.onTaskProgress) {
+          this.onTaskProgress(running.id, agentName, `✓ Executed: ${directResult.toolName}\n${directResult.output.slice(0, 200)}`);
+        }
+      }
+    }
+
+    const loop = this.getTaskLoop(running.id, conversation, running.project, task.channelId);
 
     this.currentLoop = loop;
+
+    // 从 DB 恢复所有已批准的调用（进程重启后也能重建），防止再次触发 gate
+    if (this.db && this.currentSessionId) {
+      const approvedKeys = this.db.getApprovedCallKeys(this.currentSessionId);
+      for (const key of approvedKeys) {
+        loop.approveCallKey(key);
+      }
+    }
+
+    // 审批恢复：将已批准的具体调用写入 approvedCalls，防止 LLM 重新生成同一命令时再次触发 gate
+    if (approvalResumeStatus === "approved") {
+      const data = running.approvalData as { tool?: string; params?: Record<string, unknown> } | undefined;
+      if (data?.tool) {
+        loop.approveToolCall(data.tool, data.params);
+      }
+      // 将 session_approvals 中的 pending 记录标记为 approved
+      if (this.db && this.currentSessionId) {
+        const pending = this.db.getSessionPendingApproval(this.currentSessionId);
+        if (pending) {
+          this.db.approveSessionApproval(pending.id);
+        }
+      }
+    } else if (approvalResumeStatus === "rejected") {
+      // 将 session_approvals 中的 pending 记录标记为 rejected
+      if (this.db && this.currentSessionId) {
+        const pending = this.db.getSessionPendingApproval(this.currentSessionId);
+        if (pending) {
+          this.db.rejectSessionApproval(pending.id);
+        }
+      }
+    }
 
     // 人类消息必须先从 team_messages 取出并标记 injected，防止重启或重试时重复注入。
     const initialMessages = this.collectInjectableMessages(running);
@@ -317,10 +346,17 @@ export class AgentWorker {
       this.messages.markInjected(message.id, agentName);
     }
 
-    // 审批恢复使用独立 user_update，让 Agent 明确知道人类是批准还是拒绝。
-    const prompt = approvalResumeStatus
-      ? buildTaskResumePrompt(running, initialMessages, approvalResumeStatus)
-      : buildTaskUserPrompt(running, initialMessages, this.getSourceMessage(running));
+    // 构建 prompt
+    let prompt: string;
+    if (approvalResumeStatus === "approved" && directExecuted) {
+      // 工具已直接执行并写入 conversation，只需让 LLM 继续后续步骤
+      prompt = "The approved tool call has been executed. Continue the task.";
+    } else if (approvalResumeStatus) {
+      // 软审批(无 approvalData.tool) 或直接执行失败，走 LLM resume
+      prompt = buildTaskResumePrompt(running, initialMessages, approvalResumeStatus);
+    } else {
+      prompt = buildTaskUserPrompt(running, initialMessages, this.getSourceMessage(running));
+    }
 
     let assistantText = "";
     let errorMessage: string | null = null;
@@ -365,6 +401,7 @@ export class AgentWorker {
       this.stopMessageMonitor();
       this.currentLoop = null;
       this.currentTaskId = null;
+      this.currentSessionId = null;
     }
 
     const latest = this.tasks.getTask(running.id);
@@ -379,12 +416,30 @@ export class AgentWorker {
         taskId: latest.id,
         approvalPrompt: latest.approvalPrompt ?? "(none)",
       });
+      // 向 agent DM channel 发送审批通知，让 Agent Thread 中也能看到并操作审批
+      const data = latest.approvalData as { tool?: string; params?: Record<string, unknown> } | undefined;
+      let content = `🔒 **Approval Required** — "${latest.title}"\n\n${latest.approvalPrompt ?? "This task requires human approval to continue."}`;
+      if (data?.tool) {
+        const paramsStr = data.params ? JSON.stringify(data.params, null, 2) : "";
+        content += `\n\n**Tool:** \`${data.tool}\``;
+        if (paramsStr) content += `\n\`\`\`json\n${paramsStr}\n\`\`\``;
+      }
+      this.messages.createMessage({
+        channelType: "agent_dm",
+        channelId: agentName,
+        project: latest.project ?? undefined,
+        taskId: latest.id,
+        senderType: "system",
+        senderId: "approval-gate",
+        content,
+        priority: "urgent",
+        status: "new",
+      });
       this.stateValue = "waiting_approval";
       return latest;
     }
     if (latest.status === "cancelled") {
-      log.info(`任务已取消，清理临时对话：${latest.id}`);
-      this.taskConversations.delete(latest.id);
+      log.info(`任务已取消：${latest.id}`);
       this.stateValue = "idle";
       return latest;
     }
@@ -423,7 +478,6 @@ export class AgentWorker {
     const trimmedResult = assistantText.trim() || "Task completed.";
     this.postTaskNotification(completed, trimmedResult);
     await this.archiveTaskTerminalState(completed, "completed", trimmedResult);
-    this.taskConversations.delete(completed.id);
     this.stateValue = "idle";
     return completed;
   }
@@ -444,6 +498,7 @@ export class AgentWorker {
         name: agentName,
         systemPrompt: buildTeamAgentSystemPrompt(this.agent),
         allowedTools: this.agent.config.tools,
+        approvalRules: this.agent.config.approval_rules,
         maxTurns: this.maxTurns,
         canSpawnSubAgent: false,
       }),
@@ -601,6 +656,24 @@ export class AgentWorker {
       log.info(`检测到 request_approval 工具成功返回，准备暂停任务`);
       return "approval_requested";
     }
+    // 硬审批 gate 触发
+    if (event.type === "approval_gate_triggered") {
+      const rule = event.rule as { message?: string; pattern?: string } | undefined;
+      this.tasks.requestApproval(this.currentTaskId!, {
+        prompt: rule?.message ?? `Agent tried to call "${event.toolName}" which requires approval.`,
+        data: { tool: event.toolName, params: event.params, rule },
+      });
+      // 持久化到 session_approvals 表，进程重启后可恢复 approvedCalls
+      if (this.db && this.currentSessionId) {
+        this.db.createSessionApproval(this.currentSessionId, {
+          toolName: event.toolName,
+          params: (event.params ?? {}) as Record<string, unknown>,
+          rule,
+          message: rule?.message ?? `Agent tried to call "${event.toolName}" which requires approval.`,
+        });
+      }
+      return "approval_requested";
+    }
     return "none";
   }
 
@@ -651,17 +724,18 @@ export class AgentWorker {
   /** 从三个来源收集可注入的消息：Agent DM + 项目频道 + 任务直连，去重后返回 */
   private collectInjectableMessages(task: Task): TeamMessage[] {
     // 任务上下文同时吸收 Agent DM、项目频道和 task_id 直连消息，并去重防止同一消息重复出现。
+    // system 消息是面向人类的通知（如审批卡片），不注入给 Agent。
     return uniqueMessages([
       ...this.messages.getPendingForAgent(this.agent.config.name),
       ...(task.project ? this.messages.getPendingForProject(task.project) : []),
       ...this.messages.getPendingForTask(task.id),
-    ]).filter((message) => !isControlMessage(message));
+    ]).filter((message) => !isControlMessage(message) && message.senderType !== "system");
   }
 
   private pendingDirectMessages(): TeamMessage[] {
     return this.messages
       .getPendingForAgent(this.agent.config.name)
-      .filter((message) => !isControlMessage(message));
+      .filter((message) => !isControlMessage(message) && message.senderType !== "system");
   }
 
   /** 处理控制消息：识别 "cancel"/"pause" 命令，执行中断或暂停 */
@@ -694,15 +768,114 @@ export class AgentWorker {
     return this.messages.getMessage(task.sourceMessageId) ?? undefined;
   }
 
-  private getTaskConversation(taskId: string): EphemeralConversation {
-    let conversation = this.taskConversations.get(taskId);
-    if (!conversation) {
-      // Conversation 只是一次执行窗口；长期事实仍以 TaskQueue 和 TeamMessageStore 为准。
-      log.debug(`为任务创建新的临时对话：${taskId}`);
-      conversation = new EphemeralConversation("Lovely Octopus team task execution.");
-      this.taskConversations.set(taskId, conversation);
+  private getTaskConversation(taskId: string): ConversationLike {
+    const task = this.tasks.getTask(taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
     }
-    return conversation;
+
+    // If we have a DB, use persistent Conversation bound to this task's session
+    if (this.db) {
+      if (task.sessionId) {
+        log.debug(`从 DB 恢复任务对话：${taskId}, sessionId=${task.sessionId}`);
+        return Conversation.loadExisting(this.db, task.sessionId);
+      }
+      const systemPrompt = buildTeamAgentSystemPrompt(this.agent);
+      const conversation = Conversation.createNew(this.db, systemPrompt, "team_task");
+      this.tasks.setSessionId(taskId, conversation.getSessionId());
+      log.debug(`为任务创建持久化对话：${taskId}, sessionId=${conversation.getSessionId()}`);
+      return conversation;
+    }
+
+    // Fallback: ephemeral (no DB provided, e.g. in tests)
+    log.debug(`为任务创建临时对话（无 DB）：${taskId}`);
+    return new EphemeralConversation("Lovely Octopus team task execution.");
+  }
+
+  private getTaskLoop(_taskId: string, conversation: ConversationLike, project?: string, channelId?: string): AgentLoop {
+    const agentName = this.agent.config.name;
+    const loop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
+      config: createAgentConfig({
+        name: agentName,
+        systemPrompt: buildTeamAgentSystemPrompt(this.agent),
+        allowedTools: uniqueStrings([
+          ...this.agent.config.tools,
+          REPORT_PROGRESS_TOOL,
+          REQUEST_APPROVAL_TOOL,
+        ]),
+        approvalRules: this.agent.config.approval_rules,
+        maxTurns: this.maxTurns,
+        canSpawnSubAgent: false,
+      }),
+      skillManager: this.skillManager,
+      configuredSkillNames: this.agent.config.skills,
+      shellTool: this.shellTool,
+      memoryManager: this.memoryManager,
+      contextRetriever: this.contextRetriever,
+      channelId,
+      runMode: "team_worker",
+      contextMode: project ? "project" : this.agent.config.context_mode ?? "auto",
+      projectContextPath: project ? `context-hub/3-projects/${project}` : undefined,
+    });
+    return loop;
+  }
+
+  /**
+   * 审批通过后直接执行被拦截的工具调用，跳过 LLM。
+   * 从 task.approvalData 取出 tool/params，执行后替换 conversation 中的 [APPROVAL REQUIRED] 结果。
+   */
+  private async directExecuteApprovedTool(
+    task: Task,
+    conversation: ConversationLike,
+  ): Promise<{ toolName: string; output: string } | null> {
+    const data = task.approvalData as { tool?: string; params?: Record<string, unknown> } | undefined;
+    if (!data?.tool) return null;
+
+    const tool = this.toolRegistry.get(data.tool);
+    if (!tool) {
+      log.warn(`审批恢复：工具 "${data.tool}" 未注册，将回退到 LLM 流程`);
+      return null;
+    }
+
+    // 从 conversation 中找到对应的 tool_use_id
+    const messages = conversation.getMessages();
+    let toolUseId: string | null = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]!;
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
+        if (block.type === "tool_use" && block.name === data.tool) {
+          toolUseId = (block as ToolUseBlock).id;
+          break;
+        }
+      }
+      if (toolUseId) break;
+    }
+
+    log.step("审批通过，直接执行工具", {
+      agent: this.agent.config.name,
+      tool: data.tool,
+      toolUseId: toolUseId ?? "(not found)",
+    });
+
+    try {
+      const result = await tool.execute(data.params ?? {});
+      const output = result.success ? result.output : (result.error ?? "Tool execution failed");
+
+      // 替换 conversation 中的 [APPROVAL REQUIRED] 假结果
+      if (toolUseId) {
+        conversation.replaceLastToolResult?.(toolUseId, output, !result.success);
+      }
+
+      return { toolName: data.tool, output };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.warn(`审批恢复直接执行失败：${data.tool}`, errMsg);
+      if (toolUseId) {
+        conversation.replaceLastToolResult?.(toolUseId, `Execution error: ${errMsg}`, true);
+      }
+      return { toolName: data.tool, output: errMsg };
+    }
   }
 }
 
@@ -771,9 +944,11 @@ export function buildTaskResumePrompt(
   return `${buildTaskUserPrompt(task, teamMessages)}
 
 <user_update>
-Human approval status: ${decision}
+Human approval decision: **${decision.toUpperCase()}**
 Human response: ${task.approvalResponse ?? "(none)"}
-Continue the task from this updated instruction. If the request was rejected, revise the plan or cancel safely.
+${decision === "approved"
+    ? "The previously blocked tool call has been approved. Execute it immediately without summarizing the situation or explaining what happened. Do NOT output analysis text — just proceed with the tool call."
+    : "The request was rejected. Revise the plan or cancel safely."}
 </user_update>`;
 }
 

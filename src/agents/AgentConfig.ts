@@ -1,3 +1,5 @@
+import type { ApprovalRule } from "../team/ApprovalGate.ts";
+
 /**
  * Agent 角色配置体系
  * 定义 Agent 的角色类型和配置结构，支持 Main Agent 与 Sub-Agent 的差异化配置。
@@ -14,6 +16,8 @@ export interface AgentConfig {
   maxTurns: number;
   /** 是否可以再派生 Sub-Agent，防止无限递归。Sub-Agent 默认 false */
   canSpawnSubAgent: boolean;
+  /** 硬审批拦截规则，工具执行前自动检查 */
+  approvalRules?: ApprovalRule[];
 }
 
 /** 创建 AgentConfig 的便捷函数，提供合理默认值 */

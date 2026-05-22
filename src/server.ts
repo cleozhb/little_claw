@@ -14,6 +14,7 @@ import type { SpawnAgentTool } from "./tools/builtin/SpawnAgentTool.ts";
 import { Database } from "./db/Database.ts";
 import { SessionRouter } from "./gateway/SessionRouter.ts";
 import { GatewayServer } from "./gateway/GatewayServer.ts";
+import type { ServerMessage } from "./gateway/protocol.ts";
 import { SkillManager } from "./skills/SkillManager.ts";
 import { SkillLoader } from "./skills/SkillLoader.ts";
 import { SkillConfigFile } from "./skills/SkillConfigFile.ts";
@@ -133,6 +134,7 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     tasks: taskQueue,
     messages: teamMessages,
     projectChannels,
+    db: options.db,
     llmProvider: options.llmProvider,
     toolRegistry: options.toolRegistry,
     skillManager: options.skillManager,
@@ -543,6 +545,21 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     },
     onInject: (sessionId, content) => {
       return sessionRouter.injectMessage(sessionId, content);
+    },
+    onChatApprovalResponse: (connectionId, sessionId, approvalId, approved, reason) => {
+      const sendEvent = (event: ServerMessage) => {
+        gateway.sendToConnection(connectionId, event);
+      };
+      const handler = approved
+        ? sessionRouter.approveChat(sessionId, approvalId, sendEvent)
+        : sessionRouter.rejectChat(sessionId, approvalId, reason, sendEvent);
+      handler.catch((err) => {
+        gateway.sendToConnection(connectionId, {
+          type: "error",
+          sessionId,
+          message: `Chat approval failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
     },
     getActiveSessionCount: () => sessionRouter.getActiveSessionCount(),
   });

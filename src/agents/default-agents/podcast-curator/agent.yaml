@@ -55,7 +55,10 @@ cron_jobs:
     enabled: true
 watchers: []
 requires_approval:
-  - publish translated content
+  - shell(translate start*)
+  - tool: shell
+    pattern: "translate\\s+publish"
+    message: "即将发布翻译内容到外部平台，确认？"
   - select new podcasts to translate
 max_concurrent_tasks: 2
 max_tokens_per_task: 80000

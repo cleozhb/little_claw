@@ -90,6 +90,7 @@ export default function Home() {
             messages={messages}
             isStreaming={isStreaming}
             activeSkills={activeSkills}
+            sessionId={currentSessionId}
             onMenuClick={() => setSidebarOpen(true)}
             onSend={sendMessage}
             onAbort={abort}

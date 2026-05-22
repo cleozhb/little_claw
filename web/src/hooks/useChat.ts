@@ -389,6 +389,28 @@ export function useChat(sessionId: string | null) {
           break;
         }
 
+        case "chat_approval_needed": {
+          setIsStreaming(false);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              role: "assistant",
+              type: "approval_needed",
+              content: msg.message,
+              meta: {
+                approvalId: msg.approvalId,
+                toolName: msg.toolName,
+                toolParams: msg.params,
+                approvalMessage: msg.message,
+                approvalStatus: "pending",
+              },
+              timestamp: new Date(),
+            },
+          ]);
+          break;
+        }
+
         case "done": {
           // Persist activeSkills onto the first assistant text message of this turn
           setMessages((prev) => {

@@ -37,12 +37,21 @@ export interface SessionRouterOptions {
   cleanupIntervalMs?: number;
 }
 
+interface PendingApproval {
+  id: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  rule: unknown;
+  message: string;
+}
+
 interface SessionEntry {
   agentLoop: AgentLoop;
   conversation: Conversation;
   lastActiveAt: number;
   /** per-session 串行队列，保证同一 session 不会并发 run() */
   queue: Promise<void>;
+  pendingApproval?: PendingApproval;
 }
 
 // ============================================================
@@ -97,6 +106,13 @@ export class SessionRouter {
     const entry = this.getOrCreate(sessionId);
     entry.lastActiveAt = Date.now();
 
+    // 如果有 pending approval，用户的新消息视为隐式取消当前审批
+    if (entry.pendingApproval) {
+      log.info(`Session ${sessionId} had pending approval, clearing on new user message`);
+      this.db.rejectSessionApproval(entry.pendingApproval.id);
+      entry.pendingApproval = undefined;
+    }
+
     // 排队执行，保证同一 session 串行
     const job = entry.queue.then(() =>
       this.runAgent(sessionId, entry, content, onEvent),
@@ -138,6 +154,61 @@ export class SessionRouter {
     if (!entry.agentLoop.isRunning) return false;
     log.info(`Injecting message to session ${sessionId}`, content);
     entry.agentLoop.inject(content);
+    return true;
+  }
+
+  // ----------------------------------------------------------
+  // Chat Approval (HITL)
+  // ----------------------------------------------------------
+
+  /**
+   * 批准 chat session 中被拦截的工具调用，恢复执行。
+   * 支持跨实例：从 DB 读取 pending 状态，不依赖内存。
+   */
+  async approveChat(
+    sessionId: string,
+    approvalId: string,
+    onEvent: (event: ServerMessage) => void,
+  ): Promise<boolean> {
+    const dbApproval = this.db.getSessionPendingApproval(sessionId);
+    if (!dbApproval || dbApproval.id !== approvalId) return false;
+
+    this.db.approveSessionApproval(approvalId);
+
+    const entry = this.getOrCreate(sessionId);
+    entry.pendingApproval = undefined;
+
+    const params: Record<string, unknown> = JSON.parse(dbApproval.params);
+    entry.agentLoop.approveToolCall(dbApproval.tool_name, params);
+    // 也按工具名放行，防止 LLM 重新生成的参数与原始不完全一致导致重复拦截
+    entry.agentLoop.approveToolCall(dbApproval.tool_name);
+
+    const resumeMsg = `[APPROVED] The user has approved the "${dbApproval.tool_name}" tool call. Please proceed and re-execute it.`;
+    await this.handleChat(sessionId, resumeMsg, onEvent);
+    return true;
+  }
+
+  /**
+   * 拒绝 chat session 中被拦截的工具调用。
+   */
+  async rejectChat(
+    sessionId: string,
+    approvalId: string,
+    reason: string | undefined,
+    onEvent: (event: ServerMessage) => void,
+  ): Promise<boolean> {
+    const dbApproval = this.db.getSessionPendingApproval(sessionId);
+    if (!dbApproval || dbApproval.id !== approvalId) return false;
+
+    this.db.rejectSessionApproval(approvalId);
+
+    const entry = this.getOrCreate(sessionId);
+    entry.pendingApproval = undefined;
+
+    const rejectMsg = reason
+      ? `[REJECTED] The user rejected the "${dbApproval.tool_name}" tool call. Reason: ${reason}. Please find an alternative approach.`
+      : `[REJECTED] The user rejected the "${dbApproval.tool_name}" tool call. Please find an alternative approach or ask the user what to do.`;
+    await this.handleChat(sessionId, rejectMsg, onEvent);
     return true;
   }
 
@@ -185,6 +256,7 @@ export class SessionRouter {
           name: mainAgent.config.name,
           systemPrompt: buildTeamAgentSystemPrompt(mainAgent),
           allowedTools: mainAgent.config.tools,
+          approvalRules: mainAgent.config.approval_rules,
           maxTurns: 25,
           canSpawnSubAgent: true,
         })
@@ -198,11 +270,27 @@ export class SessionRouter {
       contextMode: "auto",
     });
 
+    // 从 DB 恢复已批准的工具调用（跨实例/session 重建场景）
+    const approvedKeys = this.db.getApprovedCallKeys(sessionId);
+    for (const key of approvedKeys) {
+      agentLoop.approveCallKey(key);
+    }
+
+    // 恢复 pending approval 状态
+    const dbPending = this.db.getSessionPendingApproval(sessionId);
+
     const entry: SessionEntry = {
       agentLoop,
       conversation,
       lastActiveAt: Date.now(),
       queue: Promise.resolve(),
+      pendingApproval: dbPending ? {
+        id: dbPending.id,
+        toolName: dbPending.tool_name,
+        params: JSON.parse(dbPending.params),
+        rule: dbPending.rule ? JSON.parse(dbPending.rule) : null,
+        message: dbPending.message,
+      } : undefined,
     };
     this.sessions.set(sessionId, entry);
     return entry;
@@ -311,6 +399,38 @@ export class SessionRouter {
               skills: event.skills,
             });
             break;
+          case "approval_gate_triggered": {
+            const rule = event.rule as { message?: string; pattern?: string } | undefined;
+            const msg = rule?.message
+              ?? `Tool "${event.toolName}" requires approval (pattern: ${rule?.pattern ?? "all"}).`;
+
+            const approvalId = this.db.createSessionApproval(sessionId, {
+              toolName: event.toolName,
+              params: event.params,
+              rule: event.rule,
+              message: msg,
+            });
+
+            entry.pendingApproval = {
+              id: approvalId,
+              toolName: event.toolName,
+              params: event.params,
+              rule: event.rule,
+              message: msg,
+            };
+
+            log.info(`[HITL] Approval gate triggered for session ${sessionId}, tool="${event.toolName}", approvalId=${approvalId}`);
+            onEvent({
+              type: "chat_approval_needed",
+              sessionId,
+              approvalId,
+              toolName: event.toolName,
+              params: event.params,
+              message: msg,
+            });
+            entry.agentLoop.abort();
+            break;
+          }
         }
       }
 

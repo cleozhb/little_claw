@@ -136,6 +136,13 @@ export interface AgentSkillsMatchedEvent {
   skills: Array<{ name: string; score: number; matchReason: string }>;
 }
 
+export interface ApprovalGateTriggeredEvent {
+  type: "approval_gate_triggered";
+  rule: unknown;
+  toolName: string;
+  params: Record<string, unknown>;
+}
+
 export type AgentEvent =
   | AgentTextDeltaEvent
   | AgentToolCallEvent
@@ -145,4 +152,5 @@ export type AgentEvent =
   | SubAgentStartEvent
   | SubAgentProgressEvent
   | SubAgentDoneEvent
-  | AgentSkillsMatchedEvent;
+  | AgentSkillsMatchedEvent
+  | ApprovalGateTriggeredEvent;

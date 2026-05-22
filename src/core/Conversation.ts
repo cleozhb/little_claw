@@ -49,8 +49,8 @@ export class Conversation {
 
   // --- Static Factory Methods ---
 
-  static createNew(db: Database, systemPrompt?: string): Conversation {
-    const session = db.createSession(systemPrompt);
+  static createNew(db: Database, systemPrompt?: string, mode?: string): Conversation {
+    const session = db.createSession(systemPrompt, mode);
     return new Conversation(db, session.id);
   }
 
@@ -240,6 +240,23 @@ export class Conversation {
 
   clear(): void {
     this.messages = [];
+  }
+
+  replaceLastToolResult(toolUseId: string, output: string, isError: boolean): boolean {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i]!;
+      if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+      const blocks = msg.content as ToolResultBlock[];
+      for (const block of blocks) {
+        if (block.type === "tool_result" && block.tool_use_id === toolUseId) {
+          block.content = output;
+          block.is_error = isError;
+          this.db.updateToolResult(toolUseId, output, isError);
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   getLastNMessages(n: number): Message[] {

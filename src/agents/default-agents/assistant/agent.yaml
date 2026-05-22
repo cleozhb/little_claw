@@ -26,6 +26,10 @@ task_tags:
 cron_jobs: []
 watchers: []
 requires_approval:
+  - shell(rm *)
+  - tool: shell
+    pattern: "curl.*"
+    message: "即将执行网络请求，确认？"
   - delete files
   - run destructive shell command
   - publish external updates

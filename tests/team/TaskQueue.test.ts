@@ -37,6 +37,7 @@ function agent(name: string, tags: string[], maxConcurrentTasks = 2): Registered
       task_tags: tags,
       cron_jobs: [],
       requires_approval: [],
+      approval_rules: [],
       max_concurrent_tasks: maxConcurrentTasks,
       max_tokens_per_task: 50000,
       timeout_minutes: 30,

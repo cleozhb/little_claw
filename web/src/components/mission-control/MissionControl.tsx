@@ -17,6 +17,7 @@ import {
   Radio,
   RefreshCcw,
   Send,
+  ShieldAlert,
   ShieldCheck,
   Terminal,
   Users,
@@ -522,8 +523,9 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         case "task_updated":
           setLastAction(`任务 ${message.task.title} 已更新为 ${message.task.status}`);
           setTasks((current) => upsertById(current, message.task));
-          // Clear streaming state when task is no longer running
-          if (message.task.status !== "running" && message.task.status !== "assigned") {
+          // Clear streaming state when task reaches a terminal or waiting state
+          if (message.task.status !== "running" && message.task.status !== "assigned"
+            && message.task.status !== "approved" && message.task.status !== "rejected") {
             setTaskStreaming((prev) => {
               if (!prev[message.task.id]) return prev;
               const { [message.task.id]: _, ...rest } = prev;
@@ -898,6 +900,7 @@ export function ChannelsView() {
     taskStreaming,
     tasks,
     timelineMessages,
+    updateTaskApproval,
   } = useMissionControl();
   const [draft, setDraft] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1012,7 +1015,20 @@ export function ChannelsView() {
             </div>
           ) : (
             <>
-              {timelineMessages.map((message) => <TimelineMessage key={message.id} message={message} />)}
+              {timelineMessages.map((message) => {
+                if (message.senderId === "approval-gate" && message.taskId) {
+                  const task = tasks.find((t) => t.id === message.taskId);
+                  return (
+                    <TimelineApprovalCard
+                      key={message.id}
+                      message={message}
+                      task={task}
+                      onApproval={updateTaskApproval}
+                    />
+                  );
+                }
+                return <TimelineMessage key={message.id} message={message} />;
+              })}
               {Object.entries(taskStreaming).map(([taskId, stream]) => {
                 const task = tasks.find((t) => t.id === taskId);
                 // In project channel, only show streaming for matching project tasks
@@ -2191,6 +2207,16 @@ function TaskCard({
       {task.approvalPrompt ? (
         <div className="mt-2 rounded-lg border bg-muted/30 p-2 text-xs leading-5">{task.approvalPrompt}</div>
       ) : null}
+      {task.approvalData && typeof task.approvalData === "object" && "tool" in task.approvalData ? (
+        <div className="mt-2 rounded-lg border bg-muted/20 p-2 font-mono text-[11px] leading-5">
+          <span className="font-semibold">{(task.approvalData as { tool: string }).tool}</span>
+          {"params" in task.approvalData && (task.approvalData as { params?: unknown }).params ? (
+            <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-muted-foreground">
+              {JSON.stringify((task.approvalData as unknown as { params: unknown }).params, null, 2)}
+            </pre>
+          ) : null}
+        </div>
+      ) : null}
       <div className="mt-3 flex items-center justify-between text-[10px] text-muted-foreground">
         <span>{formatDate(task.updatedAt)}</span>
         <span className="truncate pl-2">{task.id.slice(0, 8)}</span>
@@ -2283,6 +2309,63 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
           </Badge>
         ) : null}
       </div>
+    </article>
+  );
+}
+
+function TimelineApprovalCard({
+  message,
+  task,
+  onApproval,
+}: {
+  message: TeamMessageInfo;
+  task?: TaskInfo;
+  onApproval: (taskId: string, decision: "approve" | "reject") => void;
+}) {
+  const isResolved = task ? task.status !== "awaiting_approval" : false;
+  return (
+    <article className="rounded-lg border-2 border-amber-300 bg-amber-50/50 p-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
+      <div className="flex items-center gap-2">
+        <ShieldAlert className="h-4 w-4 text-amber-600" />
+        <span className="text-sm font-semibold text-amber-900">Approval Required</span>
+        {task ? (
+          <Badge variant="outline" className="ml-auto h-5 rounded-lg border-amber-300 text-[10px] text-amber-700">
+            {task.status}
+          </Badge>
+        ) : null}
+      </div>
+      {task ? (
+        <h3 className="mt-2 text-sm font-medium">{task.title}</h3>
+      ) : null}
+      <div className="mt-2 text-sm leading-6 text-muted-foreground">
+        <Markdown content={message.content.replace(/^🔒 \*\*Approval Required\*\*.*?\n\n/, "")} />
+      </div>
+      {message.taskId ? (
+        <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span>task {message.taskId.slice(0, 8)}</span>
+          <span className="ml-auto">{formatDate(message.createdAt)}</span>
+        </div>
+      ) : null}
+      {!isResolved && message.taskId ? (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button size="sm" variant="outline" className="border-green-300 text-green-700 hover:bg-green-50" onClick={() => onApproval(message.taskId!, "approve")}>
+            <Check className="mr-1 h-3.5 w-3.5" />
+            Approve
+          </Button>
+          <Button size="sm" variant="outline" className="border-red-300 text-red-700 hover:bg-red-50" onClick={() => onApproval(message.taskId!, "reject")}>
+            <X className="mr-1 h-3.5 w-3.5" />
+            Reject
+          </Button>
+        </div>
+      ) : isResolved ? (
+        <div className="mt-3 rounded-lg bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
+          {task?.status === "approved" || task?.status === "running" || task?.status === "completed"
+            ? "✓ Approved"
+            : task?.status === "rejected"
+              ? "✗ Rejected"
+              : `Resolved (${task?.status})`}
+        </div>
+      ) : null}
     </article>
   );
 }

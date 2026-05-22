@@ -7,6 +7,7 @@ export interface Session {
   title: string | null;
   system_prompt: string | null;
   last_summary: string | null;
+  mode: string;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +60,18 @@ export interface ContextIndexRow {
   updated_at: string;
 }
 
+export interface SessionApprovalRecord {
+  id: string;
+  session_id: string;
+  tool_name: string;
+  params: string;             // JSON
+  rule: string | null;        // JSON
+  message: string;
+  status: string;             // pending | approved | rejected
+  created_at: string;
+  resolved_at: string | null;
+}
+
 // --- Database Class ---
 
 export class Database {
@@ -87,6 +100,11 @@ export class Database {
   private stmtGetAllContextIndex;
   private stmtDeleteContextIndex;
   private stmtClearContextIndex;
+  private stmtInsertSessionApproval;
+  private stmtGetPendingApproval;
+  private stmtResolveApproval;
+  private stmtGetApprovedCallKeys;
+  private stmtUpdateToolResult;
 
   constructor(dbPath: string) {
     this.db = new SQLiteDatabase(dbPath);
@@ -99,8 +117,8 @@ export class Database {
 
     // Prepare all statements
     this.stmtInsertSession = this.db.prepare(
-      `INSERT INTO sessions (id, title, system_prompt, last_summary, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+      `INSERT INTO sessions (id, title, system_prompt, last_summary, mode, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
     );
 
     this.stmtGetSession = this.db.prepare(
@@ -108,7 +126,7 @@ export class Database {
     );
 
     this.stmtListSessions = this.db.prepare(
-      `SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?1`
+      `SELECT * FROM sessions WHERE mode = 'chat' ORDER BY updated_at DESC LIMIT ?1`
     );
 
     this.stmtDeleteSession = this.db.prepare(
@@ -190,6 +208,27 @@ export class Database {
     this.stmtClearContextIndex = this.db.prepare(
       `DELETE FROM context_index`
     );
+
+    this.stmtInsertSessionApproval = this.db.prepare(
+      `INSERT INTO session_approvals (id, session_id, tool_name, params, rule, message, status, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)`
+    );
+
+    this.stmtGetPendingApproval = this.db.prepare(
+      `SELECT * FROM session_approvals WHERE session_id = ?1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1`
+    );
+
+    this.stmtResolveApproval = this.db.prepare(
+      `UPDATE session_approvals SET status = ?2, resolved_at = ?3 WHERE id = ?1`
+    );
+
+    this.stmtGetApprovedCallKeys = this.db.prepare(
+      `SELECT tool_name, params FROM session_approvals WHERE session_id = ?1 AND status = 'approved'`
+    );
+
+    this.stmtUpdateToolResult = this.db.prepare(
+      `UPDATE tool_results SET tool_output = ?2, is_error = ?3 WHERE tool_use_id = ?1`
+    );
   }
 
   private initTables(): void {
@@ -199,6 +238,7 @@ export class Database {
         title        TEXT,
         system_prompt TEXT,
         last_summary TEXT,
+        mode         TEXT NOT NULL DEFAULT 'chat',
         created_at   TEXT NOT NULL,
         updated_at   TEXT NOT NULL
       )
@@ -207,6 +247,13 @@ export class Database {
     // Migration: add last_summary column for existing databases
     try {
       this.db.run(`ALTER TABLE sessions ADD COLUMN last_summary TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }
+
+    // Migration: add mode column for existing databases
+    try {
+      this.db.run(`ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat'`);
     } catch {
       // Column already exists — ignore
     }
@@ -264,17 +311,38 @@ export class Database {
         updated_at       TEXT NOT NULL
       )
     `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS session_approvals (
+        id           TEXT PRIMARY KEY,
+        session_id   TEXT NOT NULL,
+        tool_name    TEXT NOT NULL,
+        params       TEXT NOT NULL,
+        rule         TEXT,
+        message      TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'pending',
+        created_at   TEXT NOT NULL,
+        resolved_at  TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      )
+    `);
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_session_approvals_session_status
+        ON session_approvals (session_id, status)
+    `);
   }
 
   // --- Session CRUD ---
 
-  createSession(systemPrompt?: string): Session {
+  createSession(systemPrompt?: string, mode: string = "chat"): Session {
     const now = new Date().toISOString();
     const session: Session = {
       id: crypto.randomUUID(),
       title: null,
       system_prompt: systemPrompt ?? null,
       last_summary: null,
+      mode,
       created_at: now,
       updated_at: now,
     };
@@ -284,6 +352,7 @@ export class Database {
       session.title,
       session.system_prompt,
       session.last_summary,
+      session.mode,
       session.created_at,
       session.updated_at
     );
@@ -380,6 +449,10 @@ export class Database {
     return this.stmtGetToolResults.all(messageId) as ToolResultRecord[];
   }
 
+  updateToolResult(toolUseId: string, output: string, isError: boolean): void {
+    this.stmtUpdateToolResult.run(toolUseId, output, isError ? 1 : 0);
+  }
+
   // --- Skill Index CRUD ---
 
   upsertSkillIndex(row: SkillIndexRow): void {
@@ -428,6 +501,47 @@ export class Database {
 
   clearContextIndex(): void {
     this.stmtClearContextIndex.run();
+  }
+
+  // --- Session Approval CRUD ---
+
+  createSessionApproval(sessionId: string, data: {
+    toolName: string;
+    params: Record<string, unknown>;
+    rule: unknown;
+    message: string;
+  }): string {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    this.stmtInsertSessionApproval.run(
+      id,
+      sessionId,
+      data.toolName,
+      JSON.stringify(data.params),
+      data.rule ? JSON.stringify(data.rule) : null,
+      data.message,
+      now,
+    );
+    return id;
+  }
+
+  getSessionPendingApproval(sessionId: string): SessionApprovalRecord | null {
+    return (this.stmtGetPendingApproval.get(sessionId) as SessionApprovalRecord) ?? null;
+  }
+
+  approveSessionApproval(id: string): void {
+    const now = new Date().toISOString();
+    this.stmtResolveApproval.run(id, "approved", now);
+  }
+
+  rejectSessionApproval(id: string): void {
+    const now = new Date().toISOString();
+    this.stmtResolveApproval.run(id, "rejected", now);
+  }
+
+  getApprovedCallKeys(sessionId: string): string[] {
+    const rows = this.stmtGetApprovedCallKeys.all(sessionId) as Array<{ tool_name: string; params: string }>;
+    return rows.map(r => `${r.tool_name}:${r.params}`);
   }
 
   // --- Lifecycle ---

@@ -111,6 +111,7 @@ export function createSpawnAgentTool(
         name: agent.config.name,
         systemPrompt: buildTeamAgentSystemPrompt(agent),
         allowedTools: agent.config.tools,
+        approvalRules: agent.config.approval_rules,
         maxTurns: 10,
         canSpawnSubAgent: false,
       });

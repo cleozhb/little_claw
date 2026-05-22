@@ -33,6 +33,7 @@ export interface Task {
   project?: string;
   channelId?: string;
   sourceMessageId?: string;
+  sessionId?: string;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -95,6 +96,7 @@ interface TaskRow {
   project: string | null;
   channel_id: string | null;
   source_message_id: string | null;
+  session_id: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -118,6 +120,7 @@ export class TaskQueue {
   private stmtGetTask;
   private stmtListTasks;
   private stmtUpdateTask;
+  private stmtSetSessionId;
   private stmtInsertLog;
   private stmtGetLogs;
   private stmtCountActiveForAgent;
@@ -135,11 +138,11 @@ export class TaskQueue {
         id, title, description, status, priority, assigned_to, created_by,
         depends_on, blocks, approval_prompt, approval_data, approval_response,
         result, error, retry_count, max_retries, tags, project, channel_id,
-        source_message_id, created_at, updated_at, started_at, completed_at, due_at
+        source_message_id, session_id, created_at, updated_at, started_at, completed_at, due_at
       )
       VALUES (
         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-        ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+        ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
       )
     `);
 
@@ -168,11 +171,12 @@ export class TaskQueue {
         project = ?18,
         channel_id = ?19,
         source_message_id = ?20,
-        created_at = ?21,
-        updated_at = ?22,
-        started_at = ?23,
-        completed_at = ?24,
-        due_at = ?25
+        session_id = ?21,
+        created_at = ?22,
+        updated_at = ?23,
+        started_at = ?24,
+        completed_at = ?25,
+        due_at = ?26
       WHERE id = ?1
     `);
     this.stmtInsertLog = sqlite.prepare(`
@@ -188,6 +192,9 @@ export class TaskQueue {
       WHERE assigned_to = ?1
         AND status IN ('assigned', 'running', 'awaiting_approval', 'approved', 'rejected')
     `);
+    this.stmtSetSessionId = sqlite.prepare(
+      `UPDATE tasks SET session_id = ?2, updated_at = ?3 WHERE id = ?1`
+    );
   }
 
   createTask(params: CreateTaskParams): Task {
@@ -451,6 +458,11 @@ export class TaskQueue {
     this.emitTaskUpdated(task, "progress");
   }
 
+  setSessionId(taskId: string, sessionId: string): void {
+    const now = new Date().toISOString();
+    this.stmtSetSessionId.run(taskId, sessionId, now);
+  }
+
   getPendingForAgent(agent: RegisteredAgent, limit?: number): Task[] {
     const activeCount = this.countActiveForAgent(agent.config.name);
     const availableSlots = agent.config.max_concurrent_tasks - activeCount;
@@ -491,6 +503,7 @@ export class TaskQueue {
         project TEXT,
         channel_id TEXT,
         source_message_id TEXT,
+        session_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         started_at TEXT,
@@ -515,7 +528,13 @@ export class TaskQueue {
     sqlite.run(`CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks (assigned_to)`);
     sqlite.run(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks (project)`);
     sqlite.run(`CREATE INDEX IF NOT EXISTS idx_task_logs_task_time ON task_logs (task_id, created_at)`);
-  }
+
+    // Migration: add session_id column for existing databases
+    try {
+      sqlite.run(`ALTER TABLE tasks ADD COLUMN session_id TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }  }
 
   private getSQLite() {
     return (this.db as any).db;
@@ -553,6 +572,7 @@ export class TaskQueue {
       task.project ?? null,
       task.channelId ?? null,
       task.sourceMessageId ?? null,
+      task.sessionId ?? null,
       task.createdAt,
       task.updatedAt,
       task.startedAt ?? null,
@@ -583,6 +603,7 @@ export class TaskQueue {
       project: row.project ?? undefined,
       channelId: row.channel_id ?? undefined,
       sourceMessageId: row.source_message_id ?? undefined,
+      sessionId: row.session_id ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       startedAt: row.started_at ?? undefined,

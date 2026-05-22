@@ -16,7 +16,8 @@ export type DisplayMessageType =
   | "sub_agent_done"
   | "inject"
   | "memory_recall"
-  | "skills_matched";
+  | "skills_matched"
+  | "approval_needed";
 
 export interface DisplayMessage {
   id: string;
@@ -40,6 +41,10 @@ export interface DisplayMessage {
     memories?: Array<{ content: string; similarity: number }>;
     /** Matched skills */
     skills?: Array<{ name: string; score: number; matchReason: string }>;
+    /** Chat HITL approval */
+    approvalId?: string;
+    approvalMessage?: string;
+    approvalStatus?: "pending" | "approved" | "rejected";
   };
   timestamp: Date;
 }

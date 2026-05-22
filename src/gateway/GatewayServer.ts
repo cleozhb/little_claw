@@ -104,6 +104,8 @@ export interface GatewayOptions {
   onAbort?: (sessionId: string) => boolean;
   /** inject 消息的处理回调 */
   onInject?: (sessionId: string, content: string) => boolean;
+  /** chat approval response 的处理回调 */
+  onChatApprovalResponse?: (connectionId: string, sessionId: string, approvalId: string, approved: boolean, reason?: string) => void;
   /** 获取活跃 session 数的回调 */
   getActiveSessionCount?: () => number;
 }
@@ -125,6 +127,7 @@ export class GatewayServer {
   private onWebhookChat?: GatewayOptions["onWebhookChat"];
   private onAbort?: GatewayOptions["onAbort"];
   private onInject?: GatewayOptions["onInject"];
+  private onChatApprovalResponse?: GatewayOptions["onChatApprovalResponse"];
   private getActiveSessionCount?: GatewayOptions["getActiveSessionCount"];
   private skillManager?: SkillManager;
   private mcpManager?: McpManager;
@@ -170,6 +173,7 @@ export class GatewayServer {
     this.onWebhookChat = options.onWebhookChat;
     this.onAbort = options.onAbort;
     this.onInject = options.onInject;
+    this.onChatApprovalResponse = options.onChatApprovalResponse;
     this.getActiveSessionCount = options.getActiveSessionCount;
     this.skillManager = options.skillManager;
     this.mcpManager = options.mcpManager;
@@ -574,6 +578,8 @@ export class GatewayServer {
         return this.handleApproveTask(connectionId, msg.taskId, msg.response, msg.userId);
       case "reject_task":
         return this.handleRejectTask(connectionId, msg.taskId, msg.response, msg.userId);
+      case "chat_approval_response":
+        return this.handleChatApprovalResponse(connectionId, msg.sessionId, msg.approvalId, msg.approved, msg.reason);
       case "cancel_task":
         return this.handleCancelTask(connectionId, msg.taskId, msg.reason, msg.userId);
       case "ping":
@@ -1372,6 +1378,18 @@ export class GatewayServer {
     this.updateTaskFromGateway(connectionId, () =>
       this.requireTaskQueue().rejectTask(taskId, response ?? "Rejected.", userId ?? connectionId),
     );
+  }
+
+  private handleChatApprovalResponse(connectionId: string, sessionId: string, approvalId: string, approved: boolean, reason?: string): void {
+    if (!this.onChatApprovalResponse) {
+      this.sendToConnection(connectionId, {
+        type: "error",
+        sessionId,
+        message: "Chat approval handler not configured",
+      });
+      return;
+    }
+    this.onChatApprovalResponse(connectionId, sessionId, approvalId, approved, reason);
   }
 
   private handleCancelTask(connectionId: string, taskId: string, reason?: string, userId?: string): void {
