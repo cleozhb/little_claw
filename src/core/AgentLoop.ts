@@ -16,6 +16,7 @@ import { checkApprovalGate } from "../team/ApprovalGate.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
 import type { ContextRetriever, ScoredContext } from "../memory/ContextRetriever.ts";
 import { SkillPromptBuilder, SKILL_GUIDE } from "../skills/SkillPromptBuilder.ts";
+import { filterSkillCandidates } from "../skills/SkillFilter.ts";
 import { generateTitle } from "./TitleGenerator.ts";
 import { allocateBudget, estimateTokens, formatLongTermMemory } from "../memory/TokenBudget.ts";
 import { createLogger } from "../utils/logger.ts";
@@ -34,8 +35,6 @@ const RETRY_DELAY_MS = 1_000;
 const DEFAULT_STREAM_CHUNK_TIMEOUT_MS = 300_000;
 const DEFAULT_BACKGROUND_STREAM_CHUNK_TIMEOUT_MS = 900_000;
 const SKILL_RETRIEVAL_TOP_K = 5;
-const MIN_SKILL_SCORE = 0.25;
-const MIN_SKILL_VECTOR_SCORE = 0.35;
 
 const SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron tool. When a user asks you to do something periodically or at a specific time, create a cron job. For example, if asked "remind me every morning at 8am about my schedule", create a cron job with expression "0 8 * * *".
 
@@ -403,9 +402,9 @@ export class AgentLoop {
               ? Math.max(SKILL_RETRIEVAL_TOP_K, this.skillScopeNames.length * 3)
               : SKILL_RETRIEVAL_TOP_K;
             const matched = (await retriever.retrieve(query, retrievalLimit))
-              .filter((match) => this.isSkillInScope(match.skill.name))
-              .filter(isRelevantSkillMatch);
-            const selectedMatches = this.selectRetrievedSkills(matched);
+              .filter((match) => this.isSkillInScope(match.skill.name));
+            const filtered = await filterSkillCandidates(query, matched, this.skillManager!.getReranker());
+            const selectedMatches = this.selectRetrievedSkills(filtered);
             // 合并 pinned + retrieved（去重）。不保留上一轮未命中的 skill，避免上下文漂移。
             const matchedNames = new Set(selectedMatches.map(m => m.skill.name));
             const extraPinned = pinned.filter(s => !matchedNames.has(s.name));
@@ -1174,9 +1173,4 @@ function readPositiveIntegerEnv(key: string): number | null {
   if (!raw) return null;
   const value = Number.parseInt(raw, 10);
   return Number.isInteger(value) && value > 0 ? value : null;
-}
-
-function isRelevantSkillMatch(match: ScoredSkill): boolean {
-  if (match.bm25Score > 0) return match.score >= MIN_SKILL_SCORE;
-  return match.vectorScore >= MIN_SKILL_VECTOR_SCORE && match.score >= MIN_SKILL_SCORE;
 }

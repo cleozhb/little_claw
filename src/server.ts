@@ -17,6 +17,7 @@ import { GatewayServer } from "./gateway/GatewayServer.ts";
 import type { ServerMessage } from "./gateway/protocol.ts";
 import { SkillManager } from "./skills/SkillManager.ts";
 import { SkillLoader } from "./skills/SkillLoader.ts";
+import { SkillReranker } from "./skills/SkillReranker.ts";
 import { SkillConfigFile } from "./skills/SkillConfigFile.ts";
 import { McpManager } from "./mcp/McpManager.ts";
 import { CronScheduler } from "./scheduler/CronScheduler.ts";
@@ -354,10 +355,20 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const skillConfig = new SkillConfigFile();
   await skillConfig.load();
 
+  const rerankApiKey = process.env.RERANK_API_KEY ?? config.llmApiKey;
+  const reranker = rerankApiKey
+    ? new SkillReranker({
+        apiKey: rerankApiKey,
+        model: process.env.RERANK_MODEL,
+        baseURL: process.env.RERANK_BASE_URL,
+      })
+    : undefined;
+
   const skillLoader = new SkillLoader();
   const skillManager = new SkillManager(skillLoader, skillConfig, {
     db,
     embeddingProvider,
+    reranker,
   });
   await skillManager.initializeAll();
 

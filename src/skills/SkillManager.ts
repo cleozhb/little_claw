@@ -9,6 +9,7 @@ import type { Database } from "../db/Database";
 import type { EmbeddingProvider } from "../memory/EmbeddingProvider";
 import { SkillIndexer } from "./SkillIndexer";
 import { SkillRetriever } from "./SkillRetriever";
+import type { SkillReranker } from "./SkillReranker";
 
 export interface SkillSummary {
   total: number;
@@ -27,16 +28,18 @@ export class SkillManager {
   private embeddingProvider?: EmbeddingProvider;
   private indexer?: SkillIndexer;
   private retriever?: SkillRetriever;
+  private reranker?: SkillReranker;
 
   constructor(
     loader: SkillLoader,
     configManager: SkillConfigManager,
-    options?: { db?: Database; embeddingProvider?: EmbeddingProvider },
+    options?: { db?: Database; embeddingProvider?: EmbeddingProvider; reranker?: SkillReranker },
   ) {
     this.loader = loader;
     this.configManager = configManager;
     this.db = options?.db;
     this.embeddingProvider = options?.embeddingProvider;
+    this.reranker = options?.reranker;
   }
 
   /**
@@ -184,6 +187,11 @@ export class SkillManager {
   /** 获取混合检索器（若索引已建立） */
   getRetriever(): SkillRetriever | undefined {
     return this.retriever;
+  }
+
+  /** 获取 reranker（若已配置） */
+  getReranker(): SkillReranker | undefined {
+    return this.reranker;
   }
 
   /** 获取用户 pin 的 skill 列表 */
