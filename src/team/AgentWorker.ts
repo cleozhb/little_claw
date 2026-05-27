@@ -262,13 +262,54 @@ export class AgentWorker {
 
   /**
    * 核心方法：执行一个任务的完整生命周期。
-   * 流程：startTask → 组装 prompt → AgentLoop.run() → 根据结果更新状态
-   *
-   * 任务结束后有 4 种可能：
-   * - awaiting_approval: agent 调了 request_approval，暂停等人类审批
-   * - cancelled: 被外部取消
-   * - failed: 执行出错（可能自动重试）
-   * - completed: 正常完成，通知项目频道
+   * 流程：
+   * 
+    1. tasks.startTask()
+      assigned/approved/rejected -> running
+
+    2. getTaskConversation()
+      创建或恢复这个 task 对应的 Conversation
+
+    3. getTaskLoop()
+      用 agent 配置创建 core AgentLoop
+
+    4. collectInjectableMessages()
+      把 DM、project、task 相关消息作为上下文，并 markInjected
+
+    5. loop.run(prompt)
+      真正让模型推理和调用工具
+
+    6. 收尾时重新读 latest task
+      因为执行过程中任务状态可能被工具或外部命令改了.这里是重点关注的地方，它中间执行 loop 时，任务状态也可能被 request_approval 工具、approval gate、cancel 控制消息等改掉，因此收尾前必须重新读数据库。JavaScript 是单线程事件循环，但 await 期间其他异步任务会运行；数据库状态也可能已经变了。因此 runTask() 跑完 loop 后不能直接说“我刚才开始的是 running，那我现在就 completeTask”
+      几个典型来源：
+        - Agent 自己通过工具改状态，AgentLoop 里模型可能调用 request_approval
+        - Approval gate 改状态，如果 Agent 准备调用一个需要审批的工具，AgentLoop 会发出 approval_gate_triggered 事件
+        - 用户中途插话，发 cancel/pause，worker 运行时有一个 message monitor，会定时看 agent DM 里有没有控制消息，如果发现 cancel，会调用：
+          abortCurrent()
+            -> currentLoop.abort()
+            -> tasks.cancelTask(...)
+        - 其他入口也能改任务状态 /task <id> cancel
+
+    7. 根据 latest 状态收尾，这次 runTask 不再收尾，后续是否继续由状态机决定
+      awaiting_approval -> 保持等待审批
+      cancelled -> 不做事
+      error -> failTask()
+      正常 -> completeTask()
+
+
+    最典型的审批流程是：
+    running
+      -> request_approval / approval_gate
+      -> awaiting_approval
+      -> runTask 返回，不 complete
+
+    用户 approve
+      -> approved
+
+    下一次 worker.tick()
+      -> nextTaskForAgent() 找到 approved
+      -> startTask() 把 approved 改 running
+      -> runTask 继续      
    */
   private async runTask(task: Task): Promise<Task> {
     const agentName = this.agent.config.name;
@@ -483,6 +524,14 @@ export class AgentWorker {
   }
 
   /** 处理私信：没有任务关联，不注入任务工具，回复写入 agent_dm 频道 */
+  /** 
+   * DM模式使用EphemeralConversation，这是纯内存的。
+   * 它默认不创建 TaskQueue 任务，所以没有 durable task 状态、重试、审批恢复、项目结果归档这些东西。
+
+   * 想聊天/问一下 -> @agent
+   * 想让团队正式处理并留下状态 -> #project 或 coordinator
+   * 想审批/取消已有任务 -> /task <id> approve|reject|cancel
+  */
   private async runDirectMessages(directMessages: TeamMessage[]): Promise<void> {
     const agentName = this.agent.config.name;
     log.step("开始处理 Agent DM", {
