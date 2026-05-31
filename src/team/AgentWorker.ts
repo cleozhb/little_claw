@@ -336,7 +336,7 @@ export class AgentWorker {
       if (directResult) {
         directExecuted = true;
         if (this.onTaskProgress) {
-          this.onTaskProgress(running.id, agentName, `✓ Executed: ${directResult.toolName}\n${directResult.output.slice(0, 200)}`);
+          this.onTaskProgress(running.id, agentName, `已执行：${directResult.toolName}\n${directResult.output.slice(0, 200)}`);
         }
       }
     }
@@ -391,7 +391,7 @@ export class AgentWorker {
     let prompt: string;
     if (approvalResumeStatus === "approved" && directExecuted) {
       // 工具已直接执行并写入 conversation，只需让 LLM 继续后续步骤
-      prompt = "The approved tool call has been executed. Continue the task.";
+      prompt = "已批准的工具调用已经执行。请继续完成任务，所有可见输出使用中文。";
     } else if (approvalResumeStatus) {
       // 软审批(无 approvalData.tool) 或直接执行失败，走 LLM resume
       prompt = buildTaskResumePrompt(running, initialMessages, approvalResumeStatus);
@@ -459,10 +459,10 @@ export class AgentWorker {
       });
       // 向 agent DM channel 发送审批通知，让 Agent Thread 中也能看到并操作审批
       const data = latest.approvalData as { tool?: string; params?: Record<string, unknown> } | undefined;
-      let content = `🔒 **Approval Required** — "${latest.title}"\n\n${latest.approvalPrompt ?? "This task requires human approval to continue."}`;
+      let content = `🔒 **需要审批** — "${latest.title}"\n\n${latest.approvalPrompt ?? "此任务需要人类审批后才能继续。"}`;
       if (data?.tool) {
         const paramsStr = data.params ? JSON.stringify(data.params, null, 2) : "";
-        content += `\n\n**Tool:** \`${data.tool}\``;
+        content += `\n\n**工具：** \`${data.tool}\``;
         if (paramsStr) content += `\n\`\`\`json\n${paramsStr}\n\`\`\``;
       }
       this.messages.createMessage({
@@ -500,10 +500,10 @@ export class AgentWorker {
         const retry = this.tasks.assignTask(failed.id, agentName);
         this.postTaskNotification(
           retry,
-          `Task hit an execution error and has been scheduled for retry by @${agentName}.\n\nError: ${errorMessage}`,
+          `任务执行出错，已安排 @${agentName} 重试。\n\n错误：${errorMessage}`,
         );
       } else {
-        this.postTaskNotification(failed, `❌ Failed: ${errorMessage}`);
+        this.postTaskNotification(failed, `❌ 失败：${errorMessage}`);
         await this.archiveTaskTerminalState(failed, "failed", errorMessage);
       }
       this.stateValue = "idle";
@@ -516,7 +516,7 @@ export class AgentWorker {
       taskId: completed.id,
       resultLength: assistantText.length,
     });
-    const trimmedResult = assistantText.trim() || "Task completed.";
+    const trimmedResult = assistantText.trim() || "任务已完成。";
     this.postTaskNotification(completed, trimmedResult);
     await this.archiveTaskTerminalState(completed, "completed", trimmedResult);
     this.stateValue = "idle";
@@ -624,6 +624,7 @@ export class AgentWorker {
       this.postProjectTaskNotification(task, content, agentName);
       // 简短通知发到 agent DM，让用户在 agent 视图也能看到任务活动
       const statusIcon = task.status === "completed" ? "✅" : "❌";
+      const statusText = task.status === "completed" ? "已完成" : "失败";
       this.messages.createMessage({
         channelType: "agent_dm",
         channelId: agentName,
@@ -631,7 +632,7 @@ export class AgentWorker {
         taskId: task.id,
         senderType: "agent",
         senderId: agentName,
-        content: `${statusIcon} ${task.status === "completed" ? "Completed" : "Failed"} "${task.title}" in #${task.project}`,
+        content: `${statusIcon} ${statusText}「${task.title}」(#${task.project})`,
         status: "resolved",
         handledBy: agentName,
       });
@@ -709,7 +710,7 @@ export class AgentWorker {
     if (event.type === "approval_gate_triggered") {
       const rule = event.rule as { message?: string; pattern?: string } | undefined;
       this.tasks.requestApproval(this.currentTaskId!, {
-        prompt: rule?.message ?? `Agent tried to call "${event.toolName}" which requires approval.`,
+        prompt: rule?.message ?? `Agent 尝试调用需要审批的工具 "${event.toolName}"。`,
         data: { tool: event.toolName, params: event.params, rule },
       });
       // 持久化到 session_approvals 表，进程重启后可恢复 approvedCalls
@@ -718,7 +719,7 @@ export class AgentWorker {
           toolName: event.toolName,
           params: (event.params ?? {}) as Record<string, unknown>,
           rule,
-          message: rule?.message ?? `Agent tried to call "${event.toolName}" which requires approval.`,
+          message: rule?.message ?? `Agent 尝试调用需要审批的工具 "${event.toolName}"。`,
         });
       }
       return "approval_requested";
@@ -954,7 +955,7 @@ export function buildTaskUserPrompt(task: Task, teamMessages: TeamMessage[], sou
     ? `\nsource_message:\n- [${sourceMessage.channelType}:${sourceMessage.channelId}] ${sourceMessage.senderId}: ${sourceMessage.content}\n`
     : "";
   const executionDate = formatTaskExecutionDate(task.createdAt);
-  return `<task_context>
+  const promptBody = `<task_context>
 id: ${task.id}
 title: ${task.title}
 description: ${task.description}
@@ -969,6 +970,12 @@ approval_response: ${task.approvalResponse ?? "none"}${sourceSection}
 recent_team_messages:
 ${formatTeamMessages(teamMessages)}
 </task_context>`;
+
+  return `<channel_output_rules>
+除非任务明确要求其他语言，所有用户可见的任务进度、任务结果、项目频道消息和 Agent 私信都必须使用中文。过程说明保持简洁，不要把英文计划句写入频道可见输出。
+</channel_output_rules>
+
+${promptBody}`;
 }
 
 function formatTaskExecutionDate(createdAt: string): string {
@@ -993,11 +1000,11 @@ export function buildTaskResumePrompt(
   return `${buildTaskUserPrompt(task, teamMessages)}
 
 <user_update>
-Human approval decision: **${decision.toUpperCase()}**
-Human response: ${task.approvalResponse ?? "(none)"}
+人类审批决定：**${decision === "approved" ? "已批准" : "已拒绝"}**
+人类回复：${task.approvalResponse ?? "无"}
 ${decision === "approved"
-    ? "The previously blocked tool call has been approved. Execute it immediately without summarizing the situation or explaining what happened. Do NOT output analysis text — just proceed with the tool call."
-    : "The request was rejected. Revise the plan or cancel safely."}
+    ? "此前被阻止的工具调用已获批准。请直接继续执行，不要输出英文分析或复述审批过程。"
+    : "请求已被拒绝。请用中文调整方案，或在无法安全继续时取消任务。"}
 </user_update>`;
 }
 
@@ -1023,12 +1030,12 @@ function ensureTeamTaskTools(toolRegistry: ToolRegistry, tasks: TaskQueue): void
 function reportProgressTool(tasks: TaskQueue): Tool {
   return {
     name: REPORT_PROGRESS_TOOL,
-    description: "Append a progress update to a Lovely Octopus team task log.",
+    description: "Append a progress update to a Lovely Octopus team task log. Use Chinese for human-visible content unless explicitly requested otherwise.",
     parameters: {
       type: "object",
       properties: {
         task_id: { type: "string", description: "The current team task id." },
-        content: { type: "string", description: "Progress update to record." },
+        content: { type: "string", description: "Progress update to record, preferably in Chinese." },
       },
       required: ["task_id", "content"],
     },
@@ -1037,7 +1044,7 @@ function reportProgressTool(tasks: TaskQueue): Tool {
       const content = readToolString(params, "content");
       log.info(`记录任务进度：${taskId}`, content);
       tasks.addProgress(taskId, content);
-      return { success: true, output: "Progress recorded." };
+      return { success: true, output: "进度已记录。" };
     },
   };
 }
@@ -1045,12 +1052,12 @@ function reportProgressTool(tasks: TaskQueue): Tool {
 function requestApprovalTool(tasks: TaskQueue): Tool {
   return {
     name: REQUEST_APPROVAL_TOOL,
-    description: "Pause a Lovely Octopus team task and request human approval before continuing.",
+    description: "Pause a Lovely Octopus team task and request human approval before continuing. Write the approval prompt in Chinese unless explicitly requested otherwise.",
     parameters: {
       type: "object",
       properties: {
         task_id: { type: "string", description: "The current team task id." },
-        prompt: { type: "string", description: "The approval question for the human." },
+        prompt: { type: "string", description: "The approval question for the human, preferably in Chinese." },
         data: { type: "object", description: "Optional structured data for the approval request." },
       },
       required: ["task_id", "prompt"],
@@ -1067,7 +1074,7 @@ function requestApprovalTool(tasks: TaskQueue): Tool {
         prompt,
         data: params.data,
       });
-      return { success: true, output: "Approval requested; task paused." };
+      return { success: true, output: "已请求审批，任务已暂停。" };
     },
   };
 }
@@ -1081,7 +1088,7 @@ function readToolString(params: Record<string, unknown>, key: string): string {
 }
 
 function formatInjectedUpdate(messages: TeamMessage[]): string {
-  return `Human messages received while you were working:
+  return `你工作期间收到的人类补充消息：
 ${formatTeamMessages(messages)}`;
 }
 

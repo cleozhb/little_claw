@@ -234,7 +234,10 @@ export class TeamMessageStore {
       messages = messages.filter((message) => statuses.has(message.status));
     }
 
-    return messages.slice(0, filter.limit ?? messages.length);
+    if (filter.limit && messages.length > filter.limit) {
+      return messages.slice(-filter.limit);
+    }
+    return messages;
   }
 
   markRouted(id: string, routedBy?: string): TeamMessage {

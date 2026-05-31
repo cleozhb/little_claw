@@ -224,6 +224,7 @@ export class GatewayServer {
     });
 
     this.teamScheduleAdapter?.onRun((result) => {
+      if (!result.run) return;
       this.broadcastToAll({
         type: "team_schedule_triggered",
         schedule: serializeTeamSchedule(result.schedule),

@@ -14,6 +14,17 @@ tools:
   - read_file
   - write_file
   - shell
+  - create_task
+  - create_task_dag
+  - list_tasks
+  - assign_task
+  - delegate_task
+  - request_approval
+  - check_team_status
+  - send_message_to_agent
+  - post_to_project_channel
+  - summarize_project_channel
+  - run_llm_eval
 skills: []
 task_tags:
   - coordination
@@ -21,6 +32,7 @@ task_tags:
   - project
   - triage
   - summary
+  - judge
 cron_jobs:
   - cron: 0 21 * * *
     prompt: Review today's completed tasks and project channel activity. Summarize decisions, blockers, and follow-ups.
@@ -42,3 +54,4 @@ requires_approval:
 max_concurrent_tasks: 1
 max_tokens_per_task: 60000
 timeout_minutes: 30
+max_turns: 25

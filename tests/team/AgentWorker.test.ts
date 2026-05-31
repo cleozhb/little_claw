@@ -308,7 +308,7 @@ describe("AgentWorker", () => {
     expect(tasks.getTask(task.id)?.status).toBe("completed");
     expect(tasks.getTask(task.id)?.result).toContain("published after approval");
     const resumePrompt = String(llm.calls[1]?.messages.at(-1)?.content);
-    expect(resumePrompt).toContain("Human approval decision: **APPROVED**");
+    expect(resumePrompt).toContain("人类审批决定：**已批准**");
     expect(resumePrompt).toContain("Approved by CEO.");
   });
 
@@ -342,7 +342,7 @@ describe("AgentWorker", () => {
 
     expect(tasks.getTask(task.id)?.status).toBe("completed");
     const resumePrompt = String(llm.calls[1]?.messages.at(-1)?.content);
-    expect(resumePrompt).toContain("Human approval decision: **REJECTED**");
+    expect(resumePrompt).toContain("人类审批决定：**已拒绝**");
     expect(resumePrompt).toContain("换一个技术向节目。");
   });
 
@@ -455,7 +455,7 @@ describe("AgentWorker", () => {
     expect(retry?.retryCount).toBe(1);
     expect(
       messages.listMessages({ channelType: "project", channelId: "project-channel-1" })[0]?.content,
-    ).toContain("scheduled for retry");
+    ).toContain("已安排 @coder 重试");
 
     await worker.tick();
 

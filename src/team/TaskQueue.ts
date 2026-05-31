@@ -65,6 +65,10 @@ export interface CreateTaskParams {
   maxRetries?: number;
 }
 
+export interface CreateTaskDagNodeParams extends CreateTaskParams {
+  key: string;
+}
+
 export interface ListTasksFilter {
   status?: TaskStatus;
   assignedTo?: string;
@@ -198,44 +202,64 @@ export class TaskQueue {
   }
 
   createTask(params: CreateTaskParams): Task {
-    const now = new Date().toISOString();
-    const task: Task = {
-      id: crypto.randomUUID(),
-      title: params.title,
-      description: params.description,
-      status: params.assignedTo ? "assigned" : "pending",
-      priority: params.priority ?? 0,
-      assignedTo: params.assignedTo,
-      createdBy: params.createdBy,
-      dependsOn: params.dependsOn ?? [],
-      blocks: [],
-      retryCount: 0,
-      maxRetries: params.maxRetries ?? 2,
-      tags: params.tags ?? [],
-      project: params.project,
-      channelId: params.channelId,
-      sourceMessageId: params.sourceMessageId,
-      createdAt: now,
-      updatedAt: now,
-      dueAt: params.dueAt,
-    };
+    const task = this.buildTask(params, new Date().toISOString());
 
     // createTask 是任务生命周期的入口；创建任务本身也必须写日志，方便重启后追溯来源。
-    this.insertTask(task);
-    this.addLog(task.id, "created", {
-      agentName: params.createdBy,
-      content: `Task created with status ${task.status}.`,
-    });
-
-    if (params.assignedTo) {
-      this.addLog(task.id, "assigned", {
-        agentName: params.assignedTo,
-        content: `Task assigned to ${params.assignedTo}.`,
-      });
-    }
-
+    this.writeTaskCreation(task);
     this.emitTaskUpdated(task, "created");
     return task;
+  }
+
+  createTaskDag(nodes: CreateTaskDagNodeParams[]): Task[] {
+    if (nodes.length === 0) {
+      throw new Error("Task DAG must contain at least one task.");
+    }
+
+    const keyToId = new Map<string, string>();
+    for (const node of nodes) {
+      const key = node.key.trim();
+      if (!key) {
+        throw new Error("Task DAG node key must be a non-empty string.");
+      }
+      if (keyToId.has(key)) {
+        throw new Error(`Duplicate task DAG node key: ${key}`);
+      }
+      keyToId.set(key, crypto.randomUUID());
+    }
+
+    const now = new Date().toISOString();
+    const tasks = nodes.map((node) => {
+      const key = node.key.trim();
+      const dependsOn = (node.dependsOn ?? []).map((dependency) => {
+        const mapped = keyToId.get(dependency);
+        if (mapped) return mapped;
+        if (!this.getTask(dependency)) {
+          throw new Error(`Unknown task DAG dependency "${dependency}" for node "${key}".`);
+        }
+        return dependency;
+      });
+      return this.buildTask(
+        {
+          ...node,
+          dependsOn: unique(dependsOn),
+        },
+        now,
+        keyToId.get(key),
+      );
+    });
+
+    const sqlite = this.getSQLite();
+    const insertAll = sqlite.transaction(() => {
+      for (const task of tasks) {
+        this.writeTaskCreation(task);
+      }
+    });
+    insertAll();
+
+    for (const task of tasks) {
+      this.emitTaskUpdated(task, "created");
+    }
+    return tasks;
   }
 
   getTask(id: string): Task | null {
@@ -298,6 +322,9 @@ export class TaskQueue {
   startTask(taskId: string, agentName?: string): Task {
     const task = this.requireTask(taskId);
     this.assertStatus(task, ["assigned", "approved", "rejected"], "start");
+    if (task.status === "assigned") {
+      this.assertDependenciesCompleted(task);
+    }
 
     task.status = "running";
     task.assignedTo = agentName ?? task.assignedTo;
@@ -542,6 +569,45 @@ export class TaskQueue {
 
   private insertTask(task: Task): void {
     this.stmtInsertTask.run(...this.taskParams(task));
+  }
+
+  private buildTask(params: CreateTaskParams, now: string, id = crypto.randomUUID()): Task {
+    const dependsOn = params.dependsOn ?? [];
+    return {
+      id,
+      title: params.title,
+      description: params.description,
+      status: params.assignedTo && dependsOn.length === 0 ? "assigned" : "pending",
+      priority: params.priority ?? 0,
+      assignedTo: params.assignedTo,
+      createdBy: params.createdBy,
+      dependsOn,
+      blocks: [],
+      retryCount: 0,
+      maxRetries: params.maxRetries ?? 2,
+      tags: params.tags ?? [],
+      project: params.project,
+      channelId: params.channelId,
+      sourceMessageId: params.sourceMessageId,
+      createdAt: now,
+      updatedAt: now,
+      dueAt: params.dueAt,
+    };
+  }
+
+  private writeTaskCreation(task: Task): void {
+    this.insertTask(task);
+    this.addLog(task.id, "created", {
+      agentName: task.createdBy,
+      content: `Task created with status ${task.status}.`,
+    });
+
+    if (task.assignedTo && task.status === "assigned") {
+      this.addLog(task.id, "assigned", {
+        agentName: task.assignedTo,
+        content: `Task assigned to ${task.assignedTo}.`,
+      });
+    }
   }
 
   private saveTask(task: Task): void {

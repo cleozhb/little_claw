@@ -13,8 +13,9 @@ import { join } from "node:path";
 
 export interface TeamScheduleAdapterResult {
   schedule: TeamSchedule;
-  run: TeamScheduleRun;
+  run?: TeamScheduleRun;
   task?: Task;
+  silentSkipReason?: string;
 }
 
 type TeamScheduleRunHandler = (result: TeamScheduleAdapterResult) => void;
@@ -72,9 +73,12 @@ export class TeamScheduleAdapter {
     if (agent.config.status !== "active") {
       return this.recordSkipped(schedule, options, `Agent is ${agent.config.status}`);
     }
-    const skipReason = this.getPreflightSkipReason(schedule, options);
-    if (skipReason) {
-      return this.recordSkipped(schedule, options, skipReason);
+    const preflight = this.getPreflightResult(schedule, options);
+    if (preflight?.mode === "silent") {
+      return { schedule, silentSkipReason: preflight.reason };
+    }
+    if (preflight?.mode === "record") {
+      return this.recordSkipped(schedule, options, preflight.reason);
     }
 
     try {
@@ -135,10 +139,10 @@ export class TeamScheduleAdapter {
     return result;
   }
 
-  private getPreflightSkipReason(
+  private getPreflightResult(
     schedule: TeamSchedule,
     options: { triggerType: TeamScheduleRunTriggerType },
-  ): string | null {
+  ): { mode: "record" | "silent"; reason: string } | null {
     if (options.triggerType === "manual") return null;
     if (schedule.sourceKey !== "podcast-curator:cron:podcast-translation-status-check") {
       return null;
@@ -146,7 +150,10 @@ export class TeamScheduleAdapter {
     if (hasActivePodcastTranslationJob(this.contextHub, schedule.project)) {
       return null;
     }
-    return "No active podcast translation jobs recorded; skipping status check.";
+    return {
+      mode: "silent",
+      reason: "No active podcast translation jobs recorded; status check not needed.",
+    };
   }
 }
 

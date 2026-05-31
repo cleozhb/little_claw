@@ -125,6 +125,85 @@ describe("TaskQueue", () => {
     expect(queue.assignTask(child.id, "coder").status).toBe("assigned");
   });
 
+  test("creates a keyed task DAG atomically with resolved dependencies", () => {
+    const updates: string[] = [];
+    queue.onTaskUpdated((task) => updates.push(task.id));
+
+    const created = queue.createTaskDag([
+      {
+        key: "first",
+        title: "First",
+        description: "Runs first.",
+        createdBy: "coordinator",
+        tags: ["code"],
+      },
+      {
+        key: "second",
+        title: "Second",
+        description: "Runs second.",
+        createdBy: "coordinator",
+        tags: ["code"],
+        dependsOn: ["first"],
+      },
+    ]);
+
+    expect(created).toHaveLength(2);
+    expect(created[1]?.dependsOn).toEqual([created[0]!.id]);
+    expect(queue.getTask(created[0]!.id)?.title).toBe("First");
+    expect(queue.getTask(created[1]!.id)?.title).toBe("Second");
+    expect(queue.getTaskLogs(created[0]!.id).map((log) => log.eventType)).toEqual(["created"]);
+    expect(updates).toEqual(created.map((task) => task.id));
+  });
+
+  test("rejects an invalid task DAG without creating partial tasks", () => {
+    expect(() =>
+      queue.createTaskDag([
+        {
+          key: "first",
+          title: "First",
+          description: "Would be inserted first if this were not atomic.",
+          createdBy: "coordinator",
+        },
+        {
+          key: "second",
+          title: "Second",
+          description: "Has an unknown dependency.",
+          createdBy: "coordinator",
+          dependsOn: ["missing"],
+        },
+      ]),
+    ).toThrow('Unknown task DAG dependency "missing"');
+
+    expect(queue.listTasks()).toEqual([]);
+  });
+
+  test("keeps directly assigned dependent tasks pending until dependencies complete", () => {
+    const parent = queue.createTask({
+      title: "Parent",
+      description: "Finish first.",
+      createdBy: "human",
+      tags: ["setup"],
+    });
+    const child = queue.createTask({
+      title: "Child",
+      description: "Assigned but still blocked.",
+      createdBy: "human",
+      assignedTo: "coder",
+      dependsOn: [parent.id],
+      tags: ["code"],
+    });
+
+    expect(child.status).toBe("pending");
+    expect(child.assignedTo).toBe("coder");
+    expect(queue.getPendingForAgent(agent("coder", ["code"]))).toEqual([]);
+
+    queue.assignTask(parent.id, "coder");
+    queue.startTask(parent.id);
+    queue.completeTask(parent.id, "done");
+
+    expect(queue.getPendingForAgent(agent("coder", ["code"]))[0]?.id).toBe(child.id);
+  });
+
   test("stores approval prompt, data, approve response, and resume state", () => {
     const task = queue.createTask({
       title: "Publish",

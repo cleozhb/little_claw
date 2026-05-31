@@ -162,7 +162,7 @@ describe("TeamScheduleAdapter", () => {
     const result = adapter.runNow(schedule.id);
     const task = tasks.getTask(result.task!.id);
 
-    expect(result.run.status).toBe("created");
+    expect(result.run?.status).toBe("created");
     expect(task?.status).toBe("assigned");
     expect(task?.assignedTo).toBe("coder");
     expect(task?.createdBy).toBe(`scheduler:${schedule.id}`);
@@ -187,12 +187,12 @@ describe("TeamScheduleAdapter", () => {
 
     const result = adapter.runNow(schedule.id);
 
-    expect(result.run.status).toBe("skipped");
-    expect(result.run.error).toContain("paused");
+    expect(result.run?.status).toBe("skipped");
+    expect(result.run?.error).toContain("paused");
     expect(tasks.listTasks()).toHaveLength(0);
   });
 
-  test("automatic podcast translation status check skips when no active job is recorded", () => {
+  test("automatic podcast translation status check is silent when no active job is recorded", () => {
     writeAgent("podcast-curator", validAgentYaml("podcast-curator", "active"));
     const registry = new AgentRegistry(agentDir);
     registry.loadAll();
@@ -214,9 +214,11 @@ describe("TeamScheduleAdapter", () => {
 
     const result = adapter.handleTrigger({ type: "team_cron_trigger", schedule });
 
-    expect(result.run.status).toBe("skipped");
-    expect(result.run.error).toContain("No active podcast translation jobs");
+    expect(result.run).toBeUndefined();
+    expect(result.silentSkipReason).toContain("No active podcast translation jobs");
     expect(tasks.listTasks()).toHaveLength(0);
+    expect(schedules.listRuns({ scheduleId: schedule.id })).toHaveLength(0);
+    expect(schedules.getSchedule(schedule.id)?.lastStatus).toBeUndefined();
   });
 
   test("automatic podcast translation status check runs when an active job is recorded", () => {
@@ -248,7 +250,7 @@ describe("TeamScheduleAdapter", () => {
 
     const result = adapter.handleTrigger({ type: "team_cron_trigger", schedule });
 
-    expect(result.run.status).toBe("created");
+    expect(result.run?.status).toBe("created");
     expect(tasks.listTasks()).toHaveLength(1);
   });
 });

@@ -544,7 +544,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
                   ...base,
                   state: "departing",
                   targetAgent: message.task.assignedTo,
-                  message: `Assigning: ${message.task.title}`,
+                  message: `分配中：${message.task.title}`,
                   lastActivity: Date.now(),
                 },
               };
@@ -562,7 +562,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
                   ...base,
                   state: "departing",
                   targetAgent: coordinatorName,
-                  message: message.task.status === "completed" ? `Done: ${message.task.title}` : `Failed: ${message.task.title}`,
+                  message: message.task.status === "completed" ? `已完成：${message.task.title}` : `失败：${message.task.title}`,
                   lastActivity: Date.now(),
                 },
               };
@@ -2284,6 +2284,7 @@ function ChannelButton({
 function TimelineMessage({ message }: { message: TeamMessageInfo }) {
   const colorKey = message.channelType === "project" ? message.project ?? message.channelId : message.channelId;
   const color = channelColor(colorKey);
+  const evalArtifact = parseLlmEvalArtifact(message.content);
   return (
     <article className={cn("rounded-lg border bg-background p-3 border-l-2 animate-in fade-in-0 slide-in-from-bottom-2 duration-300", color.border)}>
       <div className="flex flex-wrap items-center gap-2">
@@ -2295,7 +2296,9 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
         {message.project ? <span className="text-[10px] text-muted-foreground">#{message.project}</span> : null}
         <span className="ml-auto text-[10px] text-muted-foreground">{formatDate(message.createdAt)}</span>
       </div>
-      <div className="mt-2 text-sm leading-6"><Markdown content={message.content} /></div>
+      <div className="mt-2 text-sm leading-6">
+        {evalArtifact ? <LlmEvalArtifactCard artifact={evalArtifact} /> : <Markdown content={message.content} />}
+      </div>
       <div className="mt-2 flex flex-wrap gap-1">
         <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
           {message.channelType}
@@ -2313,6 +2316,105 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
   );
 }
 
+interface LlmEvalArtifact {
+  title: string;
+  verdict: string;
+  model: string;
+  summary: string;
+  bluePrompt: string;
+  redPrompt: string;
+  modelOutput: string;
+}
+
+function LlmEvalArtifactCard({ artifact }: { artifact: LlmEvalArtifact }) {
+  return (
+    <div className="space-y-3">
+      {artifact.summary ? <Markdown content={artifact.summary} /> : null}
+      <div className="rounded-md bg-slate-50 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Terminal className="h-4 w-4 text-slate-600" />
+          <span className="text-sm font-semibold text-slate-900">{artifact.title}</span>
+          {artifact.verdict ? (
+            <Badge variant="secondary" className="rounded-md text-[10px]">
+              {artifact.verdict}
+            </Badge>
+          ) : null}
+          {artifact.model ? <span className="ml-auto text-[10px] text-muted-foreground">{artifact.model}</span> : null}
+        </div>
+        <div className="mt-3 grid gap-3 xl:grid-cols-3">
+          <PromptPane title="蓝方 Prompt" tone="blue" content={artifact.bluePrompt} />
+          <PromptPane title="红方 Prompt" tone="red" content={artifact.redPrompt} />
+          <PromptPane title="大模型输出" tone="green" content={artifact.modelOutput} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptPane({
+  title,
+  tone,
+  content,
+}: {
+  title: string;
+  tone: "blue" | "red" | "green";
+  content: string;
+}) {
+  const toneClass =
+    tone === "blue"
+      ? "border-l-blue-500 bg-blue-50/70 text-blue-950"
+      : tone === "red"
+        ? "border-l-rose-500 bg-rose-50/70 text-rose-950"
+        : "border-l-emerald-500 bg-emerald-50/70 text-emerald-950";
+  return (
+    <section className={cn("min-w-0 rounded-md border-l-4 p-2.5", toneClass)}>
+      <div className="mb-2 text-xs font-semibold">{title}</div>
+      <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-white/70 p-2 text-[11px] leading-5 text-slate-800">{content || "未提供"}</pre>
+    </section>
+  );
+}
+
+function parseLlmEvalArtifact(content: string): LlmEvalArtifact | null {
+  const marker = "<!-- llm-eval-artifact -->";
+  const markerIndex = content.indexOf(marker);
+  if (markerIndex < 0) return null;
+
+  const artifactBody = content.slice(markerIndex + marker.length).trim();
+  const title = artifactBody.match(/###\s*([^\n]+)/)?.[1]?.trim() ?? "LLM 评估展示";
+  const verdict = readArtifactMeta(artifactBody, "判定");
+  const model = readArtifactMeta(artifactBody, "模型");
+  const bluePrompt = readArtifactSection(artifactBody, "蓝方 Prompt");
+  const redPrompt = readArtifactSection(artifactBody, "红方 Prompt");
+  const modelOutput = readArtifactSection(artifactBody, "大模型输出");
+  if (!bluePrompt && !redPrompt && !modelOutput) return null;
+
+  return {
+    title,
+    verdict,
+    model,
+    summary: content.slice(0, markerIndex).trim(),
+    bluePrompt,
+    redPrompt,
+    modelOutput,
+  };
+}
+
+function readArtifactMeta(content: string, label: string): string {
+  const match = content.match(new RegExp(`\\*\\*${escapeRegExp(label)}\\*\\*\\s*[:：]\\s*([^\\n]+)`));
+  return match?.[1]?.trim() ?? "";
+}
+
+function readArtifactSection(content: string, heading: string): string {
+  const fencePattern = "(?:```|~~~)";
+  const pattern = `####\\s*${escapeRegExp(heading)}\\s*\\n\\s*${fencePattern}(?:[a-zA-Z0-9_-]+)?\\n([\\s\\S]*?)\\n\\s*${fencePattern}`;
+  const match = content.match(new RegExp(pattern));
+  return match?.[1]?.trim() ?? "";
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function TimelineApprovalCard({
   message,
   task,
@@ -2327,7 +2429,7 @@ function TimelineApprovalCard({
     <article className="rounded-lg border-2 border-amber-300 bg-amber-50/50 p-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
       <div className="flex items-center gap-2">
         <ShieldAlert className="h-4 w-4 text-amber-600" />
-        <span className="text-sm font-semibold text-amber-900">Approval Required</span>
+        <span className="text-sm font-semibold text-amber-900">需要审批</span>
         {task ? (
           <Badge variant="outline" className="ml-auto h-5 rounded-lg border-amber-300 text-[10px] text-amber-700">
             {task.status}
@@ -2338,7 +2440,7 @@ function TimelineApprovalCard({
         <h3 className="mt-2 text-sm font-medium">{task.title}</h3>
       ) : null}
       <div className="mt-2 text-sm leading-6 text-muted-foreground">
-        <Markdown content={message.content.replace(/^🔒 \*\*Approval Required\*\*.*?\n\n/, "")} />
+        <Markdown content={message.content.replace(/^🔒 \*\*(?:Approval Required|需要审批)\*\*.*?\n\n/, "")} />
       </div>
       {message.taskId ? (
         <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -2350,20 +2452,20 @@ function TimelineApprovalCard({
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button size="sm" variant="outline" className="border-green-300 text-green-700 hover:bg-green-50" onClick={() => onApproval(message.taskId!, "approve")}>
             <Check className="mr-1 h-3.5 w-3.5" />
-            Approve
+            批准
           </Button>
           <Button size="sm" variant="outline" className="border-red-300 text-red-700 hover:bg-red-50" onClick={() => onApproval(message.taskId!, "reject")}>
             <X className="mr-1 h-3.5 w-3.5" />
-            Reject
+            拒绝
           </Button>
         </div>
       ) : isResolved ? (
         <div className="mt-3 rounded-lg bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
           {task?.status === "approved" || task?.status === "running" || task?.status === "completed"
-            ? "✓ Approved"
+            ? "✓ 已批准"
             : task?.status === "rejected"
-              ? "✗ Rejected"
-              : `Resolved (${task?.status})`}
+              ? "✗ 已拒绝"
+              : `已处理 (${task?.status})`}
         </div>
       ) : null}
     </article>
