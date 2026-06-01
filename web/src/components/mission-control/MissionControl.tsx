@@ -1236,11 +1236,11 @@ export function TeamView() {
 
   return (
     <section className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[320px_1fr]">
-      <aside className="min-h-0 border-b md:border-b-0 md:border-r">
-        <div className="border-b px-3 py-3">
+      <aside className="flex min-h-0 flex-col border-b md:border-b-0 md:border-r">
+        <div className="shrink-0 border-b px-3 py-3">
           <h1 className="text-base font-semibold">Team</h1>
         </div>
-        <div className="max-h-[240px] space-y-2 overflow-y-auto p-2 md:max-h-none">
+        <div className="min-h-0 max-h-[240px] space-y-2 overflow-y-auto p-2 md:max-h-none md:flex-1">
           {agents.length === 0 ? (
             <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">No agents</div>
           ) : (
