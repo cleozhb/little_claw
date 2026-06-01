@@ -39,3 +39,32 @@ test("write_file rejects invalid arguments with clear errors", async () => {
   expect(badContent.success).toBe(false);
   expect(badContent.error).toBe("write_file content must be a string.");
 });
+
+test("file tools reject shell-style home paths", async () => {
+  const readTool = createReadFileTool(TMP);
+  const writeTool = createWriteFileTool(TMP);
+
+  const read = await readTool.execute({ path: "~/.little_claw/tinker/latest.md" });
+  const write = await writeTool.execute({
+    path: "~/.little_claw/tinker/latest.md",
+    content: "hello",
+  });
+
+  expect(read.success).toBe(false);
+  expect(read.error).toContain('uses "~"');
+  expect(write.success).toBe(false);
+  expect(write.error).toContain('uses "~"');
+});
+
+test("write_file rejects embedded workspace roots in relative paths", async () => {
+  const tool = createWriteFileTool(TMP);
+  const embeddedRootPath = `s/${TMP.slice(1)}/tinker/runs/2026-06-01/attempts.md`;
+
+  const result = await tool.execute({
+    path: embeddedRootPath,
+    content: "hello",
+  });
+
+  expect(result.success).toBe(false);
+  expect(result.error).toContain("embeds the workspace root inside a relative path");
+});

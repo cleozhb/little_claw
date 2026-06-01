@@ -24,8 +24,8 @@ export interface ApprovalGateResult {
 
 const FIELD_DEFAULTS: Record<string, string> = {
   shell: "command",
-  write_file: "file_path",
-  read_file: "file_path",
+  write_file: "path",
+  read_file: "path",
   context_write: "path",
 };
 

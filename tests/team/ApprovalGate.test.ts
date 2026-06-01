@@ -4,7 +4,7 @@ import { checkApprovalGate, type ApprovalRule } from "../../src/team/ApprovalGat
 describe("checkApprovalGate", () => {
   test("returns allow when no rules match", () => {
     const rules: ApprovalRule[] = [{ tool: "shell", pattern: "^rm.*$" }];
-    const result = checkApprovalGate(rules, "write_file", { file_path: "/tmp/x" });
+    const result = checkApprovalGate(rules, "write_file", { path: "/tmp/x" });
     expect(result.action).toBe("allow");
   });
 
@@ -30,8 +30,22 @@ describe("checkApprovalGate", () => {
 
   test("uses default field mapping for write_file", () => {
     const rules: ApprovalRule[] = [{ tool: "write_file", pattern: "^published/.*$" }];
-    const result = checkApprovalGate(rules, "write_file", { file_path: "published/article.md" });
+    const result = checkApprovalGate(rules, "write_file", { path: "published/article.md" });
     expect(result.action).toBe("pause");
+  });
+
+  test("uses default field mapping for read_file", () => {
+    const rules: ApprovalRule[] = [{ tool: "read_file", pattern: "^private/.*$" }];
+    const result = checkApprovalGate(rules, "read_file", { path: "private/note.md" });
+    expect(result.action).toBe("pause");
+  });
+
+  test("can allow a relative directory tree with optional dot prefix", () => {
+    const rules: ApprovalRule[] = [{ tool: "write_file", field: "path", pattern: "^(?!(\\./)?tinker/).*" }];
+
+    expect(checkApprovalGate(rules, "write_file", { path: "tinker/runs/day/result.md" }).action).toBe("allow");
+    expect(checkApprovalGate(rules, "write_file", { path: "./tinker/runs/day/result.md" }).action).toBe("allow");
+    expect(checkApprovalGate(rules, "write_file", { path: "context-hub/notes.md" }).action).toBe("pause");
   });
 
   test("uses custom field override", () => {

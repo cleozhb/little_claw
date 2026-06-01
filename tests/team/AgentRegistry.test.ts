@@ -223,8 +223,11 @@ describe("AgentRegistry", () => {
     expect(job?.enabled).toBe(true);
     expect(agent.config.requires_approval).toContain("modify formal project files");
     expect(agent.config.requires_approval).toContain("spend more than $5");
-    expect(agent.config.approval_rules).toHaveLength(1);
+    expect(agent.config.approval_rules).toHaveLength(2);
     expect(agent.config.approval_rules[0]?.tool).toBe("shell");
+    expect(agent.config.approval_rules[1]?.tool).toBe("write_file");
+    expect(agent.config.approval_rules[1]?.field).toBe("path");
+    expect(agent.config.approval_rules[1]?.pattern).toBe("^(?!(\\./)?tinker/).*");
     expect(agent.config.watchers).toEqual([]);
     expect(agent.config.max_turns).toBe(25);
     expect(agent.config.context_mode).toBe("always");
