@@ -33,6 +33,10 @@ const tabs: Array<{ kind: MemoryKind; label: string; icon: typeof CalendarDays }
   { kind: "identity", label: "长期记忆", icon: BookOpen },
 ];
 
+const MEMORY_API_BASE_URL =
+  process.env.NEXT_PUBLIC_GATEWAY_HTTP_URL ??
+  gatewayHttpUrlFromWebSocketUrl(process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws");
+
 export function MemoryView() {
   const [kind, setKind] = useState<MemoryKind>("daily");
   const [files, setFiles] = useState<MemoryFile[]>([]);
@@ -46,7 +50,7 @@ export function MemoryView() {
     setIsLoadingList(true);
     setError(null);
     try {
-      const response = await fetch(`/api/mission-control/memory?kind=${nextKind}`);
+      const response = await fetch(memoryApiUrl({ kind: nextKind }));
       if (!response.ok) throw new Error(await readError(response));
       const data = (await response.json()) as { files: MemoryFile[] };
       setFiles(data.files);
@@ -75,7 +79,7 @@ export function MemoryView() {
     setIsLoadingFile(true);
     setError(null);
 
-    fetch(`/api/mission-control/memory?kind=${kind}&path=${encodeURIComponent(selectedPath)}`, {
+    fetch(memoryApiUrl({ kind, path: selectedPath }), {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -224,6 +228,22 @@ export function MemoryView() {
       </div>
     </section>
   );
+}
+
+function memoryApiUrl(params: { kind: MemoryKind; path?: string }) {
+  const url = new URL("/api/mission-control/memory", MEMORY_API_BASE_URL);
+  url.searchParams.set("kind", params.kind);
+  if (params.path) url.searchParams.set("path", params.path);
+  return url.toString();
+}
+
+function gatewayHttpUrlFromWebSocketUrl(wsUrl: string) {
+  const url = new URL(wsUrl);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = "/";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 function DailyLogDetails({ lines }: { lines: JsonLine[] }) {

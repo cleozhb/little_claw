@@ -1,9 +1,6 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 type MemoryKind = "daily" | "identity";
 
@@ -19,22 +16,36 @@ const roots = {
   identity: path.join(homedir(), ".little_claw", "context-hub", "0-identity"),
 } satisfies Record<MemoryKind, string>;
 
-export async function GET(request: Request) {
+const jsonHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+export async function handleMissionControlMemoryRequest(request: Request): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: jsonHeaders });
+  }
+
+  if (request.method !== "GET") {
+    return json({ error: "Method not allowed." }, 405);
+  }
+
   const url = new URL(request.url);
   const kind = parseKind(url.searchParams.get("kind"));
   const requestedPath = url.searchParams.get("path");
 
   if (!kind) {
-    return Response.json({ error: "Invalid memory kind." }, { status: 400 });
+    return json({ error: "Invalid memory kind." }, 400);
   }
 
   try {
     if (requestedPath) {
       const filePath = resolveAllowedPath(kind, requestedPath);
-      const content = await readFile(filePath, "utf8");
-      const info = await stat(filePath);
+      const file = Bun.file(filePath);
+      const [content, info] = await Promise.all([file.text(), stat(filePath)]);
 
-      return Response.json({
+      return json({
         file: {
           name: path.basename(filePath),
           path: toRelativePath(kind, filePath),
@@ -46,11 +57,11 @@ export async function GET(request: Request) {
     }
 
     const files = await listFiles(kind);
-    return Response.json({ files });
+    return json({ files });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to load memory files.";
-    const status = message === "File is outside allowed memory root." ? 400 : 500;
-    return Response.json({ error: message }, { status });
+    const statusCode = message === "File is outside allowed memory root." ? 400 : 500;
+    return json({ error: message }, statusCode);
   }
 }
 
@@ -109,4 +120,11 @@ function resolveAllowedPath(kind: MemoryKind, relativePath: string) {
 
 function toRelativePath(kind: MemoryKind, filePath: string) {
   return path.relative(roots[kind], filePath);
+}
+
+function json(body: unknown, status = 200): Response {
+  return Response.json(body, {
+    status,
+    headers: jsonHeaders,
+  });
 }

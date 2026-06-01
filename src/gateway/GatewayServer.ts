@@ -47,6 +47,7 @@ import type { TeamScheduleStore, TeamSchedule, TeamScheduleRun, UpdateTeamSchedu
 import type { TeamScheduleAdapter } from "../team/TeamScheduleAdapter.ts";
 import YAML from "yaml";
 import type { ContextHub } from "../memory/ContextHub.ts";
+import { handleMissionControlMemoryRequest } from "./MissionControlMemoryApi.ts";
 
 // ============================================================
 // Types
@@ -294,6 +295,11 @@ export class GatewayServer {
         // POST /webhook/feishu — 飞书 IM 回调
         if (url.pathname === "/webhook/feishu" && req.method === "POST") {
           return self.handleFeishuWebhook(req);
+        }
+
+        // GET /api/mission-control/memory — Mission Control memory browser data.
+        if (url.pathname === "/api/mission-control/memory") {
+          return handleMissionControlMemoryRequest(req);
         }
 
         if (url.pathname === "/ws") {
