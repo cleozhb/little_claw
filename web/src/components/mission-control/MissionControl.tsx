@@ -60,11 +60,14 @@ import type {
 import { shouldUseTeamRouter } from "./channel-routing";
 
 const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws";
+const CHANNEL_UNREAD_STORAGE_KEY = "little-claw:mission-control:channel-unread-counts:v1";
 
 type ChannelSelection =
   | { type: "all"; id: "all"; label: string }
   | { type: "project"; id: string; label: string; project: string }
   | { type: "agent_dm"; id: string; label: string; agentName: string };
+
+type ChannelUnreadCounts = Record<string, number>;
 
 type OctopusState = "idle" | "working" | "departing" | "walking" | "arriving" | "talking" | "returning";
 
@@ -123,6 +126,7 @@ interface MissionControlContextValue {
   agents: AgentInfo[];
   agentActivities: Record<string, AgentActivity>;
   agentDetail: AgentDetailInfo | null;
+  channelUnreadCounts: ChannelUnreadCounts;
   channels: ProjectChannelInfo[];
   connectionStatus: ReturnType<typeof useConnectionStatus>;
   createProjectChannel: (input: {
@@ -135,6 +139,7 @@ interface MissionControlContextValue {
   lastAction: string | null;
   loadAgentDetail: (name: string) => void;
   loadTeamScheduleRuns: (scheduleId?: string, limit?: number) => void;
+  markChannelRead: (selection: ChannelSelection) => void;
   refresh: () => void;
   runTeamScheduleNow: (scheduleId: string) => void;
   selectedChannel: ChannelSelection;
@@ -219,10 +224,12 @@ function useMissionControl() {
 }
 
 export function MissionControlProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   const connectionStatus = useConnectionStatus();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentActivities, setAgentActivities] = useState<Record<string, AgentActivity>>({});
   const [agentDetail, setAgentDetail] = useState<AgentDetailInfo | null>(null);
+  const [channelUnreadCounts, setChannelUnreadCounts] = useState<ChannelUnreadCounts>({});
   const [channels, setChannels] = useState<ProjectChannelInfo[]>([]);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [taskStreaming, setTaskStreaming] = useState<Record<string, TaskStreamingState>>({});
@@ -236,6 +243,8 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   });
   const [error, setError] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<string | null>(null);
+  const skipInitialUnreadPersistRef = useRef(true);
+  const unreadMessageIdsRef = useRef(new Set<string>());
 
   const send = useCallback(
     (message: ClientMessage, failureMessage: string) => {
@@ -251,6 +260,22 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     [connectionStatus],
   );
 
+  useEffect(() => {
+    setChannelUnreadCounts(readStoredChannelUnreadCounts());
+  }, []);
+
+  useEffect(() => {
+    if (skipInitialUnreadPersistRef.current) {
+      skipInitialUnreadPersistRef.current = false;
+      return;
+    }
+    writeStoredChannelUnreadCounts(channelUnreadCounts);
+  }, [channelUnreadCounts]);
+
+  const markChannelRead = useCallback((selection: ChannelSelection) => {
+    setChannelUnreadCounts((current) => clearUnreadCountsForSelection(current, selection));
+  }, []);
+
   const refresh = useCallback(() => {
     if (connectionStatus !== "connected") return;
     wsClient.send({ type: "list_tasks", limit: 200 });
@@ -264,6 +289,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const selectChannel = useCallback(
     (selection: ChannelSelection) => {
       setSelectedChannel(selection);
+      markChannelRead(selection);
       if (connectionStatus !== "connected") {
         setError("WebSocket 未连接，无法加载频道消息。");
         return;
@@ -281,7 +307,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         wsClient.send({ type: "get_team_messages", limit: 80 });
       }
     },
-    [connectionStatus],
+    [connectionStatus, markChannelRead],
   );
 
   const loadAgentDetail = useCallback(
@@ -461,6 +487,15 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           if (message.message.senderType !== "human") {
             setLastAction(formatTeamActivity(message.message));
           }
+          if (!unreadMessageIdsRef.current.has(message.message.id)) {
+            unreadMessageIdsRef.current.add(message.message.id);
+            if (
+              shouldCountUnreadMessage(message.message) &&
+              !(isChannelsPath(pathname) && messageMatchesSelection(message.message, selectedChannel))
+            ) {
+              setChannelUnreadCounts((current) => incrementUnreadCountForMessage(current, message.message));
+            }
+          }
           // Trigger octopus walking animation for ANY agent/coordinator communication
           if (message.message.senderType === "agent" || message.message.senderType === "coordinator") {
             const senderId = message.message.senderId;
@@ -488,6 +523,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           );
           break;
         case "human_message_routed":
+          unreadMessageIdsRef.current.add(message.message.id);
           setLastAction(message.result.ack);
           setTimelineMessages((current) =>
             messageMatchesSelection(message.message, selectedChannel)
@@ -609,7 +645,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           break;
       }
     });
-  }, [selectedChannel]);
+  }, [pathname, selectedChannel]);
 
   // Animation sequence timers:
   // departing → walking → arriving → talking → returning → idle/working
@@ -718,6 +754,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       agents,
       agentActivities,
       agentDetail,
+      channelUnreadCounts,
       channels,
       connectionStatus,
       createProjectChannel,
@@ -725,6 +762,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       lastAction,
       loadAgentDetail,
       loadTeamScheduleRuns,
+      markChannelRead,
       refresh,
       runTeamScheduleNow,
       selectedChannel,
@@ -742,6 +780,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       agents,
       agentActivities,
       agentDetail,
+      channelUnreadCounts,
       channels,
       connectionStatus,
       createProjectChannel,
@@ -749,6 +788,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       lastAction,
       loadAgentDetail,
       loadTeamScheduleRuns,
+      markChannelRead,
       refresh,
       runTeamScheduleNow,
       selectedChannel,
@@ -900,8 +940,10 @@ export function TasksView() {
 export function ChannelsView() {
   const {
     agents,
+    channelUnreadCounts,
     channels,
     connectionStatus,
+    markChannelRead,
     selectedChannel,
     selectChannel,
     sendChannelMessage,
@@ -914,11 +956,29 @@ export function ChannelsView() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelSwitchedRef = useRef(false);
   const userSentMessageRef = useRef(false);
+  const commandCenterUnreadCount = totalUnreadCount(channelUnreadCounts);
 
   // Mark channel switch so next message load forces instant scroll
   useEffect(() => {
     channelSwitchedRef.current = true;
-  }, [selectedChannel]);
+    markChannelRead(selectedChannel);
+  }, [markChannelRead, selectedChannel]);
+
+  useEffect(() => {
+    markChannelRead(selectedChannel);
+  }, [channelUnreadCounts, markChannelRead, selectedChannel]);
+
+  const projectUnreadCount = useCallback(
+    (channel: ProjectChannelInfo) =>
+      (channelUnreadCounts[channelUnreadKey("project", channel.slug)] ?? 0) +
+      (channelUnreadCounts[channelUnreadKey("project", channel.id)] ?? 0),
+    [channelUnreadCounts],
+  );
+
+  const agentUnreadCount = useCallback(
+    (agentName: string) => channelUnreadCounts[channelUnreadKey("agent_dm", agentName)] ?? 0,
+    [channelUnreadCounts],
+  );
 
   // Auto-scroll: always scroll to bottom on channel switch, new message, or user-sent message
   useLayoutEffect(() => {
@@ -950,6 +1010,7 @@ export function ChannelsView() {
             icon={<Inbox className="h-3.5 w-3.5" />}
             label="Command Center"
             meta="Global entry"
+            unreadCount={commandCenterUnreadCount}
             onClick={() => selectChannel({ type: "all", id: "all", label: "Command Center" })}
           />
           <ChannelGroup title="Projects">
@@ -964,6 +1025,7 @@ export function ChannelsView() {
                   icon={<Hash className="h-3.5 w-3.5" />}
                   label={channel.title || channel.slug}
                   meta={channel.slug}
+                  unreadCount={projectUnreadCount(channel)}
                   onClick={() =>
                     selectChannel({
                       type: "project",
@@ -990,6 +1052,7 @@ export function ChannelsView() {
                     icon={<Bot className="h-3.5 w-3.5" />}
                     label={agent.displayName || agent.name}
                     meta={`@${agent.name}`}
+                    unreadCount={agentUnreadCount(agent.name)}
                     onClick={() =>
                       selectChannel({
                         type: "agent_dm",
@@ -2263,6 +2326,7 @@ function ChannelButton({
   label,
   meta,
   onClick,
+  unreadCount = 0,
 }: {
   active: boolean;
   colorKey?: string;
@@ -2270,8 +2334,10 @@ function ChannelButton({
   label: string;
   meta: string;
   onClick: () => void;
+  unreadCount?: number;
 }) {
   const color = colorKey ? channelColor(colorKey) : null;
+  const displayUnreadCount = unreadCount > 99 ? "99+" : String(unreadCount);
   return (
     <button
       type="button"
@@ -2285,6 +2351,11 @@ function ChannelButton({
       {color ? <span className={cn("h-2 w-2 shrink-0 rounded-full", color.dot)} /> : icon}
       <span className="min-w-0 flex-1 truncate text-xs font-medium">{label}</span>
       <span className="max-w-24 truncate text-[10px] opacity-70">{meta}</span>
+      {unreadCount > 0 ? (
+        <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-semibold leading-none text-white">
+          {displayUnreadCount}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -2539,6 +2610,101 @@ function dedupeMessages(messages: TeamMessageInfo[]) {
   return Array.from(new Map(messages.map((message) => [message.id, message])).values()).sort(
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
   );
+}
+
+function readStoredChannelUnreadCounts(): ChannelUnreadCounts {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(CHANNEL_UNREAD_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    const counts: ChannelUnreadCounts = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
+      counts[key] = Math.floor(value);
+    }
+    return counts;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredChannelUnreadCounts(counts: ChannelUnreadCounts): void {
+  if (typeof window === "undefined") return;
+  const compact = compactUnreadCounts(counts);
+  try {
+    if (Object.keys(compact).length === 0) {
+      window.localStorage.removeItem(CHANNEL_UNREAD_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(CHANNEL_UNREAD_STORAGE_KEY, JSON.stringify(compact));
+  } catch {
+    // Browser storage can be disabled or full; unread badges can still work in memory.
+  }
+}
+
+function compactUnreadCounts(counts: ChannelUnreadCounts): ChannelUnreadCounts {
+  const compact: ChannelUnreadCounts = {};
+  for (const [key, value] of Object.entries(counts)) {
+    if (value > 0) compact[key] = value;
+  }
+  return compact;
+}
+
+function channelUnreadKey(channelType: TeamMessageInfo["channelType"], channelId: string) {
+  return `${channelType}:${channelId}`;
+}
+
+function totalUnreadCount(counts: ChannelUnreadCounts) {
+  return Object.values(counts).reduce((total, count) => total + count, 0);
+}
+
+function clearUnreadCountsForSelection(counts: ChannelUnreadCounts, selection: ChannelSelection) {
+  if (selection.type === "all") {
+    return Object.keys(counts).length === 0 ? counts : {};
+  }
+
+  const keys =
+    selection.type === "project"
+      ? [channelUnreadKey("project", selection.project), channelUnreadKey("project", selection.id)]
+      : [channelUnreadKey("agent_dm", selection.agentName)];
+
+  if (!keys.some((key) => counts[key])) return counts;
+
+  const next = { ...counts };
+  for (const key of keys) {
+    delete next[key];
+  }
+  return next;
+}
+
+function incrementUnreadCountForMessage(counts: ChannelUnreadCounts, message: TeamMessageInfo) {
+  const key = unreadKeyForMessage(message);
+  if (!key) return counts;
+  return { ...counts, [key]: (counts[key] ?? 0) + 1 };
+}
+
+function unreadKeyForMessage(message: TeamMessageInfo) {
+  if (message.channelType === "project") {
+    return channelUnreadKey("project", message.project ?? message.channelId);
+  }
+  if (message.channelType === "agent_dm") {
+    return channelUnreadKey("agent_dm", message.channelId);
+  }
+  if (message.channelType === "coordinator" || message.channelType === "system") {
+    return channelUnreadKey(message.channelType, message.channelId);
+  }
+  return null;
+}
+
+function shouldCountUnreadMessage(message: TeamMessageInfo) {
+  return !(message.senderType === "human" && message.senderId === "mission-control");
+}
+
+function isChannelsPath(pathname: string | null) {
+  return pathname === "/mission-control/channels";
 }
 
 function messageMatchesSelection(message: TeamMessageInfo, selection: ChannelSelection) {
