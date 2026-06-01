@@ -183,6 +183,57 @@ bun test
 ```
 
 ---
+## 稳定运行
+在项目根目录跑后端：
+
+```bash
+mkdir -p log
+nohup bun run server > log/server.log 2>&1 &
+echo $! > log/server.pid
+```
+
+在 `web/` 目录跑前端：
+
+```bash
+cd web
+nohup bun run dev > ../log/web-dev.log 2>&1 &
+echo $! > ../log/web-dev.pid
+```
+
+看日志：
+
+```bash
+tail -f log/server.log
+tail -f log/web-dev.log
+```
+
+停止：
+
+```bash
+kill $(cat log/server.pid)
+kill $(cat log/web-dev.pid)
+```
+
+确认还在不在：
+
+```bash
+ps -p $(cat log/server.pid)
+ps -p $(cat log/web-dev.pid)
+```
+
+
+要更稳定一点，前端可以不用 `bun run dev`，而是：
+
+```bash
+cd web
+bun run build
+nohup bun run start > ../log/web.log 2>&1 &
+echo $! > ../log/web.pid
+```
+
+`dev` 适合开发热更新，`build + start` 用于正式环境
+
+---
 
 ## 项目结构
 
@@ -236,13 +287,6 @@ AI 应用本质是 I/O 编排（LLM 调用、WebSocket 通信、子进程管理�
 - 理解每一层的实现细节，调试和定制无障碍
 - Inject（运行中注入指令）、模拟引擎、团队运行时等需求超出框架预设
 - 框架抽象层厚，出问题难排查
-
-### 为什么 SKILL.md 优先于代码插件？
-
-- 兼容 OpenClaw/ClawHub 13000+ 现成 Skills
-- 低门槛（写 Markdown 不写代码）
-- 语言无关（Skill 指令可调用任意脚本）
-- MCP + SKILL.md 已覆盖绝大多数扩展场景
 
 ---
 
