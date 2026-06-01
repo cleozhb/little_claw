@@ -158,6 +158,7 @@ describe("AgentRegistry", () => {
       "coordinator",
       "podcast-curator",
       "tinker",
+      "vc-analyst",
     ]);
     expect(existsSync(join(baseDir, "assistant", "agent.yaml"))).toBe(true);
     expect(readFileSync(join(baseDir, "assistant", "AGENTS.md"), "utf8")).toContain(

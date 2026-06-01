@@ -8,8 +8,9 @@ import type { CronToolContext } from "./CronTool.ts";
 import { createWatcherTool } from "./WatcherTool.ts";
 import type { WatcherToolContext } from "./WatcherTool.ts";
 import { createWebSearchTool } from "./WebSearchTool.ts";
+import { createWebFetchTool } from "./WebFetchTool.ts";
 
-export { createReadFileTool, createWriteFileTool, createShellTool, createCronTool, createWatcherTool, createWebSearchTool };
+export { createReadFileTool, createWriteFileTool, createShellTool, createCronTool, createWatcherTool, createWebSearchTool, createWebFetchTool };
 export { createMemoryWriteTool } from "./MemoryWriteTool.ts";
 export { createMemoryReadTool } from "./MemoryReadTool.ts";
 export { createContextWriteTool } from "./ContextWriteTool.ts";
@@ -32,6 +33,7 @@ export function createBuiltinTools(workspaceRoot: string, schedulerOptions?: Sch
     createWriteFileTool(workspaceRoot),
     shellTool,
     createWebSearchTool(),
+    createWebFetchTool(),
   ];
 
   if (schedulerOptions?.cronContext) {

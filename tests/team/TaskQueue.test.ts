@@ -359,6 +359,26 @@ describe("TaskQueue", () => {
     expect(queue.getPendingForAgent(agent("coder", ["code"], 1))).toEqual([]);
   });
 
+  test("getPendingForAgent skips delayed retries until due", () => {
+    const task = queue.createTask({
+      title: "Rate limited task",
+      description: "Retry later.",
+      createdBy: "human",
+      assignedTo: "coder",
+      tags: ["code"],
+      maxRetries: 2,
+    });
+
+    queue.startTask(task.id);
+    const retry = queue.failTask(task.id, "429 Rate limit reached for TPM", "coder", {
+      retryDelayMs: 60_000,
+    });
+
+    expect(retry.status).toBe("pending");
+    expect(retry.dueAt).toBeDefined();
+    expect(queue.getPendingForAgent(agent("coder", ["code"], 1))).toEqual([]);
+  });
+
   test("delegateTask creates a child task and records progress logs", () => {
     const parent = queue.createTask({
       title: "Parent",

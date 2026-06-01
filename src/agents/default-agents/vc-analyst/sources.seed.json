@@ -1,0 +1,57 @@
+{
+  "source_groups": [
+    {
+      "name": "中文融资源",
+      "strategy": "web_search",
+      "search_topic": "finance",
+      "domains": ["36kr.com", "pitchhub.36kr.com", "pedaily.cn", "itjuzi.com"],
+      "sources": [
+        { "title": "36氪 PitchHub 融资快报", "url": "https://pitchhub.36kr.com/financing-flash" },
+        { "title": "36氪创投频道", "url": "https://www.36kr.com/information/contact/" },
+        { "title": "36氪 VClub 投资机构库", "url": "https://www.36kr.com/organization/" },
+        { "title": "投资界快讯", "url": "https://m.pedaily.cn/first" },
+        { "title": "IT桔子投资事件", "url": "https://www.itjuzi.com/investevent" }
+      ]
+    },
+    {
+      "name": "英文融资源",
+      "strategy": "web_search",
+      "search_topic": "news",
+      "domains": ["ycombinator.com", "techcrunch.com", "crunchbase.com"],
+      "sources": [
+        { "title": "YC Startup Directory", "url": "https://www.ycombinator.com/companies" },
+        { "title": "Launch YC", "url": "https://www.ycombinator.com/launches" },
+        { "title": "TechCrunch Startups", "url": "https://techcrunch.com/category/startups/" },
+        { "title": "TechCrunch Funding", "url": "https://techcrunch.com/tag/funding/" },
+        { "title": "TechCrunch Venture", "url": "https://techcrunch.com/category/startups/venture/" },
+        { "title": "Crunchbase News", "url": "https://news.crunchbase.com/" }
+      ]
+    },
+    {
+      "name": "VC博客与投资逻辑",
+      "strategy": "web_search+web_fetch",
+      "search_topic": "general",
+      "domains": ["sequoiacap.com", "a16z.com", "bvp.com", "greylock.com", "khoslaventures.com", "foundersfund.com", "lsvp.com", "accel.com"],
+      "sources": [
+        { "title": "Sequoia Stories", "url": "https://sequoiacap.com/stories/" },
+        { "title": "Sequoia Our Companies", "url": "https://sequoiacap.com/our-companies/" },
+        { "title": "a16z News & Content", "url": "https://a16z.com/news-content/" },
+        { "title": "a16z AI", "url": "https://a16z.com/ai/" },
+        { "title": "Bessemer Atlas", "url": "https://www.bvp.com/atlas" },
+        { "title": "Greylock Greymatter", "url": "https://greylock.com/greymatter/" },
+        { "title": "Khosla Ventures News", "url": "https://www.khoslaventures.com/news/" },
+        { "title": "Founders Fund Company News", "url": "https://foundersfund.com/company-news/" },
+        { "title": "Lightspeed Stories", "url": "https://lsvp.com/stories/" },
+        { "title": "Accel Noteworthy", "url": "https://www.accel.com/noteworthy" }
+      ]
+    }
+  ],
+  "focus_sectors": [
+    "AI coding",
+    "embodied AI",
+    "AI infra",
+    "developer tools",
+    "foundation models",
+    "AI agents"
+  ]
+}

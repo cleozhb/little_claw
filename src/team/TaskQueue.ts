@@ -69,6 +69,10 @@ export interface CreateTaskDagNodeParams extends CreateTaskParams {
   key: string;
 }
 
+export interface FailTaskOptions {
+  retryDelayMs?: number;
+}
+
 export interface ListTasksFilter {
   status?: TaskStatus;
   assignedTo?: string;
@@ -310,6 +314,9 @@ export class TaskQueue {
 
     task.status = "assigned";
     task.assignedTo = agentName;
+    if (task.retryCount > 0) {
+      task.dueAt = undefined;
+    }
     this.saveTask(task);
     this.addLog(task.id, "assigned", {
       agentName,
@@ -403,7 +410,7 @@ export class TaskQueue {
     return task;
   }
 
-  failTask(taskId: string, error: string, agentName?: string): Task {
+  failTask(taskId: string, error: string, agentName?: string, options: FailTaskOptions = {}): Task {
     const task = this.requireTask(taskId);
     this.assertStatus(task, ["running"], "fail");
 
@@ -415,7 +422,9 @@ export class TaskQueue {
     if (task.status === "pending") {
       task.assignedTo = undefined;
       task.startedAt = undefined;
+      task.dueAt = retryDueAt(options.retryDelayMs);
     } else {
+      task.dueAt = undefined;
       task.completedAt = new Date().toISOString();
     }
 
@@ -427,7 +436,9 @@ export class TaskQueue {
 
     if (task.status === "pending") {
       this.addLog(task.id, "retry_scheduled", {
-        content: `Retry ${task.retryCount} of ${task.maxRetries}.`,
+        content: task.dueAt
+          ? `Retry ${task.retryCount} of ${task.maxRetries} after ${task.dueAt}.`
+          : `Retry ${task.retryCount} of ${task.maxRetries}.`,
       });
     }
 
@@ -499,6 +510,7 @@ export class TaskQueue {
     const tagSet = agent.config.task_tags;
     const candidates = this.listTasks({ status: "pending" }).filter((task) => {
       if (task.assignedTo && task.assignedTo !== agent.config.name) return false;
+      if (task.retryCount > 0 && !isDue(task.dueAt)) return false;
       if (task.tags.length > 0 && !hasTagOverlap(task.tags, tagSet)) return false;
       return this.dependenciesCompleted(task);
     });
@@ -757,4 +769,15 @@ function hasTagOverlap(left: string[], right: string[]): boolean {
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function retryDueAt(retryDelayMs: number | undefined): string | undefined {
+  if (!retryDelayMs || retryDelayMs <= 0) return undefined;
+  return new Date(Date.now() + retryDelayMs).toISOString();
+}
+
+function isDue(dueAt: string | undefined): boolean {
+  if (!dueAt) return true;
+  const time = Date.parse(dueAt);
+  return Number.isNaN(time) || time <= Date.now();
 }

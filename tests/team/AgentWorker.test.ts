@@ -240,6 +240,42 @@ describe("AgentWorker", () => {
     expect(result?.taskId).toBe(task.id);
   });
 
+  test("delays retrying LLM rate limit failures instead of immediately rerunning", async () => {
+    const task = tasks.createTask({
+      title: "Daily VC scan",
+      description: "Run the scheduled radar.",
+      createdBy: "scheduler:schedule-1",
+      assignedTo: "vc-analyst",
+      tags: ["scheduled", "vc"],
+      maxRetries: 2,
+    });
+    const llm = new ScriptedLLM([
+      { type: "throw", message: "429 Rate limit reached for TPM" },
+      { type: "text", text: "should wait" },
+    ]);
+    const worker = new AgentWorker({
+      agent: agent("vc-analyst", []),
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 2,
+    });
+
+    await worker.tick();
+    await worker.tick();
+
+    const retry = tasks.getTask(task.id);
+    expect(retry?.status).toBe("pending");
+    expect(retry?.assignedTo).toBeUndefined();
+    expect(retry?.retryCount).toBe(1);
+    expect(retry?.dueAt).toBeDefined();
+    expect(llm.calls).toHaveLength(1);
+    expect(messages.listMessages({ channelType: "agent_dm", channelId: "vc-analyst" })[0]?.content).toContain(
+      "触发限流",
+    );
+  });
+
   test("report_progress writes task logs while the AgentLoop owns tool execution", async () => {
     const task = tasks.createTask({
       title: "Implement worker",
@@ -630,7 +666,8 @@ function agent(name: string, tools: string[]): RegisteredAgent {
 
 type ScriptedReply =
   | { type: "text"; text: string }
-  | { type: "tool"; name: string; input: Record<string, unknown> };
+  | { type: "tool"; name: string; input: Record<string, unknown> }
+  | { type: "throw"; message: string };
 
 class ScriptedLLM implements LLMProvider {
   calls: Array<{
@@ -660,6 +697,9 @@ class ScriptedLLM implements LLMProvider {
       tools: options?.tools ?? [],
     });
     const reply = this.replies.shift() ?? { type: "text", text: "" };
+    if (reply.type === "throw") {
+      throw new Error(reply.message);
+    }
     if (reply.type === "text") {
       yield { type: "text_delta", text: reply.text };
       yield {

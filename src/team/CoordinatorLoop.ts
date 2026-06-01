@@ -430,13 +430,11 @@ export class CoordinatorLoop {
     const project = this.inferSingleProject(pendingMessages);
     if (project) {
       const channel = this.channels.getChannel(project);
-      if (channel) {
-        return {
-          replyChannelType: "project",
-          replyChannelId: channel.id,
-          project: channel.slug,
-        };
-      }
+      return {
+        replyChannelType: "project",
+        replyChannelId: channel?.id ?? project,
+        project: channel?.slug ?? project,
+      };
     }
 
     return {

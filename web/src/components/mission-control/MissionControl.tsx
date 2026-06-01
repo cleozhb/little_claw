@@ -89,6 +89,7 @@ const RETRO_COLORS = [
 
 const AGENT_COLOR_OVERRIDES: Record<string, string> = {
   "podcast-curator": "#9b5de5", // purple
+  "vc-analyst": "#f59e0b", // amber
 };
 
 function retroColor(name: string) {
@@ -175,7 +176,14 @@ const CHANNEL_COLORS = [
   { dot: "bg-orange-500", border: "border-l-orange-500", text: "text-orange-700", bg: "bg-orange-50" },
 ];
 
+const CHANNEL_COLOR_OVERRIDES: Record<string, (typeof CHANNEL_COLORS)[number]> = {
+  "venture-radar": { dot: "bg-teal-500", border: "border-l-teal-500", text: "text-teal-700", bg: "bg-teal-50" },
+};
+
 function channelColor(key: string) {
+  const override = CHANNEL_COLOR_OVERRIDES[key.toLowerCase()];
+  if (override) return override;
+
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = key.charCodeAt(i) + ((hash << 5) - hash);
   return CHANNEL_COLORS[Math.abs(hash) % CHANNEL_COLORS.length];
@@ -931,7 +939,7 @@ export function ChannelsView() {
   }
 
   return (
-    <section className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[280px_1fr]">
+    <section className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="min-h-0 border-b border-border/60 md:border-b-0 md:border-r">
         <div className="border-b px-3 py-3">
           <h1 className="text-base font-semibold">Channels</h1>
@@ -997,7 +1005,7 @@ export function ChannelsView() {
         </div>
       </aside>
 
-      <div className="flex min-h-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-col">
         <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{selectedChannel.label}</div>

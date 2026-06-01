@@ -23,6 +23,8 @@ export const REPORT_PROGRESS_TOOL = "report_progress";
 export const REQUEST_APPROVAL_TOOL = "request_approval";
 
 const log = createLogger("AgentWorker");
+const RATE_LIMIT_RETRY_BASE_MS = 5 * 60 * 1000;
+const RATE_LIMIT_RETRY_MAX_MS = 30 * 60 * 1000;
 
 export type TaskProgressCallback = (taskId: string, agentName: string, delta: string) => void;
 
@@ -494,9 +496,18 @@ export class AgentWorker {
     }
     if (errorMessage) {
       log.warn(`任务执行失败，交给 TaskQueue 处理重试：${latest.id}`, errorMessage);
-      const failed = this.tasks.failTask(latest.id, errorMessage, agentName);
+      const retryDelayMs = retryDelayForError(errorMessage, latest.retryCount);
+      const failed = this.tasks.failTask(latest.id, errorMessage, agentName, { retryDelayMs });
       if (failed.status === "pending") {
-        // 可重试：重新分配给自己并发通知
+        if (failed.dueAt) {
+          this.postTaskNotification(
+            failed,
+            `任务执行触发限流，已延迟到 ${failed.dueAt} 后由 @${agentName} 重试。\n\n错误：${errorMessage}`,
+          );
+          this.stateValue = "idle";
+          return failed;
+        }
+        // 可立即重试：重新分配给自己并发通知
         const retry = this.tasks.assignTask(failed.id, agentName);
         this.postTaskNotification(
           retry,
@@ -1138,6 +1149,36 @@ function isCancellable(status: Task["status"]): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayForError(message: string, retryCountBeforeFailure: number): number | undefined {
+  if (!isRateLimitError(message)) return undefined;
+  const retryAfterMs = parseRetryAfterMs(message);
+  if (retryAfterMs !== undefined) return retryAfterMs;
+  const attempt = Math.max(0, retryCountBeforeFailure);
+  return Math.min(RATE_LIMIT_RETRY_BASE_MS * 2 ** attempt, RATE_LIMIT_RETRY_MAX_MS);
+}
+
+function isRateLimitError(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes("429") ||
+    text.includes("rate limit") ||
+    text.includes("rate_limit") ||
+    text.includes("too many requests") ||
+    /\btpm\b/.test(text) ||
+    text.includes("tokens per min")
+  );
+}
+
+function parseRetryAfterMs(message: string): number | undefined {
+  const secondsMatch = message.match(/(?:try again in|retry after)\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?/i);
+  if (secondsMatch?.[1]) return Math.ceil(Number(secondsMatch[1]) * 1000);
+
+  const minutesMatch = message.match(/(?:try again in|retry after)\s+(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?/i);
+  if (minutesMatch?.[1]) return Math.ceil(Number(minutesMatch[1]) * 60 * 1000);
+
+  return undefined;
 }
 
 function formatTaskArchiveEntry(

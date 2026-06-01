@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -231,6 +232,8 @@ export class AgentRegistry {
       this.writeFileIfMissing(join(agentDir, "SOUL.md"), seed.soul);
       this.writeFileIfMissing(join(agentDir, "AGENTS.md"), seed.operatingInstructions);
 
+      this.installSeedData(seedDir, seed.config);
+
       const agent = this.loadAgentFromDir(agentDir);
       this.agents.set(agent.config.name, agent);
       installed.push(agent);
@@ -395,6 +398,46 @@ export class AgentRegistry {
   private writeFileIfMissing(path: string, content: string): void {
     if (existsSync(path)) return;
     writeFileSync(path, content, "utf8");
+  }
+
+  private installSeedData(seedDir: string, config: AgentYamlConfig): void {
+    const home = homedir();
+
+    const seedSourcesPath = join(seedDir, "sources.seed.json");
+    if (config.default_project && existsSync(seedSourcesPath)) {
+      const projectDir = join(home, ".little_claw", "context-hub", "3-projects", config.default_project);
+      mkdirSync(projectDir, { recursive: true });
+
+      const targetPath = join(projectDir, "sources.json");
+      if (!existsSync(targetPath)) {
+        copyFileSync(seedSourcesPath, targetPath);
+      }
+
+      this.writeFileIfMissing(
+        join(projectDir, ".abstract.md"),
+        config.role,
+      );
+      this.writeFileIfMissing(
+        join(projectDir, ".overview.md"),
+        `## Folder: ${config.default_project}\n${config.role}\n`,
+      );
+    }
+
+    if (config.skills.length > 0) {
+      const skillsBaseDir = join(home, ".little_claw", "skills");
+      for (const skillName of config.skills) {
+        const repoSkillDir = resolve(import.meta.dir, "../../.little_claw/skills", skillName);
+        const targetSkillDir = join(skillsBaseDir, skillName);
+        const repoSkillFile = join(repoSkillDir, "SKILL.md");
+        if (existsSync(repoSkillFile)) {
+          mkdirSync(targetSkillDir, { recursive: true });
+          const targetSkillFile = join(targetSkillDir, "SKILL.md");
+          if (!existsSync(targetSkillFile)) {
+            copyFileSync(repoSkillFile, targetSkillFile);
+          }
+        }
+      }
+    }
   }
 }
 

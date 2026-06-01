@@ -111,12 +111,15 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     agentRegistry.installDefaultAgents();
     registeredAgents = agentRegistry.loadAll();
   } else {
-    const missingRequiredAgents = ["assistant", "coordinator"].filter((name) => !agentRegistry.get(name));
-    if (missingRequiredAgents.length > 0) {
+    const loadedAgentNames = new Set(registeredAgents.map((agent) => agent.config.name));
+    const missingDefaultAgents = agentRegistry
+      .listDefaultAgentNames()
+      .filter((name) => !loadedAgentNames.has(name));
+    if (missingDefaultAgents.length > 0) {
       console.log(
-        `Lovely Octopus: missing required default agents, installing ${missingRequiredAgents.join(", ")}`,
+        `Lovely Octopus: missing repository default agents, installing ${missingDefaultAgents.join(", ")}`,
       );
-      agentRegistry.installDefaultAgents(missingRequiredAgents);
+      agentRegistry.installDefaultAgents(missingDefaultAgents);
       registeredAgents = agentRegistry.loadAll();
     }
   }
