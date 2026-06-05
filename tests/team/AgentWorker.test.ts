@@ -636,6 +636,53 @@ describe("AgentWorker", () => {
     const approvedKeys = db.getApprovedCallKeys(taskWithSession.sessionId!);
     expect(approvedKeys.length).toBeGreaterThan(0);
   });
+
+  test("hard approval gate stops cleanly when the task already failed", async () => {
+    toolRegistry.register(fakeTool("dangerous_tool"));
+    const task = tasks.createTask({
+      title: "Stale gate task",
+      description: "Simulate timeout racing with approval gate.",
+      createdBy: "human",
+      assignedTo: "gated",
+      maxRetries: 1,
+    });
+    const llm: LLMProvider = {
+      async *chat() {
+        yield { type: "tool_use_start", id: "tool-1", name: "dangerous_tool" };
+        yield { type: "tool_use_delta", input_json: JSON.stringify({ action: "write" }) };
+        tasks.failTask(task.id, "Task timed out.", "coordinator");
+        yield { type: "tool_use_end" };
+        yield {
+          type: "message_end",
+          stop_reason: "tool_use",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+      },
+      getModel() {
+        return "scripted-test-model";
+      },
+      setModel(_model: string) {},
+    };
+    const gatedAgent = agent("gated", ["dangerous_tool"]);
+    gatedAgent.config.approval_rules = [
+      { tool: "dangerous_tool", message: "Dangerous action requires approval." },
+    ];
+    const worker = new AgentWorker({
+      agent: gatedAgent,
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 3,
+    });
+
+    await expect(worker.tick()).resolves.toBeUndefined();
+
+    const latest = tasks.getTask(task.id);
+    expect(latest?.status).toBe("failed");
+    expect(latest?.approvalPrompt).toBeUndefined();
+    expect(messages.listMessages({ channelType: "agent_dm", channelId: "gated" })).toHaveLength(0);
+  });
 });
 
 function agent(name: string, tools: string[]): RegisteredAgent {

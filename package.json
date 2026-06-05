@@ -7,7 +7,9 @@
     "server": "bun run src/server.ts",
     "cli": "bun run src/cli.ts",
     "dev": "bun run src/main.ts",
-    "build": "tsc",
+    "build": "bun run build:core",
+    "build:core": "tsc -p tsconfig.build.json",
+    "build:web": "bun --cwd web run build",
     "test": "bun test",
     "skills:install:podcast": "bun run scripts/install-podcast-translation-skill.ts"
   },

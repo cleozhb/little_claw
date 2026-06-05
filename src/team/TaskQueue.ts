@@ -583,7 +583,7 @@ export class TaskQueue {
     this.stmtInsertTask.run(...this.taskParams(task));
   }
 
-  private buildTask(params: CreateTaskParams, now: string, id = crypto.randomUUID()): Task {
+  private buildTask(params: CreateTaskParams, now: string, id: string = crypto.randomUUID()): Task {
     const dependsOn = params.dependsOn ?? [];
     return {
       id,

@@ -23,6 +23,7 @@ export const REPORT_PROGRESS_TOOL = "report_progress";
 export const REQUEST_APPROVAL_TOOL = "request_approval";
 
 const log = createLogger("AgentWorker");
+type AgentEventAction = "approval_requested" | "stop" | "none";
 const RATE_LIMIT_RETRY_BASE_MS = 5 * 60 * 1000;
 const RATE_LIMIT_RETRY_MAX_MS = 30 * 60 * 1000;
 
@@ -432,8 +433,8 @@ export class AgentWorker {
           log.warn(`AgentLoop 返回错误：${running.id}`, event.message);
           errorMessage = event.message;
         }
-        if (action === "approval_requested") {
-          log.info(`任务请求审批，暂停当前 AgentLoop：${running.id}`);
+        if (action === "approval_requested" || action === "stop") {
+          log.info(`任务事件要求暂停当前 AgentLoop：${running.id}`, `action: ${action}`);
           this.currentLoop?.abort();
         }
       }
@@ -707,7 +708,7 @@ export class AgentWorker {
     });
   }
 
-  private handleAgentEvent(event: AgentEvent): "approval_requested" | "none" {
+  private handleAgentEvent(event: AgentEvent): AgentEventAction {
     // 审批工具是暂停信号：工具执行仍由 AgentLoop 完成，Worker 只观察工具结果并中止后续轮次。
     if (
       event.type === "tool_result" &&
@@ -719,8 +720,25 @@ export class AgentWorker {
     }
     // 硬审批 gate 触发
     if (event.type === "approval_gate_triggered") {
+      const taskId = this.currentTaskId;
+      if (!taskId) {
+        log.warn(`忽略 approval gate：当前没有运行中的任务`, `tool: ${event.toolName}`);
+        return "stop";
+      }
+      const task = this.tasks.getTask(taskId);
+      if (!task) {
+        log.warn(`忽略 approval gate：任务不存在`, `taskId: ${taskId}\ntool: ${event.toolName}`);
+        return "stop";
+      }
+      if (task.status !== "running") {
+        log.warn(
+          `忽略 approval gate：任务状态已不是 running`,
+          `taskId: ${task.id}\nstatus: ${task.status}\ntool: ${event.toolName}`,
+        );
+        return "stop";
+      }
       const rule = event.rule as { message?: string; pattern?: string } | undefined;
-      this.tasks.requestApproval(this.currentTaskId!, {
+      this.tasks.requestApproval(task.id, {
         prompt: rule?.message ?? `Agent 尝试调用需要审批的工具 "${event.toolName}"。`,
         data: { tool: event.toolName, params: event.params, rule },
       });
