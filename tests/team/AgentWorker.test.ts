@@ -123,8 +123,10 @@ describe("AgentWorker", () => {
     expect(completed?.status).toBe("completed");
     expect(completed?.result).toBe("worker completed task");
     expect(llm.lastSystem).toContain("<agent_soul>");
+    expect(llm.lastSystem.match(/<agent_soul>/g)).toHaveLength(1);
     expect(llm.lastSystem).toContain("Coder soul from registry.");
     expect(llm.lastSystem).toContain("<agent_operating_instructions>");
+    expect(llm.lastSystem.match(/<agent_operating_instructions>/g)).toHaveLength(1);
     expect(llm.lastSystem).toContain("Use the team task context.");
     expect(String(llm.lastMessages[0]?.content)).toContain("<task_context>");
     expect(String(llm.lastMessages[0]?.content)).toContain("Fix routing bug");

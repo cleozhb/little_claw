@@ -7,6 +7,9 @@ import type { ProjectChannel, ProjectChannelStore } from "./ProjectChannelStore.
 import type { CreateTaskDagNodeParams, Task, TaskQueue, TaskStatus } from "./TaskQueue.ts";
 import type { TeamMessageStore, TeamMessage, TeamMessagePriority } from "./TeamMessageStore.ts";
 
+const LIST_TASKS_DEFAULT_LIMIT = 20;
+const LIST_TASKS_MAX_LIMIT = 100;
+
 export const COORDINATOR_TOOL_NAMES = [
   "create_task",
   "create_task_dag",
@@ -253,7 +256,8 @@ function createTaskDagTool(context: CoordinatorToolContext): Tool {
 function listTasksTool(context: CoordinatorToolContext): Tool {
   return {
     name: "list_tasks",
-    description: "List Lovely Octopus tasks with optional filters.",
+    description:
+      "List Lovely Octopus tasks with optional filters. Defaults to a compact, limited result to avoid loading large task history into context. Use active_only for conflict checks and mode=\"summary\" for counts only.",
     parameters: {
       type: "object",
       properties: {
@@ -261,19 +265,48 @@ function listTasksTool(context: CoordinatorToolContext): Tool {
         assigned_to: { type: "string" },
         project: { type: "string" },
         tags: { type: "array", items: { type: "string" } },
+        active_only: { type: "boolean" },
+        mode: { type: "string", enum: ["compact", "summary"] },
         limit: { type: "number" },
       },
     },
     async execute(params) {
       const status = readOptionalTaskStatus(params.status);
-      const tasks = context.tasks.listTasks({
+      const activeOnly = readOptionalBoolean(params.active_only) ?? false;
+      const mode = readOptionalListTasksMode(params.mode) ?? "compact";
+      const limit = readListTasksLimit(params.limit);
+      let tasks = context.tasks.listTasks({
         status,
         assignedTo: readOptionalString(params.assigned_to),
         project: readOptionalString(params.project),
         tags: readStringArray(params.tags, "tags"),
-        limit: readOptionalNumber(params.limit),
       });
-      return okJSON({ tasks: tasks.map(serializeTask) });
+      if (activeOnly) {
+        tasks = tasks.filter(isActiveTask);
+      }
+
+      const summary = summarizeTasks(tasks);
+      if (mode === "summary") {
+        return okJSON({
+          mode,
+          summary,
+          total: tasks.length,
+          returned: 0,
+          truncated: false,
+          tasks: [],
+        });
+      }
+
+      const visibleTasks = tasks.slice(0, limit);
+      return okJSON({
+        mode,
+        summary,
+        total: tasks.length,
+        returned: visibleTasks.length,
+        limit,
+        truncated: visibleTasks.length < tasks.length,
+        tasks: visibleTasks.map(serializeTask),
+      });
     },
   };
 }
@@ -786,6 +819,24 @@ function serializeTask(task: Task) {
   };
 }
 
+function summarizeTasks(tasks: Task[]) {
+  return {
+    by_status: countTasksBy(tasks, (task) => task.status),
+    by_project: countTasksBy(tasks, (task) => task.project ?? "(none)"),
+    by_assigned_to: countTasksBy(tasks, (task) => task.assignedTo ?? "(unassigned)"),
+    active: tasks.filter(isActiveTask).length,
+  };
+}
+
+function countTasksBy<T extends string>(items: Task[], keyFor: (task: Task) => T): Record<T, number> {
+  const counts = {} as Record<T, number>;
+  for (const item of items) {
+    const key = keyFor(item);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
 function serializeMessage(message: TeamMessage) {
   return {
     id: message.id,
@@ -822,6 +873,28 @@ function readOptionalNumber(value: unknown): number | undefined {
     throw new Error("Expected optional number value.");
   }
   return value;
+}
+
+function readOptionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error("Expected optional boolean value.");
+  }
+  return value;
+}
+
+function readOptionalListTasksMode(value: unknown): "compact" | "summary" | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "compact" || value === "summary") return value;
+  throw new Error('mode must be "compact" or "summary".');
+}
+
+function readListTasksLimit(value: unknown): number {
+  const limit = readOptionalNumber(value) ?? LIST_TASKS_DEFAULT_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error("limit must be a positive integer.");
+  }
+  return Math.min(limit, LIST_TASKS_MAX_LIMIT);
 }
 
 function readStringArray(value: unknown, key: string): string[] | undefined {

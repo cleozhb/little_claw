@@ -99,6 +99,57 @@ describe("CoordinatorTools", () => {
     expect(tasks.getTask(childTask.id)?.channelId).toBe(project.id);
   });
 
+  test("list_tasks limits output by default and supports active-only summaries", async () => {
+    const tools = toolMap();
+    const completed = tasks.createTask({
+      title: "Completed arena task",
+      description: "Old run.",
+      createdBy: "coordinator",
+      project: "arena",
+      tags: ["arena"],
+    });
+    tasks.assignTask(completed.id, "coder");
+    tasks.startTask(completed.id);
+    tasks.completeTask(completed.id, "done", "coder");
+
+    for (let index = 0; index < 25; index += 1) {
+      tasks.createTask({
+        title: `Pending arena task ${index}`,
+        description: "Current or historical pending work.",
+        createdBy: "coordinator",
+        project: "arena",
+        tags: ["arena"],
+      });
+    }
+
+    const limited = await getTool(tools, "list_tasks").execute({
+      project: "arena",
+      tags: ["arena"],
+    });
+    const limitedParsed = JSON.parse(limited.output);
+
+    expect(limitedParsed.total).toBe(26);
+    expect(limitedParsed.returned).toBe(20);
+    expect(limitedParsed.limit).toBe(20);
+    expect(limitedParsed.truncated).toBe(true);
+    expect(limitedParsed.summary.by_status.completed).toBe(1);
+
+    const summary = await getTool(tools, "list_tasks").execute({
+      project: "arena",
+      tags: ["arena"],
+      active_only: true,
+      mode: "summary",
+    });
+    const summaryParsed = JSON.parse(summary.output);
+
+    expect(summaryParsed.total).toBe(25);
+    expect(summaryParsed.returned).toBe(0);
+    expect(summaryParsed.tasks).toEqual([]);
+    expect(summaryParsed.summary.active).toBe(25);
+    expect(summaryParsed.summary.by_status.completed).toBeUndefined();
+    expect(summaryParsed.summary.by_status.pending).toBe(25);
+  });
+
   test("send_message_to_agent and post_to_project_channel write team messages", async () => {
     const project = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
     const tools = toolMap();

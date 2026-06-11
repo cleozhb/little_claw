@@ -4,9 +4,12 @@ const TAVILY_SEARCH_ENDPOINT = "https://api.tavily.com/search";
 const DEFAULT_MAX_RESULTS = 5;
 const MAX_RESULTS_LIMIT = 20;
 const MAX_OUTPUT_LEN = 20_000;
+const DEFAULT_CONTENT_MAX_CHARS = 360;
+const MAX_CONTENT_MAX_CHARS = 4_000;
 
 type SearchDepth = "fast" | "basic" | "advanced";
 type SearchTopic = "general" | "news" | "finance";
+type OutputMode = "compact" | "full";
 
 interface TavilySearchResult {
   title?: unknown;
@@ -72,6 +75,17 @@ export function createWebSearchTool(options: WebSearchToolOptions = {}): Tool {
           items: { type: "string" },
           description: "Optional list of domains to exclude.",
         },
+        mode: {
+          type: "string",
+          enum: ["compact", "full"],
+          description:
+            "Output shape. Default compact truncates each result content; full preserves current detailed output subject to the overall output cap.",
+        },
+        content_max_chars: {
+          type: "number",
+          description:
+            "Compact mode only: maximum characters to keep per result content. Default 360, max 4000.",
+        },
       },
       required: ["query"],
     },
@@ -100,6 +114,8 @@ export function createWebSearchTool(options: WebSearchToolOptions = {}): Tool {
         include_domains: readStringArray(params.include_domains),
         exclude_domains: readStringArray(params.exclude_domains),
       };
+      const mode = readEnum<OutputMode>(params.mode, ["compact", "full"], "compact");
+      const contentMaxChars = readContentMaxChars(params.content_max_chars);
 
       try {
         const response = await fetchImpl(endpoint, {
@@ -123,7 +139,7 @@ export function createWebSearchTool(options: WebSearchToolOptions = {}): Tool {
 
         return {
           success: true,
-          output: truncate(JSON.stringify(normalizeTavilyResponse(data), null, 2)),
+          output: truncate(JSON.stringify(normalizeTavilyResponse(data, { mode, contentMaxChars }), null, 2)),
         };
       } catch (err) {
         return {
@@ -136,25 +152,38 @@ export function createWebSearchTool(options: WebSearchToolOptions = {}): Tool {
   };
 }
 
-function normalizeTavilyResponse(data: unknown): Record<string, unknown> {
+function normalizeTavilyResponse(
+  data: unknown,
+  options: { mode: OutputMode; contentMaxChars: number },
+): Record<string, unknown> {
   const response = isRecord(data) ? data as TavilySearchResponse : {};
   const results = Array.isArray(response.results) ? response.results : [];
   return {
     query: typeof response.query === "string" ? response.query : undefined,
     answer: typeof response.answer === "string" ? response.answer : undefined,
-    results: results.map(normalizeResult),
+    results: results.map((result) => normalizeResult(result, options)),
     response_time: response.response_time,
     usage: response.usage,
     request_id: response.request_id,
   };
 }
 
-function normalizeResult(value: unknown): Record<string, unknown> {
+function normalizeResult(
+  value: unknown,
+  options: { mode: OutputMode; contentMaxChars: number },
+): Record<string, unknown> {
   const result = isRecord(value) ? value as TavilySearchResult : {};
+  const content = typeof result.content === "string" ? result.content : "";
+  const compactContent = options.mode === "compact"
+    ? truncateContent(content, options.contentMaxChars)
+    : { content, truncatedChars: 0 };
   return {
     title: typeof result.title === "string" ? result.title : "",
     url: typeof result.url === "string" ? result.url : "",
-    content: typeof result.content === "string" ? result.content : "",
+    content: compactContent.content,
+    ...(options.mode === "compact"
+      ? { content_truncated_chars: compactContent.truncatedChars }
+      : {}),
     score: typeof result.score === "number" ? result.score : undefined,
     favicon: typeof result.favicon === "string" ? result.favicon : undefined,
   };
@@ -171,6 +200,11 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
 function readMaxResults(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MAX_RESULTS;
   return Math.max(1, Math.min(MAX_RESULTS_LIMIT, Math.floor(value)));
+}
+
+function readContentMaxChars(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_CONTENT_MAX_CHARS;
+  return Math.max(1, Math.min(MAX_CONTENT_MAX_CHARS, Math.floor(value)));
 }
 
 function readEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -207,6 +241,14 @@ function formatTavilyError(status: number, data: unknown): string {
 function truncate(text: string): string {
   if (text.length <= MAX_OUTPUT_LEN) return text;
   return `${text.slice(0, MAX_OUTPUT_LEN)}\n... [truncated, ${text.length - MAX_OUTPUT_LEN} chars omitted]`;
+}
+
+function truncateContent(content: string, maxChars: number): { content: string; truncatedChars: number } {
+  if (content.length <= maxChars) return { content, truncatedChars: 0 };
+  return {
+    content: content.slice(0, maxChars),
+    truncatedChars: content.length - maxChars,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

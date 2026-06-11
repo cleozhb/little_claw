@@ -931,7 +931,13 @@ export class AgentLoop {
       hasConfiguredSkills: this.configuredSkillNames.length > 0,
     });
     const memoryGuidance = this.getMemoryGuidance(policy);
-    const coreSystemPrompt = `${basePrompt}\n\n${this.config.systemPrompt}\n\n${SCHEDULER_GUIDANCE}\n\n${memoryGuidance}`;
+    const configSystemPrompt = this.config.systemPrompt.trim();
+    const coreSystemParts = [basePrompt];
+    if (configSystemPrompt && basePrompt.trim() !== configSystemPrompt) {
+      coreSystemParts.push(this.config.systemPrompt);
+    }
+    coreSystemParts.push(SCHEDULER_GUIDANCE, memoryGuidance);
+    const coreSystemPrompt = coreSystemParts.join("\n\n");
 
     // 获取当前对话中最后一条用户消息（用于 skill 相关性匹配和预算分配）
     const messages = this.conversation.getMessages();
