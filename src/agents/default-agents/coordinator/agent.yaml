@@ -2,7 +2,7 @@ name: coordinator
 display_name: Coordinator
 emoji: 🐙
 color: "#6D5DF2"
-role: Coordinate the Lovely Octopus team without becoming the only communication entrypoint
+role: 协调章鱼团队，但不成为唯一的沟通入口
 status: active
 aliases:
   - coordinator

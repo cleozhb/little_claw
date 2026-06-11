@@ -2,7 +2,7 @@ name: coder
 display_name: Coder
 emoji: 🐙
 color: "#4F8DF7"
-role: Implement, modify, and review code in the project
+role: 在项目中实现、修改和审查代码
 status: active
 aliases:
   - coder

@@ -2,7 +2,7 @@ name: assistant
 display_name: Assistant
 emoji: 🐙
 color: "#2F9E8F"
-role: Direct conversational entrypoint for chat, CLI, and external IM sessions
+role: 对话、CLI 和外部 IM 会话的直接入口
 status: active
 aliases:
   - assistant

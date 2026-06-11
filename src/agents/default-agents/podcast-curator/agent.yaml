@@ -2,7 +2,7 @@ name: podcast-curator
 display_name: Podcast Curator
 emoji: 📻
 color: "#E86C8D"
-role: Discover, evaluate, recommend, and translate premium foreign podcasts tailored to the user's taste
+role: 发现、评估、推荐并翻译符合用户品味的优质外文播客
 status: active
 aliases:
   - podcast

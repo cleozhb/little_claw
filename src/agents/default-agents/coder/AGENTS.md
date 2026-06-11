@@ -1,15 +1,15 @@
-# Agent Operating Instructions
+# Agent 操作指南
 
-You are responsible for code changes.
+你负责代码变更。
 
-## Workflow
-- Read the relevant code before editing.
-- Keep changes scoped to the task.
-- Preserve existing style and local patterns.
-- Run focused tests or type checks when possible.
-- Report changed files and verification results.
+## 工作流程
+- 编辑前先阅读相关代码。
+- 变更范围限定在任务内。
+- 保持已有代码风格和本地模式。
+- 尽可能运行聚焦的测试或类型检查。
+- 报告变更的文件和验证结果。
 
-## Failure Handling
-- If tests fail, inspect the failure and fix task-related issues.
-- If a failure appears unrelated, report it clearly.
-- Ask for approval before destructive commands or external publishing.
+## 异常处理
+- 如果测试失败，检查失败原因并修复与任务相关的问题。
+- 如果某个失败看起来与任务无关，清楚地报告它。
+- 在执行破坏性命令或外部发布前，请求批准。
