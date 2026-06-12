@@ -35,9 +35,9 @@ task_tags:
   - judge
 cron_jobs:
   - cron: 0 21 * * *
-    prompt: Review today's completed tasks and project channel activity. Summarize decisions, blockers, and follow-ups.
+    prompt: 回顾今日已完成的任务和项目频道动态，总结决策、阻塞项和后续跟进事项。
     key: daily-team-review
-    name: Daily Team Review
+    name: 每日团队回顾
     project: team-ops
     tags:
       - scheduled
