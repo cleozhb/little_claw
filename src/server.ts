@@ -25,6 +25,7 @@ import { EventWatcher } from "./scheduler/EventWatcher.ts";
 import type { SchedulerEvent } from "./scheduler/types.ts";
 import { VectorStore } from "./memory/VectorStore.ts";
 import { MemoryManager } from "./memory/MemoryManager.ts";
+import { IdentityExtractor } from "./memory/IdentityExtractor.ts";
 import { createEmbeddingProvider } from "./memory/EmbeddingProvider.ts";
 import { FileMemoryManager } from "./memory/FileMemoryManager.ts";
 import { createMemoryWriteTool } from "./tools/builtin/MemoryWriteTool.ts";
@@ -299,7 +300,13 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const fileMemory = new FileMemoryManager();
   await fileMemory.initialize();
 
-  const memoryManager = new MemoryManager(vectorStore, llmProvider, db, fileMemory);
+  const memoryManager = new MemoryManager(
+    vectorStore,
+    llmProvider,
+    db,
+    fileMemory,
+    new IdentityExtractor(fileMemory.getContextHub(), llmProvider),
+  );
 
   // --- Context Hub: 自动补全元文件 + 索引 + 检索 ---
   const contextHub = fileMemory.getContextHub();

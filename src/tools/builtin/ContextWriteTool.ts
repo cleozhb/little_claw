@@ -8,7 +8,7 @@ import type { ContextMetaGenerator } from "../../memory/ContextMetaGenerator.ts"
 // ---------------------------------------------------------------------------
 //
 // 写入规则（按目录）：
-//   0-identity/profile.md: APPEND only，不能 overwrite
+//   0-identity/profile.md: 可 append 或 overwrite（overwrite 用于修正过期信息）
 //   1-inbox/inbox.md: 安全兜底，格式化 todo/idea
 //   2-areas/{area}/: 只写已有目录
 //   3-projects/{project}/: 只写已有目录，可在目录内创建新文件
@@ -27,7 +27,8 @@ export function createContextWriteTool(
     description:
       "Write information to the user's context hub. Choose the correct location:\n\n" +
       "- 0-identity/profile.md: User preferences and personal info " +
-      "(name, timezone, coding style, dietary preferences). APPEND only, never overwrite.\n\n" +
+      "(name, timezone, coding style, dietary preferences). " +
+      "Use overwrite to correct or update outdated info.\n\n" +
       "- 1-inbox/inbox.md: Temporary ideas, todos, and fleeting thoughts. " +
       'User said "remind me to..." or "I should..." or any unstructured thought. ' +
       'Format: "- [ ] {content} ({date})" for todos, "- {content} ({date})" for ideas. ' +
@@ -59,8 +60,7 @@ export function createContextWriteTool(
           type: "string",
           enum: ["append", "overwrite"],
           description:
-            '"append" adds to end of file (default), "overwrite" replaces. ' +
-            "Note: 0-identity/profile.md always uses append regardless of this setting.",
+            '"append" adds to end of file (default), "overwrite" replaces.',
         },
       },
       required: ["path", "content"],
@@ -81,10 +81,6 @@ export function createContextWriteTool(
           error: "Cannot write to 5-archive/. Users move items to archive manually.",
         };
       }
-
-      // 0-identity 强制 append
-      const effectiveMode =
-        path.startsWith("0-identity/") ? "append" : mode;
 
       // 2-areas/ 和 3-projects/ — 不允许创建新的顶层子目录
       if (path.startsWith("2-areas/") || path.startsWith("3-projects/")) {
@@ -113,7 +109,7 @@ export function createContextWriteTool(
       try {
         const contextHub = fileMemory.getContextHub();
 
-        if (effectiveMode === "overwrite") {
+        if (mode === "overwrite") {
           await contextHub.writeFile(path, content, "overwrite");
         } else {
           await contextHub.writeFile(path, content, "append");
@@ -137,13 +133,9 @@ export function createContextWriteTool(
           }
         }
 
-        const modeNote = path.startsWith("0-identity/") && mode === "overwrite"
-          ? " (overwrite downgraded to append for identity files)"
-          : "";
-
         return {
           success: true,
-          output: `Successfully ${effectiveMode === "overwrite" ? "wrote" : "appended"} to context-hub/${path}${modeNote}`,
+          output: `Successfully ${mode === "overwrite" ? "wrote" : "appended"} to context-hub/${path}`,
         };
       } catch (err) {
         return {

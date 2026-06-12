@@ -4,6 +4,7 @@ import type { Database } from "../db/Database.ts";
 import type { Message } from "../types/message.ts";
 import { generateSummary } from "./SummaryGenerator.ts";
 import type { FileMemoryManager } from "./FileMemoryManager.ts";
+import type { IdentityExtractor } from "./IdentityExtractor.ts";
 
 // ---------------------------------------------------------------------------
 // MemoryManager — 长期记忆的存储与检索
@@ -45,17 +46,21 @@ export class MemoryManager {
   private llmProvider: LLMProvider;
   private db: Database;
   private fileMemory?: FileMemoryManager;
+  private identityExtractor?: IdentityExtractor;
+  private lastDistilledCount = new Map<string, number>();
 
   constructor(
     vectorStore: VectorStore,
     llmProvider: LLMProvider,
     db: Database,
     fileMemory?: FileMemoryManager,
+    identityExtractor?: IdentityExtractor,
   ) {
     this.vectorStore = vectorStore;
     this.llmProvider = llmProvider;
     this.db = db;
     this.fileMemory = fileMemory;
+    this.identityExtractor = identityExtractor;
   }
 
   /**
@@ -83,6 +88,20 @@ export class MemoryManager {
 
     // 纯文本备份到 sessions 表
     this.db.updateSessionSummary(sessionId, summary);
+
+    // 从增量消息中蒸馏身份信息到 profile.md（fire-and-forget，失败不阻塞）
+    if (this.identityExtractor) {
+      const lastCount = this.lastDistilledCount.get(sessionId) ?? 0;
+      const newMsgs = messages.slice(lastCount);
+      this.lastDistilledCount.set(sessionId, messages.length);
+      if (newMsgs.length > 0) {
+        this.identityExtractor.extractAndUpdate(newMsgs).catch((err) => {
+          if (process.env.DEBUG) {
+            console.error(`[debug] Identity extraction failed:`, err);
+          }
+        });
+      }
+    }
   }
 
   /**
