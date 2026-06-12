@@ -83,13 +83,25 @@ function toDisplayMessages(m: MessageSummary): DisplayMessage[] {
     switch (block.type) {
       case "text": {
         if (block.text.trim()) {
-          results.push({
-            id: nextId(),
-            role,
-            type: "text",
-            content: block.text,
-            timestamp,
-          });
+          const skillMatch = block.text.match(/^>\s*(\S+)\n\n([\s\S]*)$/);
+          if (skillMatch) {
+            results.push({
+              id: nextId(),
+              role,
+              type: "text",
+              content: skillMatch[2],
+              meta: { skills: [{ name: skillMatch[1], score: 1, matchReason: "" }] },
+              timestamp,
+            });
+          } else {
+            results.push({
+              id: nextId(),
+              role,
+              type: "text",
+              content: block.text,
+              timestamp,
+            });
+          }
         }
         break;
       }

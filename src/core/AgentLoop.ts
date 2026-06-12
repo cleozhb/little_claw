@@ -937,6 +937,7 @@ export class AgentLoop {
       coreSystemParts.push(this.config.systemPrompt);
     }
     coreSystemParts.push(SCHEDULER_GUIDANCE, memoryGuidance);
+    coreSystemParts.push(`Current time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`);
     const coreSystemPrompt = coreSystemParts.join("\n\n");
 
     // 获取当前对话中最后一条用户消息（用于 skill 相关性匹配和预算分配）

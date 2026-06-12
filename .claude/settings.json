@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(bunx tsc:*)",
-      "Read(//Users/zhanghuibin/.little_claw/memory/**)"
+      "Read(//Users/zhanghuibin/.little_claw/memory/**)",
+      "Bash(sqlite3 \"data/little_claw.db\" \"SELECT id, role, substr\\(content, 1, 300\\) FROM messages WHERE session_id='ffeca18f-3e0b-4608-9c62-84fa2f999db9' ORDER BY created_at ASC;\")",
+      "Bash(sqlite3 \"data/little_claw.db\" \"SELECT length\\(content\\), substr\\(content, -50\\) FROM messages WHERE session_id='ffeca18f-3e0b-4608-9c62-84fa2f999db9' AND role='assistant' ORDER BY created_at DESC LIMIT 1;\")",
+      "Read(//Users/zhanghuibin/.little_claw/context-hub/1-inbox/**)",
+      "Bash(sqlite3 \"data/little_claw.db\" \"SELECT tool_input FROM tool_results WHERE session_id='9067a367-eadd-4ce5-98d2-18b84b8ea4ce' AND tool_name='context_write';\")"
     ]
   }
 }

@@ -34,7 +34,7 @@ export function createMemoryWriteTool(
         file: {
           type: "string",
           description:
-            'The daily log file to write to. Example: "memory/2026-04-04.md". Use today\'s date for daily logs.',
+            'The daily log file to write to. Format: "memory/YYYY-MM-DD.md". Always use today\'s date for daily logs.',
         },
         content: {
           type: "string",

@@ -689,10 +689,8 @@ export class GatewayServer {
         updated_at: session.updated_at,
       };
 
-      // 取最近 10 条消息作为摘要
       const allMessages = this.db.getMessages(sessionId);
-      const recent = allMessages.slice(-10);
-      const recentMessages: MessageSummary[] = recent.map((m) => ({
+      const recentMessages: MessageSummary[] = allMessages.map((m) => ({
         role: m.role,
         content: m.content,
         createdAt: m.created_at,
