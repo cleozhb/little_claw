@@ -1,4 +1,4 @@
-import { CronExpressionParser } from "cron-parser";
+import { cronMatchesMinute, getNextCronRun, SCHEDULER_TIME_ZONE } from "./CronTime.ts";
 import type { Database } from "../db/Database.ts";
 import type { CronJob, SchedulerEvent } from "./types.ts";
 
@@ -116,24 +116,14 @@ export class CronScheduler {
    * 计算 cron 表达式的下次执行时间
    */
   getNextRun(cronExpr: string, from?: Date): Date {
-    const expr = CronExpressionParser.parse(cronExpr, {
-      currentDate: from ?? new Date(),
-    });
-    return expr.next().toDate();
+    return getNextCronRun(cronExpr, from ?? new Date());
   }
 
   /**
    * 判断当前时间（精确到分钟）是否匹配 cron 表达式
    */
   private isTimeMatching(cronExpr: string, now: Date): boolean {
-    const startOfMinute = new Date(now);
-    startOfMinute.setSeconds(0, 0);
-
-    const justBefore = new Date(startOfMinute.getTime() - 1000);
-    const expr = CronExpressionParser.parse(cronExpr, { currentDate: justBefore });
-    const nextDate = expr.next().toDate();
-
-    return nextDate.getTime() === startOfMinute.getTime();
+    return cronMatchesMinute(cronExpr, now);
   }
 
   // --- Job CRUD ---
@@ -235,7 +225,7 @@ export class CronScheduler {
   start(): void {
     if (this.timer) return;
 
-    console.log("[CronScheduler] Started (checking every 60s)");
+    console.log(`[CronScheduler] Started (checking every 60s, timezone=${SCHEDULER_TIME_ZONE})`);
 
     // Run an initial check immediately
     this.tick();

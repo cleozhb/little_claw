@@ -116,10 +116,17 @@ test("getNextRun returns future date", () => {
 });
 
 test("getNextRun with from parameter", () => {
-  const from = new Date("2026-03-31T07:00:00");
+  const from = new Date("2026-03-31T07:00:00.000Z");
   const next = scheduler.getNextRun("0 8 * * *", from);
-  expect(next.getHours()).toBe(8);
-  expect(next.getMinutes()).toBe(0);
+  expect(next.toISOString()).toBe("2026-04-01T00:00:00.000Z");
+  expect(
+    next.toLocaleTimeString("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }),
+  ).toBe("08:00");
 });
 
 test("onTrigger registers callback", () => {

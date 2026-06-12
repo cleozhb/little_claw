@@ -43,6 +43,7 @@ test("create action creates a cron job", async () => {
   expect(result.output).toContain("morning reminder");
   expect(result.output).toContain("0 8 * * *");
   expect(result.output).toContain("Next run:");
+  expect(result.output).toContain("Asia/Shanghai");
 
   const jobs = scheduler.listJobs();
   expect(jobs).toHaveLength(1);

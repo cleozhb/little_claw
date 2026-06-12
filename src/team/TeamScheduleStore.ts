@@ -1,5 +1,5 @@
-import { CronExpressionParser } from "cron-parser";
 import type { Database } from "../db/Database.ts";
+import { getNextCronRun } from "../scheduler/CronTime.ts";
 import type { RegisteredAgent } from "./AgentRegistry.ts";
 
 export type TeamScheduleSource = "agent_yaml" | "ui" | "migration";
@@ -580,10 +580,7 @@ export class TeamScheduleStore {
   }
 
   private safeNextRun(cronExpr: string, from?: Date): string {
-    const expr = CronExpressionParser.parse(cronExpr, {
-      currentDate: from ?? new Date(),
-    });
-    return expr.next().toDate().toISOString();
+    return getNextCronRun(cronExpr, from ?? new Date()).toISOString();
   }
 
   private scheduleParams(schedule: TeamSchedule): unknown[] {

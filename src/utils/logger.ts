@@ -7,9 +7,25 @@
  *   log.step("Tool Call", { name: "shell", params: { command: "ls" } });
  */
 
+const LOG_TIME_ZONE = "Asia/Shanghai";
+
+const LOG_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: LOG_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  fractionalSecondDigits: 3,
+  hourCycle: "h23",
+});
+
 function getTimestamp(): string {
-  const now = new Date();
-  return now.toISOString().replace("T", " ").replace("Z", "");
+  const parts = Object.fromEntries(
+    LOG_TIME_FORMATTER.formatToParts(new Date()).map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}.${parts.fractionalSecond}`;
 }
 
 /**

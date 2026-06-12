@@ -1,4 +1,4 @@
-import { CronExpressionParser } from "cron-parser";
+import { cronMatchesMinute } from "../scheduler/CronTime.ts";
 import type { TeamSchedule, TeamScheduleStore } from "./TeamScheduleStore.ts";
 
 export type TeamScheduleTrigger =
@@ -39,7 +39,7 @@ export class TeamCronScheduler {
     for (const schedule of schedules) {
       if (!schedule.cronExpr) continue;
       try {
-        if (!isTimeMatching(schedule.cronExpr, now)) continue;
+        if (!cronMatchesMinute(schedule.cronExpr, now)) continue;
         const updated = this.store.markTriggered(schedule.id, now.toISOString()) ?? schedule;
         this.emit({ type: "team_cron_trigger", schedule: updated });
       } catch (err) {
@@ -185,15 +185,4 @@ function watcherRuntimeConfig(schedule: TeamSchedule): string {
     intervalMs: schedule.intervalMs,
     cooldownMs: schedule.cooldownMs,
   });
-}
-
-function isTimeMatching(cronExpr: string, now: Date): boolean {
-  const startOfMinute = new Date(now);
-  startOfMinute.setSeconds(0, 0);
-
-  const justBefore = new Date(startOfMinute.getTime() - 1000);
-  const expr = CronExpressionParser.parse(cronExpr, { currentDate: justBefore });
-  const nextDate = expr.next().toDate();
-
-  return nextDate.getTime() === startOfMinute.getTime();
 }

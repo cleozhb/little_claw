@@ -1,5 +1,6 @@
 import type { Tool, ToolResult } from "../types.ts";
 import type { CronScheduler } from "../../scheduler/CronScheduler.ts";
+import { formatSchedulerTime } from "../../scheduler/CronTime.ts";
 
 export interface CronToolContext {
   scheduler: CronScheduler;
@@ -76,7 +77,7 @@ export function createCronTool(context: CronToolContext): Tool {
                 `  Name: ${job.name}`,
                 `  Schedule: ${job.cronExpr}`,
                 `  Prompt: ${job.prompt}`,
-                `  Next run: ${job.nextRunAt}`,
+                `  Next run: ${formatCronTime(job.nextRunAt)}`,
               ].join("\n"),
             };
           } catch (err) {
@@ -100,8 +101,8 @@ export function createCronTool(context: CronToolContext): Tool {
               `  Schedule: ${job.cronExpr}`,
               `  Prompt: ${job.prompt}`,
               `  Session: ${job.sessionId}`,
-              job.nextRunAt ? `  Next run: ${job.nextRunAt}` : null,
-              job.lastRunAt ? `  Last run: ${job.lastRunAt}` : null,
+              job.nextRunAt ? `  Next run: ${formatCronTime(job.nextRunAt)}` : null,
+              job.lastRunAt ? `  Last run: ${formatCronTime(job.lastRunAt)}` : null,
             ]
               .filter(Boolean)
               .join("\n"),
@@ -147,7 +148,7 @@ export function createCronTool(context: CronToolContext): Tool {
           }
           return {
             success: true,
-            output: `Cron job "${updated.name}" (${jobId}) enabled. Next run: ${updated.nextRunAt}`,
+            output: `Cron job "${updated.name}" (${jobId}) enabled. Next run: ${formatCronTime(updated.nextRunAt)}`,
           };
         }
 
@@ -184,4 +185,8 @@ export function createCronTool(context: CronToolContext): Tool {
       }
     },
   };
+}
+
+function formatCronTime(value: string | undefined): string {
+  return value ? formatSchedulerTime(value) : "not scheduled";
 }

@@ -276,6 +276,29 @@ describe("TeamCronScheduler", () => {
     expect(triggered).toEqual([schedule.id]);
     expect(schedules.getSchedule(schedule.id)?.lastTriggeredAt).toBe("2026-05-02T10:30:00.000Z");
   });
+
+  test("tick interprets cron schedules in Asia/Shanghai", () => {
+    const schedules = new TeamScheduleStore(db);
+    const schedule = schedules.createSchedule({
+      type: "cron",
+      name: "Shanghai morning",
+      agentName: "coder",
+      prompt: "Run at 8am Shanghai time",
+      cronExpr: "0 8 * * *",
+    });
+    const cron = new TeamCronScheduler(schedules);
+    const triggered: string[] = [];
+    cron.onTrigger((event) => {
+      triggered.push(event.schedule.id);
+    });
+
+    cron.tick(new Date("2026-05-02T08:00:00.000Z"));
+    expect(triggered).toEqual([]);
+
+    cron.tick(new Date("2026-05-03T00:00:00.000Z"));
+    expect(triggered).toEqual([schedule.id]);
+    expect(schedules.getSchedule(schedule.id)?.lastTriggeredAt).toBe("2026-05-03T00:00:00.000Z");
+  });
 });
 
 function writeAgent(name: string, yaml: string): void {
