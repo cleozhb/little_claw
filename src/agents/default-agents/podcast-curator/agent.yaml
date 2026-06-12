@@ -28,7 +28,7 @@ task_tags:
   - translation
   - audio
 cron_jobs:
-  - cron: 0 8 * * *
+  - cron: 0 11 * * *
     prompt: 执行播客策展每日发现工作流。读取 podcast-translation 项目记忆，检查已订阅源，仅在需要时使用 podcast-translation-skill 查找 RSS 链接，列出最新节目，将标题/节目简介翻译为简洁中文，过滤低质量节目，发布 Top 1-3 精选列表等待人类审批。本次定时任务不启动音频翻译。
     key: daily-podcast-feed-check
     name: 每日播客发现与精选
