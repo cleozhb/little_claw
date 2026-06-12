@@ -1,8 +1,12 @@
 import type { Tool, ToolResult } from "../types.ts";
+import type { LLMProvider } from "../../llm/types.ts";
+import { truncateAtSentence, extractArticleContent, summarizeContent } from "./ContentProcessor.ts";
 
-const MAX_OUTPUT_LEN = 20_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_TIMEOUT_MS = 60_000;
+
+type FetchMode = "full" | "article" | "summary";
+const DEFAULT_MAX_CHARS: Record<FetchMode, number> = { full: 20_000, article: 8_000, summary: 600 };
 
 const PRIVATE_IP_PATTERNS = [
   /^127\./,
@@ -20,7 +24,8 @@ const PRIVATE_IP_PATTERNS = [
 const BLOCKED_HOSTNAMES = new Set(["localhost", "0.0.0.0", "[::1]"]);
 
 export interface WebFetchToolOptions {
-  fetchImpl?: typeof fetch;
+  fetchImpl?: (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  llmProvider?: LLMProvider;
 }
 
 export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
@@ -37,6 +42,15 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
         timeout_ms: {
           type: "number",
           description: "Request timeout in milliseconds. Default 15000, max 60000.",
+        },
+        mode: {
+          type: "string",
+          enum: ["full", "article", "summary"],
+          description: "Processing mode. 'full': basic HTML stripping. 'article' (default): smart content extraction removing nav/sidebar/ads. 'summary': article extraction + LLM summarization.",
+        },
+        max_chars: {
+          type: "number",
+          description: "Maximum output characters. Defaults: full=20000, article=8000, summary=600.",
         },
       },
       required: ["url"],
@@ -63,6 +77,8 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
         return { success: false, output: "", error: "Access to private/local network addresses is blocked." };
       }
 
+      const mode = readEnum(params.mode, ["full", "article", "summary"] as const, "article");
+      const maxChars = readMaxChars(params.max_chars, DEFAULT_MAX_CHARS[mode]);
       const timeoutMs = readTimeout(params.timeout_ms);
 
       try {
@@ -91,17 +107,43 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
 
         const contentType = response.headers.get("content-type") ?? "unknown";
         const body = await response.text();
-        const text = isHtml(contentType) ? htmlToText(body) : body;
+
+        let content: string;
+        let title = "";
+        let wordCount = 0;
+
+        if (isHtml(contentType)) {
+          if (mode === "full") {
+            content = htmlToText(body);
+          } else {
+            const extracted = extractArticleContent(body);
+            title = extracted.title;
+            wordCount = extracted.wordCount;
+            content = extracted.content;
+          }
+        } else {
+          content = body;
+          wordCount = body.split(/\s+/).filter(Boolean).length;
+        }
+
+        if (mode === "summary" && options.llmProvider && content.length > 200) {
+          content = await summarizeContent(content, options.llmProvider, { maxOutputChars: maxChars });
+        } else {
+          const truncated = truncateAtSentence(content, maxChars);
+          content = truncated.text;
+        }
 
         return {
           success: true,
-          output: truncate(JSON.stringify({
+          output: JSON.stringify({
             url: rawUrl,
             final_url: response.url,
-            status: response.status,
-            content_type: contentType,
-            text,
-          }, null, 2)),
+            title: title || undefined,
+            word_count: wordCount,
+            content_length: content.length,
+            mode,
+            content,
+          }, null, 2),
         };
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -157,7 +199,12 @@ function readTimeout(value: unknown): number {
   return Math.max(1000, Math.min(MAX_TIMEOUT_MS, Math.floor(value)));
 }
 
-function truncate(text: string): string {
-  if (text.length <= MAX_OUTPUT_LEN) return text;
-  return `${text.slice(0, MAX_OUTPUT_LEN)}\n... [truncated, ${text.length - MAX_OUTPUT_LEN} chars omitted]`;
+function readMaxChars(value: unknown, defaultValue: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return defaultValue;
+  return Math.max(100, Math.min(50_000, Math.floor(value)));
+}
+
+function readEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  if (typeof value !== "string") return fallback;
+  return allowed.includes(value as T) ? value as T : fallback;
 }

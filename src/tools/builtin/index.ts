@@ -1,5 +1,6 @@
 import type { Tool } from "../types.ts";
 import type { ShellTool } from "../types.ts";
+import type { LLMProvider } from "../../llm/types.ts";
 import { createReadFileTool } from "./ReadFileTool.ts";
 import { createWriteFileTool } from "./WriteFileTool.ts";
 import { createShellTool } from "./ShellTool.ts";
@@ -26,21 +27,36 @@ export interface SchedulerToolsOptions {
   watcherContext?: WatcherToolContext;
 }
 
-export function createBuiltinTools(workspaceRoot: string, schedulerOptions?: SchedulerToolsOptions): BuiltinTools {
-  const shellTool = createShellTool(workspaceRoot);
+export interface BuiltinToolsOptions {
+  workspaceRoot: string;
+  schedulerOptions?: SchedulerToolsOptions;
+  summarizerProvider?: LLMProvider;
+}
+
+export function createBuiltinTools(workspaceRoot: string, schedulerOptions?: SchedulerToolsOptions): BuiltinTools;
+export function createBuiltinTools(options: BuiltinToolsOptions): BuiltinTools;
+export function createBuiltinTools(
+  arg: string | BuiltinToolsOptions,
+  schedulerOptions?: SchedulerToolsOptions,
+): BuiltinTools {
+  const opts: BuiltinToolsOptions = typeof arg === "string"
+    ? { workspaceRoot: arg, schedulerOptions }
+    : arg;
+
+  const shellTool = createShellTool(opts.workspaceRoot);
   const tools: Tool[] = [
-    createReadFileTool(workspaceRoot),
-    createWriteFileTool(workspaceRoot),
+    createReadFileTool(opts.workspaceRoot),
+    createWriteFileTool(opts.workspaceRoot),
     shellTool,
-    createWebSearchTool(),
-    createWebFetchTool(),
+    createWebSearchTool({ llmProvider: opts.summarizerProvider }),
+    createWebFetchTool({ llmProvider: opts.summarizerProvider }),
   ];
 
-  if (schedulerOptions?.cronContext) {
-    tools.push(createCronTool(schedulerOptions.cronContext));
+  if (opts.schedulerOptions?.cronContext) {
+    tools.push(createCronTool(opts.schedulerOptions.cronContext));
   }
-  if (schedulerOptions?.watcherContext) {
-    tools.push(createWatcherTool(schedulerOptions.watcherContext));
+  if (opts.schedulerOptions?.watcherContext) {
+    tools.push(createWatcherTool(opts.schedulerOptions.watcherContext));
   }
 
   return {

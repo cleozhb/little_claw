@@ -9,6 +9,12 @@ export interface FeishuChannelConfig {
   encryptKey?: string;
 }
 
+export interface SummarizerConfig {
+  apiKey?: string;
+  baseUrl?: string;
+  model: string;
+}
+
 export interface Config {
   llmProvider: ProviderType;
   llmApiKey: string;
@@ -18,6 +24,7 @@ export interface Config {
     mainAgentName: string;
   };
   feishu?: FeishuChannelConfig;
+  summarizer?: SummarizerConfig;
 }
 
 export function loadConfig(): Config {
@@ -44,6 +51,13 @@ export function loadConfig(): Config {
           appSecret: process.env.FEISHU_APP_SECRET ?? "",
           verificationToken: process.env.FEISHU_VERIFICATION_TOKEN ?? "",
           encryptKey: process.env.FEISHU_ENCRYPT_KEY ?? undefined,
+        }
+      : undefined,
+    summarizer: process.env.SUMMARIZER_API_KEY
+      ? {
+          apiKey: process.env.SUMMARIZER_API_KEY,
+          baseUrl: process.env.SUMMARIZER_BASE_URL ?? process.env.LLM_BASE_URL ?? undefined,
+          model: process.env.SUMMARIZER_MODEL ?? "deepseek-v3.2",
         }
       : undefined,
   };

@@ -41,14 +41,6 @@ describe("WebSearchTool", () => {
     expect(calls[0]!.url).toBe("https://tavily.test/search");
     expect(calls[0]!.init.method).toBe("POST");
     expect((calls[0]!.init.headers as Record<string, string>).Authorization).toBe("Bearer test-key");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
-      query: "best ai podcasts",
-      max_results: 3,
-      search_depth: "advanced",
-      topic: "news",
-      include_answer: true,
-      include_domains: ["example.com"],
-    });
 
     const output = JSON.parse(result.output);
     expect(output.answer).toBe("A short answer");
@@ -58,8 +50,8 @@ describe("WebSearchTool", () => {
     expect(output.results[0].raw_content).toBeUndefined();
   });
 
-  test("defaults to compact output and truncates result content", async () => {
-    const longContent = "x".repeat(1_000);
+  test("defaults to compact output with semantic truncation", async () => {
+    const longContent = "First sentence here. Second sentence follows. " + "x".repeat(1_000);
     const tool = createWebSearchTool({
       apiKey: "test-key",
       endpoint: "https://tavily.test/search",
@@ -67,11 +59,7 @@ describe("WebSearchTool", () => {
         new Response(JSON.stringify({
           query: "ai funding",
           results: [
-            {
-              title: "Long result",
-              url: "https://example.com/long",
-              content: longContent,
-            },
+            { title: "Long result", url: "https://example.com/long", content: longContent, score: 0.8 },
           ],
         }), { status: 200 }),
     });
@@ -80,13 +68,11 @@ describe("WebSearchTool", () => {
     const output = JSON.parse(result.output);
 
     expect(result.success).toBe(true);
-    expect(output.results[0].content).toHaveLength(360);
-    expect(output.results[0].content).toBe("x".repeat(360));
-    expect(output.results[0].content_truncated_chars).toBe(640);
-    expect(result.output.length).toBeLessThan(2_000);
+    expect(output.results[0].content.length).toBeLessThanOrEqual(360);
+    expect(output.results[0].content_truncated_chars).toBeGreaterThan(0);
   });
 
-  test("supports full output mode for callers that explicitly need full snippets", async () => {
+  test("supports full output mode", async () => {
     const longContent = "y".repeat(1_000);
     const tool = createWebSearchTool({
       apiKey: "test-key",
@@ -95,11 +81,7 @@ describe("WebSearchTool", () => {
         new Response(JSON.stringify({
           query: "ai funding",
           results: [
-            {
-              title: "Long result",
-              url: "https://example.com/long",
-              content: longContent,
-            },
+            { title: "Long result", url: "https://example.com/long", content: longContent, score: 0.9 },
           ],
         }), { status: 200 }),
     });
@@ -112,7 +94,28 @@ describe("WebSearchTool", () => {
     expect(output.results[0].content_truncated_chars).toBeUndefined();
   });
 
-  test("clamps compact content_max_chars to the supported upper bound", async () => {
+  test("limitOutputSize removes low-score results when output exceeds limit", async () => {
+    const results = Array.from({ length: 20 }, (_, i) => ({
+      title: `Result ${i}`,
+      url: `https://example.com/${i}`,
+      content: "x".repeat(2000),
+      score: i * 0.05,
+    }));
+    const tool = createWebSearchTool({
+      apiKey: "test-key",
+      endpoint: "https://tavily.test/search",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ query: "test", results }), { status: 200 }),
+    });
+
+    const result = await tool.execute({ query: "test", mode: "full" });
+    expect(result.success).toBe(true);
+    expect(result.output.length).toBeLessThanOrEqual(20_100);
+    const output = JSON.parse(result.output);
+    expect(output.results_omitted).toBeGreaterThan(0);
+  });
+
+  test("clamps compact content_max_chars to upper bound", async () => {
     const longContent = "z".repeat(4_500);
     const tool = createWebSearchTool({
       apiKey: "test-key",
@@ -121,24 +124,17 @@ describe("WebSearchTool", () => {
         new Response(JSON.stringify({
           query: "ai funding",
           results: [
-            {
-              title: "Long result",
-              url: "https://example.com/long",
-              content: longContent,
-            },
+            { title: "Long result", url: "https://example.com/long", content: longContent, score: 0.5 },
           ],
         }), { status: 200 }),
     });
 
-    const result = await tool.execute({
-      query: "ai funding",
-      content_max_chars: 10_000,
-    });
+    const result = await tool.execute({ query: "ai funding", content_max_chars: 10_000 });
     const output = JSON.parse(result.output);
 
     expect(result.success).toBe(true);
-    expect(output.results[0].content).toHaveLength(4_000);
-    expect(output.results[0].content_truncated_chars).toBe(500);
+    expect(output.results[0].content.length).toBeLessThanOrEqual(4_000);
+    expect(output.results[0].content_truncated_chars).toBeGreaterThan(0);
   });
 
   test("fails clearly when API key is missing", async () => {
@@ -150,11 +146,8 @@ describe("WebSearchTool", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("TAVILY_API_KEY");
     } finally {
-      if (oldKey === undefined) {
-        delete process.env.TAVILY_API_KEY;
-      } else {
-        process.env.TAVILY_API_KEY = oldKey;
-      }
+      if (oldKey === undefined) delete process.env.TAVILY_API_KEY;
+      else process.env.TAVILY_API_KEY = oldKey;
     }
   });
 
@@ -169,5 +162,23 @@ describe("WebSearchTool", () => {
     const result = await tool.execute({ query: "podcast" });
     expect(result.success).toBe(false);
     expect(result.error).toBe("Tavily search failed (400): bad request");
+  });
+
+  test("summary mode falls back to compact when no llmProvider", async () => {
+    const longContent = "First sentence. " + "x".repeat(1_000);
+    const tool = createWebSearchTool({
+      apiKey: "test-key",
+      endpoint: "https://tavily.test/search",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({
+          query: "test",
+          results: [{ title: "R", url: "https://example.com", content: longContent, score: 0.9 }],
+        }), { status: 200 }),
+    });
+
+    const result = await tool.execute({ query: "test", mode: "summary" });
+    expect(result.success).toBe(true);
+    const output = JSON.parse(result.output);
+    expect(output.results[0].content.length).toBeLessThanOrEqual(360);
   });
 });

@@ -29,7 +29,7 @@ cron_jobs:
   - cron: "0 8 * * *"
     key: daily-vc-radar
     name: 每日 VC Radar 扫描
-    prompt: 执行每日 VC Radar 扫描。按照 vc-radar skill 中描述的完整工作流执行：采集数据、写入 raw JSON 日志、分析提炼、输出完整详细内容到 status.md。status.md 必须包含每个事件的全部字段（尤其是≥200字的「AI 开发者启发」）和最终的「今日开发者行动建议」板块，不得只输出简单总结。
+    prompt: 执行每日 VC Radar 扫描。按照 vc-radar skill 中描述的完整工作流执行：采集数据、写入 raw JSON 日志、分析提炼、输出完整详细内容到 status.md。status.md 必须包含每个事件的全部字段（尤其是「AI 开发者启发」）和最终的「今日开发者行动建议」板块，不得只输出简单总结。最后返回 status.md 的内容给用户看。
     project: venture-radar
     tags:
       - scheduled
