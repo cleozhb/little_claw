@@ -24,7 +24,9 @@ tools:
   - send_message_to_agent
   - post_to_project_channel
   - summarize_project_channel
-  - run_llm_eval
+  - create_team_schedule
+  - list_team_schedules
+  - update_team_schedule
 skills: []
 task_tags:
   - coordination
@@ -32,7 +34,6 @@ task_tags:
   - project
   - triage
   - summary
-  - judge
 cron_jobs:
   - cron: 0 21 * * *
     prompt: 回顾今日已完成的任务和项目频道动态，总结决策、阻塞项和后续跟进事项。

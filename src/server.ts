@@ -155,6 +155,7 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     tasks: taskQueue,
     messages: teamMessages,
     channels: projectChannels,
+    schedules: teamSchedules,
     llmProvider: options.llmProvider,
     toolRegistry: options.toolRegistry,
     skillManager: options.skillManager,

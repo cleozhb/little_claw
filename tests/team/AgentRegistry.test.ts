@@ -162,11 +162,11 @@ describe("AgentRegistry", () => {
     ]);
     expect(existsSync(join(baseDir, "assistant", "agent.yaml"))).toBe(true);
     expect(readFileSync(join(baseDir, "assistant", "AGENTS.md"), "utf8")).toContain(
-      "default chat entrypoint",
+      "默认的对话入口",
     );
     expect(existsSync(join(baseDir, "coordinator", "agent.yaml"))).toBe(true);
     expect(readFileSync(join(baseDir, "coordinator", "SOUL.md"), "utf8")).toContain(
-      "operationally clear",
+      "操作清晰",
     );
     expect(registry.get("coordinator")?.config.default_project).toBe("team-ops");
 
@@ -174,6 +174,61 @@ describe("AgentRegistry", () => {
     registry.installDefaultAgents(["coordinator"]);
 
     expect(readFileSync(join(baseDir, "coordinator", "SOUL.md"), "utf8")).toContain("Local edit");
+  });
+
+  test("syncs repository default agent config into existing local agent yaml", () => {
+    const baseDir = makeBaseDir();
+    writeAgent(
+      baseDir,
+      "coordinator",
+      `name: coordinator
+display_name: Local Coordinator
+role: Local coordinator role
+status: paused
+aliases:
+  - local-coord
+tools:
+  - shell
+  - local_tool
+task_tags:
+  - local
+cron_jobs:
+  - cron: "0 20 * * *"
+    prompt: "Local review prompt"
+    key: daily-team-review
+    enabled: false
+  - cron: "30 9 * * 1"
+    prompt: "Local weekly prompt"
+    key: local-weekly
+requires_approval:
+  - local risky thing
+max_concurrent_tasks: 1
+max_tokens_per_task: 50000
+timeout_minutes: 30
+`,
+      "# Soul\nLocal coordinator soul.\n",
+    );
+
+    const registry = new AgentRegistry(baseDir);
+    const [agent] = registry.installDefaultAgents(["coordinator"]);
+    const yaml = readFileSync(join(baseDir, "coordinator", "agent.yaml"), "utf8");
+
+    expect(agent.config.status).toBe("paused");
+    expect(agent.config.display_name).toBe("Local Coordinator");
+    expect(agent.config.tools).toContain("create_team_schedule");
+    expect(agent.config.tools).toContain("list_team_schedules");
+    expect(agent.config.tools).toContain("update_team_schedule");
+    expect(agent.config.tools).toContain("local_tool");
+    expect(agent.config.task_tags).toContain("coordination");
+    expect(agent.config.task_tags).toContain("local");
+    expect(agent.config.requires_approval).toContain("change agent permissions");
+    expect(agent.config.requires_approval).toContain("local risky thing");
+    expect(agent.config.cron_jobs.find((job) => job.key === "daily-team-review")?.enabled).toBe(false);
+    expect(agent.config.cron_jobs.find((job) => job.key === "daily-team-review")?.name).toBe("每日团队回顾");
+    expect(agent.config.cron_jobs.find((job) => job.key === "local-weekly")?.prompt).toBe("Local weekly prompt");
+    expect(readFileSync(join(baseDir, "coordinator", "SOUL.md"), "utf8")).toContain("Local coordinator soul");
+    expect(yaml).toContain("create_team_schedule");
+    expect(yaml).not.toContain("approval_rules:");
   });
 
   test("repository default agents use explicit stable schedule fields", () => {
@@ -185,7 +240,7 @@ describe("AgentRegistry", () => {
     const yaml = readFileSync(join(baseDir, "coordinator", "agent.yaml"), "utf8");
 
     expect(job?.key).toBe("daily-team-review");
-    expect(job?.name).toBe("Daily Team Review");
+    expect(job?.name).toBe("每日团队回顾");
     expect(job?.project).toBe("team-ops");
     expect(job?.tags).toContain("scheduled");
     expect(job?.max_retries).toBe(2);
@@ -216,7 +271,7 @@ describe("AgentRegistry", () => {
       "context_write",
     ]);
     expect(job?.key).toBe("nightly-tinker-spark");
-    expect(job?.name).toBe("Nightly Tinker Spark");
+    expect(job?.name).toBe("夜间 Tinker 灵感");
     expect(job?.project).toBeUndefined();
     expect(job?.tags).toContain("scheduled");
     expect(job?.tags).toContain("tinker");
@@ -234,8 +289,8 @@ describe("AgentRegistry", () => {
     expect(job?.prompt).toContain("task_context execution_date");
     expect(job?.prompt).toContain("tinker/runs/{execution_date}/");
     expect(job?.prompt).toContain("attempts.md");
-    expect(job?.prompt).toContain("retry_count and max_retries");
-    expect(job?.prompt).toContain("Do not create run directories using dates from source material");
+    expect(job?.prompt).toContain("retry_count 和 max_retries");
+    expect(job?.prompt).toContain("不要使用来源材料、记忆条目、项目历史或想法名称中的日期创建运行目录");
     expect(yaml).toContain("watchers: []");
   });
 

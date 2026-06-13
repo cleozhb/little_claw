@@ -18,6 +18,7 @@ import {
 import type { ProjectChannelStore } from "./ProjectChannelStore.ts";
 import type { Task, TaskQueue } from "./TaskQueue.ts";
 import type { TeamMessageStore, TeamMessage } from "./TeamMessageStore.ts";
+import type { TeamScheduleStore } from "./TeamScheduleStore.ts";
 
 const log = createLogger("CoordinatorLoop");
 const DEFAULT_COORDINATOR_CHANNEL_ID = "default";
@@ -27,6 +28,7 @@ export interface CoordinatorLoopOptions {
   tasks: TaskQueue;
   messages: TeamMessageStore;
   channels: ProjectChannelStore;
+  schedules?: TeamScheduleStore;
   llmProvider: LLMProvider;
   toolRegistry: ToolRegistry;
   skillManager?: SkillManager;
@@ -56,6 +58,7 @@ export class CoordinatorLoop {
   private tasks: TaskQueue;
   private messages: TeamMessageStore;
   private channels: ProjectChannelStore;
+  private schedules?: TeamScheduleStore;
   private llmProvider: LLMProvider;
   private toolRegistry: ToolRegistry;
   private skillManager?: SkillManager;
@@ -78,6 +81,7 @@ export class CoordinatorLoop {
     this.tasks = options.tasks;
     this.messages = options.messages;
     this.channels = options.channels;
+    this.schedules = options.schedules;
     this.llmProvider = options.llmProvider;
     this.toolRegistry = options.toolRegistry;
     this.skillManager = options.skillManager;
@@ -85,7 +89,7 @@ export class CoordinatorLoop {
     this.memoryManager = options.memoryManager;
     this.contextRetriever = options.contextRetriever;
     this.pollIntervalMs = options.pollIntervalMs ?? 2_000;
-    this.maxTurns = options.maxTurns ?? 10;
+    this.maxTurns = options.maxTurns ?? 30;
     this.projectSummaryThreshold = options.projectSummaryThreshold ?? 10;
     this.coordinatorName = options.coordinatorName ?? "coordinator";
 
@@ -94,6 +98,7 @@ export class CoordinatorLoop {
       messages: this.messages,
       channels: this.channels,
       agents: this.agents,
+      schedules: this.schedules,
       llmProvider: this.llmProvider,
       getTaskDefaults: () => this.currentTaskDefaults,
     });
@@ -548,6 +553,7 @@ ${agent.operatingInstructions.trim()}
 <coordinator_boundaries>
 You are a coordinator, not the human's boss and not the only team entrypoint.
 Use CoordinatorTools for task and message facts. Do not bypass TaskQueue or TeamMessageStore.
+For recurring reminders, periodic work, or a user asking to do something at a future time, use create_team_schedule/list_team_schedules/update_team_schedule when available. Do not ask a worker agent to create crontab, launchd, Reminders, or other OS-level schedulers.
 Prefer deterministic assignment and status checks when they are enough.
 When delegating executable work to agents, create_task, create_task_dag, or delegate_task must create durable TaskQueue records first.
 Use create_task_dag instead of repeated create_task calls for any multi-step workflow with dependencies, so the DAG is created atomically.

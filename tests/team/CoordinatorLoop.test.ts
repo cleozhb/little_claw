@@ -13,6 +13,7 @@ import { SkillLoader } from "../../src/skills/SkillLoader.ts";
 import { SkillManager } from "../../src/skills/SkillManager.ts";
 import { SkillMarkdownParser } from "../../src/skills/SkillMarkdownParser.ts";
 import { TaskQueue } from "../../src/team/TaskQueue.ts";
+import { TeamScheduleStore } from "../../src/team/TeamScheduleStore.ts";
 import { TeamMessageStore } from "../../src/team/TeamMessageStore.ts";
 import { ToolRegistry } from "../../src/tools/ToolRegistry.ts";
 import type { Message, StreamEvent } from "../../src/types/message.ts";
@@ -23,6 +24,7 @@ let db: Database;
 let tasks: TaskQueue;
 let messages: TeamMessageStore;
 let channels: ProjectChannelStore;
+let schedules: TeamScheduleStore;
 let agents: AgentRegistry;
 let toolRegistry: ToolRegistry;
 let agentDir: string;
@@ -54,6 +56,7 @@ beforeEach(() => {
   tasks = new TaskQueue(db);
   messages = new TeamMessageStore(db);
   channels = new ProjectChannelStore(db, messages);
+  schedules = new TeamScheduleStore(db);
   toolRegistry = new ToolRegistry();
   agentDir = mkdtempSync(join(tmpdir(), "little-claw-coordinator-loop-agents-"));
   agents = new AgentRegistry(agentDir);
@@ -231,6 +234,7 @@ describe("CoordinatorLoop", () => {
     expect(createdTask?.sourceMessageId).toBe(inbound.id);
     expect(messages.getMessage(inbound.id)?.status).toBe("injected");
     expect(JSON.stringify(llm.calls[0]?.messages ?? [])).toContain(inbound.content);
+    expect(llm.calls[0]?.tools.map((tool) => tool.name)).toContain("create_team_schedule");
     expect(
       channels
         .listMessages(channel.slug)
@@ -469,6 +473,7 @@ function coordinatorLoop(
     tasks,
     messages,
     channels,
+    schedules,
     llmProvider,
     toolRegistry,
     maxTurns: 4,

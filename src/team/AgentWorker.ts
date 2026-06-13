@@ -12,6 +12,7 @@ import type { SkillManager } from "../skills/SkillManager.ts";
 import type { ToolRegistry } from "../tools/ToolRegistry.ts";
 import type { ShellTool, Tool } from "../tools/types.ts";
 import type { AgentEvent, ToolUseBlock } from "../types/message.ts";
+import type { ApprovalRule } from "./ApprovalGate.ts";
 import type { RegisteredAgent } from "./AgentRegistry.ts";
 import type { Task } from "./TaskQueue.ts";
 import { TaskQueue } from "./TaskQueue.ts";
@@ -26,6 +27,13 @@ const log = createLogger("AgentWorker");
 type AgentEventAction = "approval_requested" | "stop" | "none";
 const RATE_LIMIT_RETRY_BASE_MS = 5 * 60 * 1000;
 const RATE_LIMIT_RETRY_MAX_MS = 30 * 60 * 1000;
+const TEAM_OS_SCHEDULER_APPROVAL_RULE: ApprovalRule = {
+  tool: "shell",
+  pattern:
+    "(^|[\\s;&|])(?:crontab|launchctl)(?:\\s|$)|(^|[\\s;&|])at\\s|osascript.*(?:display notification|Reminders|Calendar)|LaunchAgents",
+  message:
+    "团队任务不应直接创建或测试操作系统级定时/提醒；请改用内部 TeamScheduleStore。确需系统集成时需要人类审批。",
+};
 
 export type TaskProgressCallback = (taskId: string, agentName: string, delta: string) => void;
 
@@ -559,7 +567,7 @@ export class AgentWorker {
         name: agentName,
         systemPrompt: buildTeamAgentSystemPrompt(this.agent),
         allowedTools: this.agent.config.tools,
-        approvalRules: this.agent.config.approval_rules,
+        approvalRules: teamWorkerApprovalRules(this.agent.config.approval_rules),
         maxTurns: this.maxTurns,
         canSpawnSubAgent: false,
       }),
@@ -882,7 +890,7 @@ export class AgentWorker {
           REPORT_PROGRESS_TOOL,
           REQUEST_APPROVAL_TOOL,
         ]),
-        approvalRules: this.agent.config.approval_rules,
+        approvalRules: teamWorkerApprovalRules(this.agent.config.approval_rules),
         maxTurns: this.maxTurns,
         canSpawnSubAgent: false,
       }),
@@ -1004,6 +1012,10 @@ ${formatTeamMessages(teamMessages)}
 除非任务明确要求其他语言，所有用户可见的任务进度、任务结果、项目频道消息和 Agent 私信都必须使用中文。过程说明保持简洁，不要把英文计划句写入频道可见输出。
 </channel_output_rules>
 
+<team_scheduling_boundary>
+如果任务涉及每天、定期、未来某个时间提醒或周期性运行，优先依赖 Lovely Octopus 内部 TeamScheduleStore，由 coordinator 使用 create_team_schedule 创建。当前 worker 不应使用 shell、crontab、launchd、Reminders、Calendar 或其他操作系统级调度来实现提醒；如果内部调度工具不可用，请用中文说明需要 coordinator 创建内部定时任务，而不是自行绕过。
+</team_scheduling_boundary>
+
 ${promptBody}`;
 }
 
@@ -1054,6 +1066,10 @@ function ensureTeamTaskTools(toolRegistry: ToolRegistry, tasks: TaskQueue): void
     log.info(`注册团队任务工具：${REQUEST_APPROVAL_TOOL}`);
     toolRegistry.register(requestApprovalTool(tasks));
   }
+}
+
+function teamWorkerApprovalRules(agentRules: ApprovalRule[] | undefined): ApprovalRule[] {
+  return [TEAM_OS_SCHEDULER_APPROVAL_RULE, ...(agentRules ?? [])];
 }
 
 function reportProgressTool(tasks: TaskQueue): Tool {

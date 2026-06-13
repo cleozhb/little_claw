@@ -192,7 +192,7 @@ export class AgentRegistry {
     const config = normalizeConfig(params.config);
     this.writeFileIfMissing(
       join(agentDir, "agent.yaml"),
-      YAML.stringify(config),
+      stringifyAgentConfig(config),
     );
     this.writeFileIfMissing(join(agentDir, "SOUL.md"), params.soul ?? DEFAULT_SOUL);
     this.writeFileIfMissing(
@@ -207,7 +207,11 @@ export class AgentRegistry {
 
   /**
    * Installs repository-backed default agent definitions into the local agent
-   * directory. Existing files are never overwritten, so user edits remain local.
+   * directory. Existing SOUL.md and AGENTS.md files are never overwritten, so
+   * hand-edited persona/process text remains local. Existing agent.yaml files
+   * are structurally merged with repository defaults to keep default tool and
+   * routing metadata in sync while preserving local extras and pause/disable
+   * state.
    */
   installDefaultAgents(names?: string[]): RegisteredAgent[] {
     mkdirSync(this.baseDir, { recursive: true });
@@ -221,6 +225,8 @@ export class AgentRegistry {
         throw new Error(`Default agent seed not found: ${name}`);
       }
 
+      const seedConfigPath = join(seedDir, "agent.yaml");
+      const seedConfigYaml = readFileSync(seedConfigPath, "utf8");
       const seed = this.loadAgentFromDir(seedDir, { guardInsideBase: false });
       if (seed.config.name !== name) {
         throw new Error(`Default agent seed "${name}" has mismatched config name "${seed.config.name}".`);
@@ -228,7 +234,7 @@ export class AgentRegistry {
 
       const agentDir = this.resolveAgentDir(name);
       mkdirSync(agentDir, { recursive: true });
-      this.writeFileIfMissing(join(agentDir, "agent.yaml"), readFileSync(join(seedDir, "agent.yaml"), "utf8"));
+      this.writeDefaultAgentConfig(join(agentDir, "agent.yaml"), seed.config, seedConfigYaml);
       this.writeFileIfMissing(join(agentDir, "SOUL.md"), seed.soul);
       this.writeFileIfMissing(join(agentDir, "AGENTS.md"), seed.operatingInstructions);
 
@@ -273,7 +279,7 @@ export class AgentRegistry {
         ...updates.config,
         name,
       });
-      writeFileSync(join(agentDir, "agent.yaml"), YAML.stringify(nextConfig), "utf8");
+      writeFileSync(join(agentDir, "agent.yaml"), stringifyAgentConfig(nextConfig), "utf8");
     }
 
     if (updates.soul !== undefined) {
@@ -400,6 +406,24 @@ export class AgentRegistry {
     writeFileSync(path, content, "utf8");
   }
 
+  private writeDefaultAgentConfig(path: string, seedConfig: AgentYamlConfig, seedYaml: string): void {
+    if (!existsSync(path)) {
+      writeFileSync(path, seedYaml, "utf8");
+      return;
+    }
+
+    const current = normalizeConfig(YAML.parse(readFileSync(path, "utf8")) as unknown);
+    if (current.name !== seedConfig.name) {
+      throw new Error(`agent.yaml name "${current.name}" must match default agent "${seedConfig.name}".`);
+    }
+
+    const merged = mergeDefaultAgentConfig(current, seedConfig);
+    const nextYaml = stringifyAgentConfig(merged);
+    if (nextYaml !== readFileSync(path, "utf8")) {
+      writeFileSync(path, nextYaml, "utf8");
+    }
+  }
+
   private installSeedData(seedDir: string, config: AgentYamlConfig): void {
     const home = homedir();
 
@@ -441,6 +465,178 @@ export class AgentRegistry {
   }
 }
 
+function mergeDefaultAgentConfig(current: AgentYamlConfig, seed: AgentYamlConfig): AgentYamlConfig {
+  return {
+    ...current,
+    default_project: current.default_project ?? seed.default_project,
+    aliases: mergeStringList(seed.aliases, current.aliases),
+    tools: mergeStringList(seed.tools, current.tools),
+    skills: mergeStringList(seed.skills, current.skills),
+    task_tags: mergeStringList(seed.task_tags, current.task_tags),
+    cron_jobs: mergeKeyedItems(seed.cron_jobs, current.cron_jobs),
+    watchers: mergeKeyedItems(seed.watchers ?? [], current.watchers ?? []),
+    approval_rules: mergeApprovalRules(seed.approval_rules, current.approval_rules),
+    requires_approval: mergeStringList(seed.requires_approval, current.requires_approval),
+    max_turns: current.max_turns ?? seed.max_turns,
+    context_mode: current.context_mode ?? seed.context_mode,
+  };
+}
+
+function mergeStringList(seedItems: string[], currentItems: string[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const item of [...seedItems, ...currentItems]) {
+    if (seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
+}
+
+function mergeKeyedItems<T extends { key?: string }>(seedItems: T[], currentItems: T[]): T[] {
+  const result: T[] = [];
+  const consumedCurrentIndexes = new Set<number>();
+
+  for (const seedItem of seedItems) {
+    const currentIndex = seedItem.key
+      ? currentItems.findIndex((item) => item.key === seedItem.key)
+      : -1;
+    if (currentIndex >= 0) {
+      consumedCurrentIndexes.add(currentIndex);
+      result.push(mergeDefinedFields(seedItem, currentItems[currentIndex]!));
+    } else {
+      result.push(seedItem);
+    }
+  }
+
+  currentItems.forEach((item, index) => {
+    if (!consumedCurrentIndexes.has(index)) {
+      result.push(item);
+    }
+  });
+
+  return result;
+}
+
+function mergeDefinedFields<T extends object>(base: T, overlay: T): T {
+  const result: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(overlay as Record<string, unknown>)) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result as T;
+}
+
+function mergeApprovalRules(seedRules: ApprovalRule[], currentRules: ApprovalRule[]): ApprovalRule[] {
+  const result: ApprovalRule[] = [];
+  const seen = new Set<string>();
+  for (const rule of [...seedRules, ...currentRules]) {
+    const key = approvalRuleKey(rule);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(rule);
+  }
+  return result;
+}
+
+function approvalRuleKey(rule: ApprovalRule): string {
+  return JSON.stringify({
+    tool: rule.tool,
+    field: rule.field,
+    pattern: rule.pattern,
+    message: rule.message,
+    action: rule.action,
+  });
+}
+
+function stringifyAgentConfig(config: AgentYamlConfig): string {
+  return YAML.stringify(agentConfigToYamlObject(config));
+}
+
+function agentConfigToYamlObject(config: AgentYamlConfig): Record<string, unknown> {
+  const raw: Record<string, unknown> = {
+    name: config.name,
+    display_name: config.display_name,
+  };
+
+  setIfDefined(raw, "emoji", config.emoji);
+  setIfDefined(raw, "color", config.color);
+  raw.role = config.role;
+  raw.status = config.status;
+  raw.aliases = config.aliases;
+  raw.direct_message = config.direct_message;
+  setIfDefined(raw, "default_project", config.default_project);
+  setIfDefined(raw, "context_mode", config.context_mode);
+  raw.tools = config.tools;
+  raw.skills = config.skills;
+  raw.task_tags = config.task_tags;
+  raw.cron_jobs = config.cron_jobs.map(cronJobToYamlObject);
+  raw.watchers = (config.watchers ?? []).map(watcherToYamlObject);
+  raw.requires_approval = [
+    ...config.approval_rules.map(approvalRuleToYamlObject),
+    ...config.requires_approval,
+  ];
+  raw.max_concurrent_tasks = config.max_concurrent_tasks;
+  raw.max_tokens_per_task = config.max_tokens_per_task;
+  raw.timeout_minutes = config.timeout_minutes;
+  setIfDefined(raw, "max_turns", config.max_turns);
+
+  return raw;
+}
+
+function cronJobToYamlObject(job: AgentCronJob): Record<string, unknown> {
+  const raw: Record<string, unknown> = {
+    cron: job.cron,
+    prompt: job.prompt,
+  };
+  setIfDefined(raw, "key", job.key);
+  setIfDefined(raw, "name", job.name);
+  setIfDefined(raw, "project", job.project);
+  setIfDefined(raw, "channel_id", job.channel_id);
+  setIfDefined(raw, "tags", job.tags);
+  setIfDefined(raw, "priority", job.priority);
+  setIfDefined(raw, "max_retries", job.max_retries);
+  setIfDefined(raw, "enabled", job.enabled);
+  return raw;
+}
+
+function watcherToYamlObject(watcher: AgentWatcher): Record<string, unknown> {
+  const raw: Record<string, unknown> = {
+    check_command: watcher.check_command,
+    prompt: watcher.prompt,
+  };
+  setIfDefined(raw, "key", watcher.key);
+  setIfDefined(raw, "name", watcher.name);
+  setIfDefined(raw, "condition", watcher.condition);
+  setIfDefined(raw, "interval_minutes", watcher.interval_minutes);
+  setIfDefined(raw, "cooldown_minutes", watcher.cooldown_minutes);
+  setIfDefined(raw, "project", watcher.project);
+  setIfDefined(raw, "channel_id", watcher.channel_id);
+  setIfDefined(raw, "tags", watcher.tags);
+  setIfDefined(raw, "priority", watcher.priority);
+  setIfDefined(raw, "max_retries", watcher.max_retries);
+  setIfDefined(raw, "enabled", watcher.enabled);
+  return raw;
+}
+
+function approvalRuleToYamlObject(rule: ApprovalRule): Record<string, unknown> {
+  const raw: Record<string, unknown> = {
+    tool: rule.tool,
+  };
+  setIfDefined(raw, "field", rule.field);
+  setIfDefined(raw, "pattern", rule.pattern);
+  setIfDefined(raw, "message", rule.message);
+  setIfDefined(raw, "action", rule.action);
+  return raw;
+}
+
+function setIfDefined(record: Record<string, unknown>, key: string, value: unknown): void {
+  if (value !== undefined) {
+    record[key] = value;
+  }
+}
+
 /**
  * Normalizes a partial YAML object into the full runtime config shape.
  * Defaults live here so all create/load/update paths produce consistent
@@ -463,6 +659,7 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
   const timeoutMinutes = readPositiveInteger(raw.timeout_minutes, 30, "timeout_minutes");
   const maxTurns = readOptionalInteger(raw.max_turns, "max_turns", { min: 1 });
   const contextMode = readOptionalContextMode(raw.context_mode);
+  const approvalConfig = readApprovalConfig(raw.requires_approval, raw.approval_rules);
 
   return {
     name,
@@ -479,7 +676,7 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
     task_tags: readStringArray(raw.task_tags, "task_tags"),
     cron_jobs: readCronJobs(raw.cron_jobs),
     watchers: readWatchers(raw.watchers),
-    ...readApprovalConfig(raw.requires_approval),
+    ...approvalConfig,
     max_concurrent_tasks: maxConcurrentTasks,
     max_tokens_per_task: maxTokensPerTask,
     timeout_minutes: timeoutMinutes,
@@ -574,18 +771,33 @@ function readOptionalContextMode(value: unknown): ContextMode | undefined {
 
 const SHORTHAND_RE = /^([a-z_]+)\((.+)\)$/;
 
-function readApprovalConfig(value: unknown): { approval_rules: ApprovalRule[]; requires_approval: string[] } {
-  if (!value || !Array.isArray(value)) return { approval_rules: [], requires_approval: [] };
-
+function readApprovalConfig(
+  requiresApprovalValue: unknown,
+  legacyApprovalRulesValue?: unknown,
+): { approval_rules: ApprovalRule[]; requires_approval: string[] } {
   const rules: ApprovalRule[] = [];
   const soft: string[] = [];
+
+  readApprovalItems(requiresApprovalValue, rules, soft, true);
+  readApprovalItems(legacyApprovalRulesValue, rules, soft, false);
+
+  return { approval_rules: rules, requires_approval: soft };
+}
+
+function readApprovalItems(
+  value: unknown,
+  rules: ApprovalRule[],
+  soft: string[],
+  includeSoftStrings: boolean,
+): void {
+  if (!value || !Array.isArray(value)) return;
 
   for (const item of value) {
     if (typeof item === "string") {
       const match = item.match(SHORTHAND_RE);
       if (match) {
         rules.push({ tool: match[1]!, pattern: globToRegex(match[2]!) });
-      } else {
+      } else if (includeSoftStrings) {
         soft.push(item);
       }
     } else if (isRecord(item) && typeof item.tool === "string") {
@@ -598,7 +810,6 @@ function readApprovalConfig(value: unknown): { approval_rules: ApprovalRule[]; r
       });
     }
   }
-  return { approval_rules: rules, requires_approval: soft };
 }
 
 function globToRegex(glob: string): string {

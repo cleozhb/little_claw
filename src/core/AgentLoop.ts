@@ -36,9 +36,15 @@ const DEFAULT_STREAM_CHUNK_TIMEOUT_MS = 300_000;
 const DEFAULT_BACKGROUND_STREAM_CHUNK_TIMEOUT_MS = 900_000;
 const SKILL_RETRIEVAL_TOP_K = 5;
 
-const SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron tool. When a user asks you to do something periodically or at a specific time, create a cron job. For example, if asked "remind me every morning at 8am about my schedule", create a cron job with expression "0 8 * * *".
+const PERSONAL_SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron tool. When a user asks you to do something periodically or at a specific time, create a cron job. For example, if asked "remind me every morning at 8am about my schedule", create a cron job with expression "0 8 * * *".
 
 You can also create event watchers using the manage_watcher tool. When a user asks you to monitor something and notify them when a condition is met, create a watcher. For example, if asked "let me know when the API is back up", create a watcher with check_command "curl -sf https://api.example.com/health" that checks periodically.`;
+
+const TEAM_SCHEDULER_GUIDANCE = `You can create internal Lovely Octopus team schedules using the create_team_schedule tool. When a project/channel user asks for a recurring reminder, periodic work, or future-time task, create a TeamScheduleStore schedule instead of creating a normal long-running task.
+
+Do not use shell, crontab, launchd, Reminders, Calendar, or OS-level schedulers for team/project scheduling unless the user explicitly asks for an OS integration and approves the risk.`;
+
+const NO_SCHEDULER_TOOL_GUIDANCE = `Scheduled-task tools are not available in this run. If asked to create recurring reminders, periodic work, or future-time tasks, do not implement them with shell, crontab, launchd, Reminders, Calendar, or other OS-level schedulers. Explain that the coordinator must create an internal team schedule.`;
 
 const MEMORY_GUIDANCE = `You have a persistent memory system with two layers:
 
@@ -936,7 +942,11 @@ export class AgentLoop {
     if (configSystemPrompt && basePrompt.trim() !== configSystemPrompt) {
       coreSystemParts.push(this.config.systemPrompt);
     }
-    coreSystemParts.push(SCHEDULER_GUIDANCE, memoryGuidance);
+    const schedulerGuidance = this.getSchedulerGuidance();
+    if (schedulerGuidance) {
+      coreSystemParts.push(schedulerGuidance);
+    }
+    coreSystemParts.push(memoryGuidance);
     coreSystemParts.push(`Current time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`);
     const coreSystemPrompt = coreSystemParts.join("\n\n");
 
@@ -1092,6 +1102,19 @@ export class AgentLoop {
       return PROJECT_MEMORY_GUIDANCE;
     }
     return SHORT_MEMORY_GUIDANCE;
+  }
+
+  private getSchedulerGuidance(): string | null {
+    const toolNames = new Set(this.getFilteredToolDefinitions().map((tool) => tool.name));
+    const hasPersonalScheduler = toolNames.has("manage_cron") || toolNames.has("manage_watcher");
+    const hasTeamScheduler = toolNames.has("create_team_schedule");
+
+    if (hasTeamScheduler) return TEAM_SCHEDULER_GUIDANCE;
+    if (hasPersonalScheduler) return PERSONAL_SCHEDULER_GUIDANCE;
+    if (this.runMode === "team_worker" || this.runMode === "agent_dm") {
+      return NO_SCHEDULER_TOOL_GUIDANCE;
+    }
+    return null;
   }
 
   /**

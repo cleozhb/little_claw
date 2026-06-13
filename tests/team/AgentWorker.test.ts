@@ -147,6 +147,42 @@ describe("AgentWorker", () => {
     expect(messages.getMessage(dmMessage.id)?.status).toBe("injected");
   });
 
+  test("pauses before team workers run OS-level scheduler shell commands", async () => {
+    toolRegistry.register(fakeTool("shell"));
+    const task = tasks.createTask({
+      title: "Set daily reminder",
+      description: "提醒我每天 14 点滴眼药水。",
+      createdBy: "coordinator",
+      assignedTo: "coder",
+      project: "health-management",
+    });
+    const llm = new ScriptedLLM([
+      {
+        type: "tool",
+        name: "shell",
+        input: {
+          command: "launchctl load /Users/example/com.health.eyedrops.plist",
+        },
+      },
+    ]);
+    const worker = new AgentWorker({
+      agent: agent("coder", ["shell"]),
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 2,
+    });
+
+    await worker.tick();
+
+    const latest = tasks.getTask(task.id);
+    expect(latest?.status).toBe("awaiting_approval");
+    expect(latest?.approvalPrompt).toContain("TeamScheduleStore");
+    expect((latest?.approvalData as { tool?: string } | undefined)?.tool).toBe("shell");
+    expect(messages.getPendingForAgent("coder").some((message) => message.senderId === "approval-gate")).toBe(true);
+  });
+
   test("archives completed project task results to project status.md", async () => {
     const baseDir = mkdtempSync(join(tmpdir(), "little-claw-agent-worker-context-"));
     const contextHub = new ContextHub(baseDir);
