@@ -74,7 +74,7 @@ export function MemoryView() {
   }, [kind, loadList]);
 
   useEffect(() => {
-    if (!selectedPath) return;
+    if (!selectedPath || !files.some((f) => f.path === selectedPath)) return;
     const controller = new AbortController();
     setIsLoadingFile(true);
     setError(null);
@@ -95,7 +95,7 @@ export function MemoryView() {
       .finally(() => setIsLoadingFile(false));
 
     return () => controller.abort();
-  }, [kind, selectedPath]);
+  }, [kind, selectedPath, files]);
 
   const parsedLines = useMemo(() => {
     if (kind !== "daily" || !loadedFile?.content) return [];
@@ -131,7 +131,13 @@ export function MemoryView() {
                 <button
                   key={tab.kind}
                   type="button"
-                  onClick={() => setKind(tab.kind)}
+                  onClick={() => {
+                    if (kind === tab.kind) return;
+                    setLoadedFile(null);
+                    setSelectedPath(null);
+                    setFiles([]);
+                    setKind(tab.kind);
+                  }}
                   className={cn(
                     "flex h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors",
                     kind === tab.kind
