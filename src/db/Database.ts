@@ -364,7 +364,7 @@ export class Database {
     return (this.stmtGetSession.get(id) as Session) ?? null;
   }
 
-  listSessions(limit: number = 20): Session[] {
+  listSessions(limit: number = 100): Session[] {
     return this.stmtListSessions.all(limit) as Session[];
   }
 

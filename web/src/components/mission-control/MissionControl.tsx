@@ -174,15 +174,16 @@ const CHANNEL_COLORS = [
   { dot: "bg-blue-500", border: "border-l-blue-500", text: "text-blue-700", bg: "bg-blue-50" },
   { dot: "bg-emerald-500", border: "border-l-emerald-500", text: "text-emerald-700", bg: "bg-emerald-50" },
   { dot: "bg-violet-500", border: "border-l-violet-500", text: "text-violet-700", bg: "bg-violet-50" },
-  { dot: "bg-amber-500", border: "border-l-amber-500", text: "text-amber-700", bg: "bg-amber-50" },
-  { dot: "bg-rose-500", border: "border-l-rose-500", text: "text-rose-700", bg: "bg-rose-50" },
+  // { dot: "bg-amber-500", border: "border-l-amber-500", text: "text-amber-700", bg: "bg-amber-50" },
   { dot: "bg-cyan-500", border: "border-l-cyan-500", text: "text-cyan-700", bg: "bg-cyan-50" },
   { dot: "bg-indigo-500", border: "border-l-indigo-500", text: "text-indigo-700", bg: "bg-indigo-50" },
-  { dot: "bg-orange-500", border: "border-l-orange-500", text: "text-orange-700", bg: "bg-orange-50" },
+  // { dot: "bg-orange-500", border: "border-l-orange-500", text: "text-orange-700", bg: "bg-orange-50" },
+  { dot: "bg-teal-500", border: "border-l-teal-500", text: "text-teal-700", bg: "bg-teal-50" },
 ];
 
 const CHANNEL_COLOR_OVERRIDES: Record<string, (typeof CHANNEL_COLORS)[number]> = {
   "venture-radar": { dot: "bg-teal-500", border: "border-l-teal-500", text: "text-teal-700", bg: "bg-teal-50" },
+  "health-management": { dot: "bg-emerald-500", border: "border-l-emerald-500", text: "text-emerald-700", bg: "bg-emerald-50" },
 };
 
 function channelColor(key: string) {
@@ -346,6 +347,13 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           ? ({ type: "approve_task", taskId, response: "Approved from Mission Control." } as const)
           : ({ type: "reject_task", taskId, response: "Rejected from Mission Control." } as const);
       send(message, decision === "approve" ? "已发送 approve" : "已发送 reject");
+      setTasks((current) =>
+        current.map((t) =>
+          t.id === taskId
+            ? { ...t, status: decision === "approve" ? "approved" : "rejected" }
+            : t,
+        ),
+      );
     },
     [send],
   );
@@ -532,7 +540,16 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           );
           break;
         case "tasks_list":
-          setTasks(message.tasks);
+          setTasks((current) => {
+            const currentMap = new Map(current.map((t) => [t.id, t]));
+            return message.tasks.map((serverTask: any) => {
+              const local = currentMap.get(serverTask.id);
+              if (local && local.status !== "awaiting_approval" && serverTask.status === "awaiting_approval") {
+                return local;
+              }
+              return serverTask;
+            });
+          });
           break;
         case "task_progress":
           setTaskStreaming((prev) => {
