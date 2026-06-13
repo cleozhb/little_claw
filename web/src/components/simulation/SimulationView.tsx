@@ -66,7 +66,7 @@ export function SimulationView({ onBackToChat }: SimulationViewProps) {
           onClick={onBackToChat}
         >
           <MessageCircle className="h-3.5 w-3.5" />
-          Chat
+          返回聊天
         </Button>
       </div>
 

@@ -150,7 +150,7 @@ export function DiscussionPanel({
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="text-sm">{entry.emoji}</span>
                     <span className="text-[11px] font-semibold text-blue-600 dark:text-blue-400">
-                      Moderator
+                      主持人
                     </span>
                     <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4 bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">
                       注入
@@ -172,7 +172,7 @@ export function DiscussionPanel({
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="text-sm">{entry.emoji}</span>
                     <span className="text-[11px] font-semibold text-blue-600 dark:text-blue-400">
-                      You
+                      你
                     </span>
                     <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4 bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">
                       发言

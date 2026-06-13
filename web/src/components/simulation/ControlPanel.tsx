@@ -55,6 +55,13 @@ const statusIndicators: Record<PersonaState["status"], { color: string; label: s
   done: { color: "bg-blue-500", label: "完成" },
 };
 
+const modeLabels: Record<string, string> = {
+  roundtable: "圆桌讨论",
+  parallel: "并行响应",
+  parallel_then_roundtable: "先并行后圆桌",
+  free: "自由模式",
+};
+
 function PersonaItem({
   persona,
   selected,
@@ -252,7 +259,7 @@ export function ControlPanel({
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="shrink-0 border-b border-border/50 px-3 py-2.5">
-        <h2 className="text-xs font-semibold tracking-tight">Control Panel</h2>
+        <h2 className="text-xs font-semibold tracking-tight">控制面板</h2>
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
@@ -262,7 +269,7 @@ export function ControlPanel({
             {/* Scenario selector */}            <div>
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Scenario
+                  场景
                 </label>
               <div className="flex items-center gap-0.5">
                 {selectedScenario && (
@@ -289,7 +296,7 @@ export function ControlPanel({
                   onClick={openNewScenario}
                 >
                   <Plus className="h-3 w-3 mr-0.5" />
-                  New
+                  新建
                 </Button>
               </div>
               </div>
@@ -314,7 +321,7 @@ export function ControlPanel({
             <div>
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Personas ({selectedPersonas.size} 已选)
+                  人物（已选 {selectedPersonas.size}）
                 </label>
                 <Button
                   variant="ghost"
@@ -323,7 +330,7 @@ export function ControlPanel({
                   onClick={openNewPersona}
                 >
                   <Plus className="h-3 w-3 mr-0.5" />
-                  New
+                  新建
                 </Button>
               </div>
               <div className="mt-1.5 space-y-1">
@@ -396,7 +403,7 @@ export function ControlPanel({
                           <ChevronRight className="h-3 w-3" />
                         )}
                         <Plus className="h-3 w-3" />
-                        Add more ({extraPersonas.length})
+                        添加更多（{extraPersonas.length}）
                       </button>
                       {showAllPersonas && extraPersonas.map((p) => (
                         <PersonaItem
@@ -480,14 +487,14 @@ export function ControlPanel({
                   size="sm"
                   className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
                   onClick={openNewScenario}
-                  title="新建 Scenario"
+                  title="新建场景"
                 >
                   <Plus className="h-3 w-3" />
                 </Button>
               </div>
               <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                 <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4">
-                  {scenarioMode || "roundtable"}
+                  {modeLabels[scenarioMode] ?? "圆桌讨论"}
                 </Badge>
                 <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4">
                   第 {currentRound}{totalRounds ? ` / ${totalRounds}` : ""} 轮
@@ -516,7 +523,7 @@ export function ControlPanel({
               <div className="flex items-center gap-1.5 mb-2">
                 <Users className="h-3 w-3 text-muted-foreground" />
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex-1">
-                  Agents
+                  参与人物
                 </label>
                 <Button
                   variant="ghost"
@@ -525,7 +532,7 @@ export function ControlPanel({
                   onClick={openNewPersona}
                 >
                   <Plus className="h-3 w-3 mr-0.5" />
-                  Add
+                  添加
                 </Button>
               </div>
               <div className="space-y-1">
@@ -585,7 +592,7 @@ export function ControlPanel({
             {isWaiting && (
               <div>
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Your Turn
+                  轮到你
                 </label>
                 <div className="mt-1.5 space-y-2">
                   <Textarea
@@ -601,7 +608,7 @@ export function ControlPanel({
                     disabled={!speakText.trim()}
                   >
                     <Send className="h-3 w-3" />
-                    Speak & continue
+                    发言并继续
                   </Button>
                   <Button
                     size="sm"
@@ -610,7 +617,7 @@ export function ControlPanel({
                     onClick={onNextRound}
                   >
                     <ArrowRight className="h-3 w-3" />
-                    Next round (silent)
+                    直接进入下一轮
                   </Button>
                   <Button
                     size="sm"
@@ -619,7 +626,7 @@ export function ControlPanel({
                     onClick={onEndDiscussion}
                   >
                     <Square className="h-3 w-3" />
-                    End discussion
+                    结束讨论
                   </Button>
                 </div>
               </div>
@@ -631,7 +638,7 @@ export function ControlPanel({
                 {/* Moderator inject */}
                 <div>
                   <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                    Moderator 注入
+                    主持人注入
                   </label>
                   <div className="mt-1.5 space-y-2">
                     <Textarea
@@ -649,7 +656,7 @@ export function ControlPanel({
                         disabled={!injectText.trim() || (!isRunning && !isPaused)}
                       >
                         <Send className="h-3 w-3" />
-                        Inject
+                        注入
                       </Button>
                       {isRunning ? (
                         <Button
@@ -659,7 +666,7 @@ export function ControlPanel({
                           onClick={onPause}
                         >
                           <Pause className="h-3 w-3" />
-                          Pause
+                          暂停
                         </Button>
                       ) : isPaused ? (
                         <Button
@@ -669,7 +676,7 @@ export function ControlPanel({
                           onClick={onResume}
                         >
                           <Play className="h-3 w-3" />
-                          Resume
+                          继续
                         </Button>
                       ) : null}
                     </div>
@@ -681,7 +688,7 @@ export function ControlPanel({
                 {/* Quick actions */}
                 <div>
                   <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                    Quick Actions
+                    快捷操作
                   </label>
                   <div className="mt-1.5 grid grid-cols-2 gap-1.5">
                     <Button
@@ -692,7 +699,7 @@ export function ControlPanel({
                       disabled={!isRunning && !isPaused && !isWaiting}
                     >
                       <MessageCircle className="h-3 w-3" />
-                      Cross-debate
+                      交叉辩论
                     </Button>
                     <Button
                       variant="outline"
@@ -702,7 +709,7 @@ export function ControlPanel({
                       disabled={!isRunning && !isPaused && !isWaiting}
                     >
                       <Handshake className="h-3 w-3" />
-                      Consensus
+                      寻找共识
                     </Button>
                     <Button
                       variant="outline"
@@ -712,7 +719,7 @@ export function ControlPanel({
                       disabled={!isRunning && !isPaused && !isWaiting}
                     >
                       <FileText className="h-3 w-3" />
-                      Summarize
+                      总结
                     </Button>
                   </div>
                   <Button
@@ -723,7 +730,7 @@ export function ControlPanel({
                     disabled={!isRunning && !isPaused && !isWaiting}
                   >
                     <Square className="h-3 w-3" />
-                    Stop (force)
+                    强制停止
                   </Button>
                 </div>
               </>

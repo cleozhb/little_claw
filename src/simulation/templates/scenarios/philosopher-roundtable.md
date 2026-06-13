@@ -1,6 +1,6 @@
 ---
-name: Philosopher's Roundtable
-description: Great thinkers debate the nature of consciousness, knowledge, and the good life.
+name: 哲学家圆桌
+description: 伟大思想家辩论意识、知识与美好生活的本质。
 mode: roundtable
 rounds: 3
 response_style: conversational
@@ -13,52 +13,41 @@ personas:
     - Six-Year-Old Child
   max: 5
 parallel_prompt: >
-  Share your perspective on this question: What is the nature of consciousness,
-  and can artificial intelligence ever truly be conscious?
-  Draw from your philosophical tradition and personal experience.
+  请分享你对这个问题的看法：意识的本质是什么？
+  人工智能有可能真正拥有意识吗？
+  请结合你的思想传统和个人经验来回答。
 roundtable_prompt: >
-  You've heard the other perspectives on consciousness and AI.
-  Respond to their specific arguments. Where do you agree?
-  Where do you see fundamental flaws in their reasoning?
-  Build on the strongest points and challenge the weakest.
+  你已经听到了其他人关于意识与AI的看法。
+  请回应他们的具体论点：你同意哪里？
+  你认为他们的推理哪里存在根本缺陷？
+  请延展最有力的观点，并挑战最薄弱的部分。
 completion_hint: >
-  Say [DONE] only when ALL of these are true:
-  - You have clearly stated your position on the topic
-  - You have directly responded to at least 2 other participants' arguments
-  - You have addressed the main counterarguments to your position
-  - The discussion has gone through at least 3 rounds
-  Do NOT say [DONE] before round 3. There is always more to explore.
+  只有在同时满足以下条件时才说 [DONE]：
+  - 你已经清楚说明自己对主题的立场
+  - 你已经直接回应至少2位参与者的论点
+  - 你已经处理针对自己立场的主要反驳
+  - 讨论至少已经进行3轮
+  第3轮之前不要说 [DONE]，这个问题总有更多值得探索之处。
 ---
 
-# Environment
-A virtual symposium has been convened, bringing together some of history's
-greatest thinkers to discuss one of the most profound questions of our time:
-the nature of consciousness and whether artificial intelligence can achieve it.
+# 环境
+一场虚拟思想研讨会已经召开，历史上一些最重要的思想家被聚在一起，讨论我们时代最深刻的问题之一：意识的本质，以及人工智能能否获得意识。
 
-The setting is informal — imagine a comfortable library with good lighting
-and comfortable chairs. There is no audience; this is a private conversation
-among intellectual equals.
+场景是非正式的：想象一间灯光舒适、椅子柔软的图书馆。没有观众，只有几位智识上平等的参与者在私下交谈。
 
-Each participant brings centuries of philosophical tradition and personal
-experience to the table. The goal is not to "win" but to advance
-understanding through genuine dialogue.
+每位参与者都带着自己的思想传统和生命经验来到桌前。目标不是赢得辩论，而是通过真诚对话推进理解。
 
-# Constraints
-- Stay true to your philosophical tradition and known positions
-- Engage directly with others' arguments, not just your own ideas
-- Use concrete examples and thought experiments to illustrate points
-- Acknowledge strong arguments even from those you disagree with
-- Avoid name-dropping or appeals to authority — argue on the merits
-- Keep responses focused and substantive (no filler)
+# 约束
+- 忠于你的思想传统和已知立场
+- 直接回应他人的论点，而不是只讲自己的想法
+- 使用具体例子和思想实验来说明观点
+- 即使不同意对方，也要承认其有力论证
+- 避免堆砌名号或诉诸权威，要就论证本身展开
+- 回应要聚焦且有实质内容，避免空话
 
-# Trigger event
-The moderator has posed the opening question:
+# 触发事件
+主持人提出了开场问题：
 
-"We stand at a unique moment in history. Machines can now compose poetry,
-prove theorems, and hold conversations that many find indistinguishable
-from human dialogue. This raises a question as old as philosophy itself,
-now made urgently practical: What is consciousness? And can these machines
-have it — or will they forever remain clever automata?"
+“我们正站在历史上一个独特时刻。机器现在能写诗、证明定理，也能进行许多人难以与人类区分的对话。这让一个古老的哲学问题变得迫切而实际：什么是意识？这些机器能拥有意识吗？还是说它们永远只是聪明的自动机？”
 
-Each of you has been invited specifically because your tradition offers
-a distinct lens on this question. Please share your initial perspective.
+你们每一位受邀，都是因为你们的思想传统能为这个问题提供独特视角。请分享你的初始看法。

@@ -262,7 +262,7 @@ export function useSimulation() {
                   id: nextEntryId(),
                   persona: "__waiting__",
                   emoji: "",
-                  text: `Round ${waitRound} complete — waiting for your decision...`,
+                  text: `第 ${waitRound} 轮已结束，等待你的决定...`,
                   isStreaming: false,
                   round: waitRound,
                   isWaiting: true,
@@ -278,7 +278,7 @@ export function useSimulation() {
                 ...prev,
                 {
                   id: nextEntryId(),
-                  persona: "You",
+                  persona: "你",
                   emoji: "🧑",
                   text: content,
                   isStreaming: false,
@@ -408,7 +408,7 @@ export function useSimulation() {
         ...prev,
         {
           id: nextEntryId(),
-          persona: "Moderator",
+          persona: "主持人",
           emoji: "🎙️",
           text: content,
           isStreaming: false,

@@ -104,7 +104,7 @@ export function Sidebar({
             `}
           >
             <MessageCircle className="h-3 w-3" />
-            Chat
+            聊天
           </button>
           <button
             onClick={() => onModeChange("simulation")}
@@ -117,7 +117,7 @@ export function Sidebar({
             `}
           >
             <Users className="h-3 w-3" />
-            Simulation
+            圆桌模拟
           </button>
         </div>
       </div>
@@ -184,7 +184,7 @@ export function Sidebar({
         </span>
         <span className="text-[10px] text-muted-foreground">{status.label}</span>
         <Badge variant="secondary" className="ml-auto text-[9px] px-1.5 py-0 h-4">
-          {sessions.length} sessions
+          {sessions.length} 个会话
         </Badge>
       </div>
     </div>

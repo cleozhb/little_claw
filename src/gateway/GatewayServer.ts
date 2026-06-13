@@ -1958,20 +1958,22 @@ export class GatewayServer {
     const llm = this.simulationManager.getLLMProvider();
 
     const systemPrompt = target === "persona"
-      ? `You are a creative writer that generates persona definition files in Markdown with YAML frontmatter.
-Given a user description, generate a complete persona file with:
-- YAML frontmatter: name, role, emoji (single emoji), tags (array of strings)
-- Markdown body sections: # Identity, # Values & priorities, # Knowledge & expertise, # Behavioral tendencies, # Communication style
+      ? `你是一名创意写作者，负责生成用于圆桌模拟的人物定义文件，格式为带 YAML frontmatter 的 Markdown。
+根据用户描述，生成一份完整的人物文件，要求：
+- YAML frontmatter: name, role, emoji（单个 emoji）, tags（字符串数组）
+- Markdown 正文分区：# 身份、# 价值观与优先级、# 知识与专长、# 行为倾向、# 沟通风格
 
-Each section should have detailed, vivid bullet points that bring the persona to life.
-Output ONLY the markdown content, starting with --- for the frontmatter. No extra explanation.`
-      : `You are a creative writer that generates simulation scenario definition files in Markdown with YAML frontmatter.
-Given a user description, generate a complete scenario file with:
-- YAML frontmatter: name, description, mode (one of: roundtable, parallel, parallel_then_roundtable, free), rounds (number 1-5), parallel_prompt (multi-line string), roundtable_prompt (multi-line string)
-- Markdown body sections: # Environment, # Constraints, # Trigger event
+所有面向用户和模型理解的内容都必须使用简体中文，包括 name、role、tags、标题、正文和要点。
+每个分区都要有具体、生动的要点，让人物鲜活可用。
+只输出 Markdown 内容，并且必须从 frontmatter 的 --- 开始。不要输出额外解释。`
+      : `你是一名创意写作者，负责生成用于圆桌模拟的场景定义文件，格式为带 YAML frontmatter 的 Markdown。
+根据用户描述，生成一份完整的场景文件，要求：
+- YAML frontmatter: name, description, mode（只能是 roundtable、parallel、parallel_then_roundtable、free 之一）, rounds（1-5 的数字）, parallel_prompt（多行字符串）, roundtable_prompt（多行字符串）
+- Markdown 正文分区：# 环境、# 约束、# 触发事件
 
-Each section should be detailed and immersive.
-Output ONLY the markdown content, starting with --- for the frontmatter. No extra explanation.`;
+mode 等程序枚举值必须保持英文，其余面向用户和模型理解的内容都必须使用简体中文，包括 name、description、prompt、标题和正文。
+每个分区都要具体、有沉浸感，能直接驱动模拟。
+只输出 Markdown 内容，并且必须从 frontmatter 的 --- 开始。不要输出额外解释。`;
 
     const messages = [
       { role: "system" as const, content: systemPrompt },

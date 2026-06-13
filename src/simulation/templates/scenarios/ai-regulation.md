@@ -1,6 +1,6 @@
 ---
-name: AI Regulation Response
-description: US government announces strict AI regulation. How do tech leaders respond?
+name: AI监管应对
+description: 美国政府宣布严格的AI监管法案，科技领袖将如何回应？
 mode: parallel_then_roundtable
 rounds: 3
 response_style: formal
@@ -14,42 +14,37 @@ personas:
     - Dario Amodei
   max: 6
 parallel_prompt: >
-  The AI Safety and Innovation Act was just passed by the Senate.
-  Give your immediate reaction from your company's perspective.
-  What will you do in the next 24 hours?
+  《AI安全与创新法案》刚刚在参议院通过。
+  请从你所在公司的立场给出即时反应。
+  接下来的24小时内，你会采取哪些行动？
 roundtable_prompt: >
-  You've now seen how the other leaders responded.
-  Address their points directly. Where do you agree?
-  Where do you disagree? What are they missing?
+  你已经看到了其他领袖的回应。
+  请直接回应他们的观点：你同意哪里？
+  你反对哪里？他们遗漏了什么关键问题？
 completion_hint: >
-  Say [DONE] only when ALL of these are true:
-  - You have stated your company's official position
-  - You have responded to other leaders' positions
-  - You have outlined your concrete next steps (legal, PR, product changes)
-  - The discussion has gone through at least 2 rounds
-  Do NOT say [DONE] in round 1 — initial reactions always need refinement.
+  只有在同时满足以下条件时才说 [DONE]：
+  - 你已经说明本公司的官方立场
+  - 你已经回应其他领袖的主要立场
+  - 你已经列出具体下一步行动，包括法务、公关、产品调整
+  - 讨论至少已经进行2轮
+  第1轮不要说 [DONE]，初始反应总是需要进一步打磨。
 ---
 
-# Environment
-The year is 2026. The US government has just announced
-the "AI Safety and Innovation Act" which requires:
+# 环境
+时间是2026年。美国政府刚刚宣布《AI安全与创新法案》，主要要求包括：
 
-- All AI models above 10^26 FLOPs must be government-licensed
-- Mandatory safety testing by an independent body before deployment
-- Full transparency on training data sources
-- Personal criminal liability for CEO if AI causes documented harm
-- 90-day compliance window
+- 所有训练计算量超过10^26 FLOPs的AI模型必须取得政府许可
+- 部署前必须通过独立机构的强制安全测试
+- 必须完整披露训练数据来源
+- 如果AI造成有记录的伤害，首席执行官可能承担个人刑事责任
+- 合规窗口期为90天
 
-The bill passed the Senate this morning with bipartisan support.
-Markets have not yet opened. Media coverage is exploding.
+该法案今天早上在参议院获得两党支持并通过。市场尚未开盘，媒体报道正在迅速升温。
 
-# Constraints
-- Each participant responds from their company's actual strategic position
-- Consider financial impact, competitive dynamics, and public perception
-- Responses should reflect realistic corporate decision-making, not idealism
+# 约束
+- 每位参与者都要从自己公司的真实战略位置出发回应
+- 需要考虑财务影响、竞争格局和公众观感
+- 回应应体现现实的公司决策逻辑，而不是理想化表态
 
-# Trigger event
-The bill passed 30 minutes ago. You have 24 hours before markets open.
-Your board is calling. Your legal team is assembling.
-Your PR department needs a statement within 2 hours.
-What is your immediate response?
+# 触发事件
+法案在30分钟前通过。距离市场开盘还有24小时。董事会正在打电话，法务团队正在集结，公关部门需要在2小时内发布声明。你的即时回应是什么？

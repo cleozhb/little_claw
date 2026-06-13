@@ -135,7 +135,7 @@ ${body}`;
       <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
         <DialogHeader>
           <DialogTitle className="text-sm">
-            {editName ? `编辑 Scenario: ${editName}` : "新建 Scenario"}
+            {editName ? `编辑场景：${editName}` : "新建场景"}
           </DialogTitle>
         </DialogHeader>
 
@@ -149,7 +149,7 @@ ${body}`;
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="如：AI Regulation Response"
+                placeholder="如：AI监管应对"
                 className="mt-1 h-8 text-xs"
               />
             </div>
@@ -243,31 +243,31 @@ ${body}`;
           <div>
             <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
               <FileText className="h-3 w-3" />
-              Scenario 内容 (Markdown)
+              场景内容（Markdown）
             </label>
             <Textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
               placeholder={`---
-name: My Scenario
-description: A short description
+name: 我的场景
+description: 一句话描述场景
 mode: roundtable
 rounds: 3
 parallel_prompt: >
-  Your parallel round prompt here.
+  请从你的角度回应这个场景。
 roundtable_prompt: >
-  Your roundtable prompt here.
+  你已经看到了其他参与者的回应。请直接回应他们的观点。
 ---
 
-# Environment
-Describe the setting...
+# 环境
+描述场景背景...
 
-# Constraints
-- Constraint 1
-- Constraint 2
+# 约束
+- 约束1
+- 约束2
 
-# Trigger event
-What kicks off the simulation...`}
+# 触发事件
+什么事件启动了这次模拟...`}
               className="mt-1.5 min-h-[280px] text-xs font-mono leading-relaxed resize-y"
             />
           </div>
