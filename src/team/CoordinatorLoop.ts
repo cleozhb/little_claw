@@ -265,8 +265,8 @@ export class CoordinatorLoop {
 
   /**
    * ⑥ 处理项目频道中未处理的人类消息。
-   * 快捷路径：项目只有唯一 owner agent 时，直接创建任务分配，跳过 LLM。
-   * 否则启动 coordinator LLM 推理决定如何处理。
+   * 快捷路径：项目只有唯一 owner agent 时，直接创建任务分配给 owner。
+   * 否则创建一个分配给 coordinator 的 TaskQueue 任务，让 AgentWorker 执行并产生可见进度。
    */
   private async handleProjectChannelInbox(): Promise<boolean> {
     for (const channel of this.channels.listChannels({ status: "active" })) {
@@ -277,21 +277,8 @@ export class CoordinatorLoop {
         .filter((message) => message.senderType === "human" && !message.taskId);
       if (pendingMessages.length === 0) continue;
 
-      const owner = this.findSingleProjectOwner(channel.slug);
-      if (owner) {
-        this.createProjectOwnerTask(channel, owner, pendingMessages);
-        return true;
-      }
-
-      log.step("Coordinator handling project channel inbox", {
-        project: channel.slug,
-        pendingMessages: pendingMessages.length,
-      });
-      await this.runCoordinatorOnMessages(pendingMessages, {
-        replyChannelType: "project",
-        replyChannelId: channel.id,
-        project: channel.slug,
-      });
+      const owner = this.findSingleProjectOwner(channel.slug) ?? this.requireCoordinatorAgent();
+      this.createProjectOwnerTask(channel, owner, pendingMessages);
       return true;
     }
     return false;
@@ -519,7 +506,7 @@ export class CoordinatorLoop {
       ? titleFromMessage(firstHumanMessage.content)
       : `Handle #${channel.slug} project update`;
 
-    log.step("Coordinator delegated project channel inbox to owning agent", {
+    log.step("Coordinator delegated project channel inbox to task owner", {
       project: channel.slug,
       agent: owner.config.name,
       messageCount: pendingMessages.length,

@@ -203,43 +203,27 @@ describe("CoordinatorLoop", () => {
     ).toBe(true);
   });
 
-  test("processes project channel messages when the project has no open task", async () => {
+  test("creates a coordinator-owned task for project channel messages without an owner", async () => {
     const channel = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
     const inbound = channels.postMessage(channel.slug, {
       senderType: "human",
       senderId: "ceo",
       content: "请创建一个任务来调查 pending 状态卡住的问题。",
     });
-    const llm = new ScriptedLLM([
-      {
-        type: "tool",
-        name: "create_task",
-        input: {
-          title: "调查 pending 状态卡住",
-          description: "复现项目频道任务失败后 pending 且后续消息无响应的问题。",
-          tags: ["code"],
-          project: channel.slug,
-          channel_id: channel.id,
-          source_message_id: inbound.id,
-        },
-      },
-      { type: "text", text: "已创建调查任务。" },
-    ]);
+    const llm = new ScriptedLLM([{ type: "text", text: "should not run inline" }]);
     const loop = coordinatorLoop(llm);
 
     await loop.tick();
 
     const createdTask = tasks.listTasks({ project: channel.slug })[0];
-    expect(createdTask?.status).toBe("pending");
+    expect(createdTask?.status).toBe("assigned");
+    expect(createdTask?.assignedTo).toBe("coordinator");
+    expect(createdTask?.channelId).toBe(channel.id);
     expect(createdTask?.sourceMessageId).toBe(inbound.id);
-    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
-    expect(JSON.stringify(llm.calls[0]?.messages ?? [])).toContain(inbound.content);
-    expect(llm.calls[0]?.tools.map((tool) => tool.name)).toContain("create_team_schedule");
-    expect(
-      channels
-        .listMessages(channel.slug)
-        .some((message) => message.senderId === "coordinator" && message.content === "已创建调查任务。"),
-    ).toBe(true);
+    expect(createdTask?.description).toContain(inbound.content);
+    expect(messages.getMessage(inbound.id)?.status).toBe("new");
+    expect(llm.calls).toHaveLength(0);
+    expect(channels.listMessages(channel.slug).filter((message) => message.senderId === "coordinator")).toHaveLength(0);
   });
 
   test("project channel messages are delegated to the owning agent instead of coordinator execution", async () => {
@@ -311,7 +295,10 @@ code scoped marker
 
   test("project channel task creation inherits project context when the tool omits it", async () => {
     const channel = channels.createChannel({ slug: "hello", title: "Hello" });
-    const inbound = channels.postMessage(channel.slug, {
+    const inbound = messages.createMessage({
+      channelType: "coordinator",
+      channelId: "default",
+      project: channel.slug,
       senderType: "human",
       senderId: "ceo",
       content: "再给 code agent 安排一个小测试。",
@@ -378,19 +365,21 @@ code scoped marker
       senderId: "ceo",
       content: "刚刚那个任务做到哪儿了？",
     });
-    const llm = new ScriptedLLM([{ type: "text", text: "当前任务还在 pending，尚未分配给执行 agent。" }]);
+    const llm = new ScriptedLLM([{ type: "text", text: "should not run inline" }]);
     const loop = coordinatorLoop(llm);
 
     await loop.tick();
 
     expect(tasks.getTask(task.id)?.status).toBe("pending");
     expect(tasks.getTask(task.id)?.assignedTo).toBeUndefined();
-    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
-    expect(
-      channels
-        .listMessages(channel.slug)
-        .some((message) => message.senderId === "coordinator" && message.content.includes("还在 pending")),
-    ).toBe(true);
+    const createdTask = tasks
+      .listTasks({ project: channel.slug })
+      .find((item) => item.id !== task.id);
+    expect(createdTask?.status).toBe("assigned");
+    expect(createdTask?.assignedTo).toBe("coordinator");
+    expect(createdTask?.description).toContain(inbound.content);
+    expect(messages.getMessage(inbound.id)?.status).toBe("new");
+    expect(llm.calls).toHaveLength(0);
   });
 
   test("rejected tasks do not block project channel message processing", async () => {
@@ -412,14 +401,20 @@ code scoped marker
       senderId: "ceo",
       content: "换一种方案来做吧。",
     });
-    const llm = new ScriptedLLM([{ type: "text", text: "好的，我来调整方案。" }]);
+    const llm = new ScriptedLLM([{ type: "text", text: "should not run inline" }]);
     const loop = coordinatorLoop(llm);
 
     await loop.tick();
 
-    // rejected 任务不应阻塞项目频道，coordinator 应能处理新消息
-    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
-    expect(llm.calls).toHaveLength(1);
+    // rejected 任务不应阻塞项目频道，新消息会进入新的 coordinator-owned task。
+    const createdTask = tasks
+      .listTasks({ project: channel.slug })
+      .find((item) => item.id !== task.id);
+    expect(createdTask?.status).toBe("assigned");
+    expect(createdTask?.assignedTo).toBe("coordinator");
+    expect(createdTask?.sourceMessageId).toBe(inbound.id);
+    expect(messages.getMessage(inbound.id)?.status).toBe("new");
+    expect(llm.calls).toHaveLength(0);
   });
 
   test("end-to-end: coordinator message creates a task via tool call, then next tick assigns it to coder", async () => {
