@@ -26,6 +26,12 @@ import {
   type ContextMode,
   type ContextPolicy,
 } from "./ContextPolicy.ts";
+import {
+  normalizeProjectContextPath,
+  projectWorkspaceRoot,
+  scopeProjectWriteFileInput,
+} from "./ProjectWorkspace.ts";
+import type { ToolExecuteOptions } from "../tools/types.ts";
 
 const log = createLogger("AgentLoop");
 
@@ -726,24 +732,43 @@ export class AgentLoop {
           continue;
         }
 
-        yield { type: "tool_call", name: block.name, params: block.input };
-        log.toolCall(block.name, block.input);
+        const preparedToolInput = this.prepareToolInput(block.name, block.input);
+        if (!preparedToolInput.ok) {
+          const result = { success: false, output: "", error: preparedToolInput.error };
+          yield { type: "tool_call", name: block.name, params: block.input };
+          yield { type: "tool_result", name: block.name, result };
+          toolResultParams.push({
+            toolUseId: block.id,
+            toolName: block.name,
+            input: block.input,
+            output: preparedToolInput.error,
+            isError: true,
+          });
+          continue;
+        }
+        const toolInput = preparedToolInput.input;
+
+        yield { type: "tool_call", name: block.name, params: toolInput };
+        log.toolCall(block.name, toolInput);
+        if (preparedToolInput.note) {
+          log.info(preparedToolInput.note);
+        }
 
         // --- Pre-execute approval gate ---
         if (this.config.approvalRules?.length) {
-          const callKey = `${block.name}:${JSON.stringify(block.input)}`;
+          const callKey = `${block.name}:${JSON.stringify(toolInput)}`;
           if (!this.approvedCalls.has(callKey) && !this.approvedCalls.has(block.name)) {
-            const gateResult = checkApprovalGate(this.config.approvalRules, block.name, block.input);
+            const gateResult = checkApprovalGate(this.config.approvalRules, block.name, toolInput);
             if (gateResult.action !== "allow") {
               const msg = (gateResult.rule as { message?: string })?.message
                 ?? `Tool "${block.name}" requires human approval (matched: ${(gateResult.rule as { pattern?: string })?.pattern ?? "all calls"}).`;
               const result = { success: true, output: `[APPROVAL REQUIRED] ${msg}` };
               yield { type: "tool_result", name: block.name, result };
-              yield { type: "approval_gate_triggered", rule: gateResult.rule, toolName: block.name, params: block.input };
+              yield { type: "approval_gate_triggered", rule: gateResult.rule, toolName: block.name, params: toolInput };
               toolResultParams.push({
                 toolUseId: block.id,
                 toolName: block.name,
-                input: block.input,
+                input: toolInput,
                 output: result.output,
                 isError: false,
               });
@@ -770,11 +795,6 @@ export class AgentLoop {
           continue;
         }
 
-        // 执行 shell 工具前，注入所有已加载 Skill 的环境变量
-        if (block.name === "shell" && this.shellTool && this.skillManager) {
-          this.shellTool.setExtraEnv(this.collectSkillEnv());
-        }
-
         try {
           const toolAbortController = new AbortController();
           this.currentToolAbortController = toolAbortController;
@@ -782,7 +802,8 @@ export class AgentLoop {
           if (this.aborted) {
             toolAbortController.abort();
           }
-          const result = await tool.execute(block.input, { signal: toolAbortController.signal });
+          const executeOptions = this.buildToolExecuteOptions(block.name, toolAbortController.signal);
+          const result = await tool.execute(toolInput, executeOptions);
           this.currentToolAbortController = null;
           log.toolResult(block.name, {
             success: result.success,
@@ -793,7 +814,7 @@ export class AgentLoop {
           toolResultParams.push({
             toolUseId: block.id,
             toolName: block.name,
-            input: block.input,
+            input: toolInput,
             output: result.success
               ? result.output
               : result.error ?? "Unknown error",
@@ -884,6 +905,50 @@ export class AgentLoop {
       });
   }
 
+  private prepareToolInput(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): { ok: true; input: Record<string, unknown>; note?: string } | { ok: false; error: string } {
+    if (toolName !== "write_file" || !this.projectContextPath) {
+      return { ok: true, input };
+    }
+    return scopeProjectWriteFileInput(input, this.projectContextPath);
+  }
+
+  private buildToolExecuteOptions(toolName: string, signal: AbortSignal): ToolExecuteOptions {
+    const options: ToolExecuteOptions = { signal };
+    if (toolName !== "shell") return options;
+
+    const env = this.collectShellEnv();
+    if (Object.keys(env).length > 0) {
+      options.env = env;
+    }
+
+    const cwd = this.getProjectWorkspaceRoot();
+    if (cwd) {
+      options.cwd = cwd;
+    }
+    return options;
+  }
+
+  private collectShellEnv(): Record<string, string> {
+    const env = this.skillManager ? this.collectSkillEnv() : {};
+    const projectRoot = this.getProjectWorkspaceRoot();
+    const projectContextPath = normalizeProjectContextPath(this.projectContextPath);
+    if (projectRoot && projectContextPath) {
+      env.LITTLE_CLAW_PROJECT_WORKSPACE = projectRoot;
+      env.LITTLE_CLAW_PROJECT_CONTEXT_PATH = projectContextPath;
+    }
+    return env;
+  }
+
+  private getProjectWorkspaceRoot(): string | null {
+    return projectWorkspaceRoot(
+      this.memoryManager?.getFileMemory()?.getBaseDir(),
+      this.projectContextPath,
+    );
+  }
+
   /**
    * 构造 skill 检索 query：当前用户消息 + 最近几轮用户消息，
    * 避免多轮对话中后续短消息（如"继续"）缺乏上下文导致检索失效。
@@ -945,6 +1010,10 @@ export class AgentLoop {
     const schedulerGuidance = this.getSchedulerGuidance();
     if (schedulerGuidance) {
       coreSystemParts.push(schedulerGuidance);
+    }
+    const projectWorkspaceGuidance = this.getProjectWorkspaceGuidance();
+    if (projectWorkspaceGuidance) {
+      coreSystemParts.push(projectWorkspaceGuidance);
     }
     coreSystemParts.push(memoryGuidance);
     coreSystemParts.push(`Current time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`);
@@ -1102,6 +1171,17 @@ export class AgentLoop {
       return PROJECT_MEMORY_GUIDANCE;
     }
     return SHORT_MEMORY_GUIDANCE;
+  }
+
+  private getProjectWorkspaceGuidance(): string | null {
+    const projectContextPath = normalizeProjectContextPath(this.projectContextPath);
+    if (!projectContextPath) return null;
+    return `Project workspace boundary:
+- Current project workspace: ${projectContextPath}/
+- Keep project artifacts, scratch scripts, extracted source text, translations, notes, and status files inside this project workspace.
+- write_file paths are scoped to this project workspace. Prefer simple relative filenames such as "extract_urls.py" or "translation.md" unless a subfolder is useful.
+- The shell tool starts in the project workspace directory for project tasks. In shell commands, use relative paths such as "extract_content.py" and do not prefix ${projectContextPath}/ again.
+- For context_write, use paths relative to context-hub/, e.g. "${projectContextPath.slice("context-hub/".length)}/notes.md".`;
   }
 
   private getSchedulerGuidance(): string | null {

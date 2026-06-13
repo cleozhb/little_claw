@@ -26,7 +26,7 @@ function truncate(text: string): string {
 
 export function createShellTool(workspaceRoot: string): ShellTool {
   let extraEnv: Record<string, string> = {};
-  const root = resolve(workspaceRoot);
+  const defaultRoot = resolve(workspaceRoot);
 
   return {
     name: "shell",
@@ -51,8 +51,17 @@ export function createShellTool(workspaceRoot: string): ShellTool {
     async execute(params: Record<string, unknown>, options?: ToolExecuteOptions): Promise<ToolResult> {
       const command = params.command as string;
       const timeout = (params.timeout_ms as number) || DEFAULT_TIMEOUT;
+      const executionRoot = resolve(options?.cwd ?? defaultRoot);
+      if (!isInsideRoot(executionRoot, defaultRoot)) {
+        return {
+          success: false,
+          output: "",
+          error: `Shell command denied: cwd "${executionRoot}" is outside the workspace "${defaultRoot}".`,
+        };
+      }
+      const runtimeEnv = { ...extraEnv, ...(options?.env ?? {}) };
 
-      const guardError = validateShellCommand(command, root, extraEnv);
+      const guardError = validateShellCommand(command, executionRoot, runtimeEnv);
       if (guardError) {
         return {
           success: false,
@@ -63,8 +72,8 @@ export function createShellTool(workspaceRoot: string): ShellTool {
 
       try {
         const proc = Bun.spawn(["sh", "-c", command], {
-          cwd: root,
-          env: buildShellEnv(root, extraEnv),
+          cwd: executionRoot,
+          env: buildShellEnv(executionRoot, runtimeEnv),
           stdout: "pipe",
           stderr: "pipe",
         });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { createShellTool } from "../../src/tools/builtin/ShellTool";
 
 const TMP = "/tmp/little_claw_shell_tool_test";
@@ -67,6 +68,37 @@ test("shell allows safe /dev/null redirection", async () => {
 
   expect(result.success).toBe(true);
   expect(result.output).toBe("ok");
+});
+
+test("shell can run from a narrowed project workspace", async () => {
+  const projectDir = join(TMP, "context-hub", "3-projects", "technology-blog");
+  mkdirSync(projectDir, { recursive: true });
+  const tool = createShellTool(TMP);
+
+  const result = await tool.execute(
+    { command: "pwd && printf ok > extract_urls.py" },
+    { cwd: projectDir },
+  );
+
+  expect(result.success).toBe(true);
+  expect(result.output.split("\n")[0]).toBe(realpathSync(projectDir));
+  expect(readFileSync(join(projectDir, "extract_urls.py"), "utf8")).toBe("ok");
+  expect(existsSync(join(TMP, "extract_urls.py"))).toBe(false);
+});
+
+test("shell narrowed to a project workspace rejects parent workspace writes", async () => {
+  const projectDir = join(TMP, "context-hub", "3-projects", "technology-blog");
+  mkdirSync(projectDir, { recursive: true });
+  const tool = createShellTool(TMP);
+
+  const result = await tool.execute(
+    { command: `printf bad > ${TMP}/loose.txt` },
+    { cwd: projectDir },
+  );
+
+  expect(result.success).toBe(false);
+  expect(result.error).toContain("outside the allowed roots");
+  expect(existsSync(join(TMP, "loose.txt"))).toBe(false);
 });
 
 test("shell allows explicitly configured external skill roots", async () => {

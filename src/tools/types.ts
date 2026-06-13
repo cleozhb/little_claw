@@ -7,6 +7,10 @@ export interface ToolResult {
 export interface ToolExecuteOptions {
   /** 用于取消工具执行的 abort 信号 */
   signal?: AbortSignal;
+  /** Tool-specific environment variables for this single execution. */
+  env?: Record<string, string>;
+  /** ShellTool only: run this execution from a narrower workspace root. */
+  cwd?: string;
 }
 
 export interface Tool {

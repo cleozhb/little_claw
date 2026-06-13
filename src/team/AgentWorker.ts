@@ -3,6 +3,11 @@ import { AgentLoop } from "../core/AgentLoop.ts";
 import { Conversation } from "../core/Conversation.ts";
 import { EphemeralConversation } from "../core/EphemeralConversation.ts";
 import type { ConversationLike } from "../core/ConversationLike.ts";
+import {
+  normalizeProjectContextPath,
+  projectWorkspaceRoot,
+  scopeProjectWriteFileInput,
+} from "../core/ProjectWorkspace.ts";
 import type { Database } from "../db/Database.ts";
 import type { ContextRetriever } from "../memory/ContextRetriever.ts";
 import type { ContextHub } from "../memory/ContextHub.ts";
@@ -946,7 +951,18 @@ export class AgentWorker {
     });
 
     try {
-      const result = await tool.execute(data.params ?? {});
+      const preparedParams = this.prepareDirectToolParams(data.tool, data.params ?? {}, task);
+      if (!preparedParams.ok) {
+        if (toolUseId) {
+          conversation.replaceLastToolResult?.(toolUseId, preparedParams.error, true);
+        }
+        return { toolName: data.tool, output: preparedParams.error };
+      }
+
+      const result = await tool.execute(
+        preparedParams.input,
+        this.buildDirectToolExecuteOptions(data.tool, task),
+      );
       const output = result.success ? result.output : (result.error ?? "Tool execution failed");
 
       // 替换 conversation 中的 [APPROVAL REQUIRED] 假结果
@@ -963,6 +979,39 @@ export class AgentWorker {
       }
       return { toolName: data.tool, output: errMsg };
     }
+  }
+
+  private prepareDirectToolParams(
+    toolName: string,
+    params: Record<string, unknown>,
+    task: Task,
+  ): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {
+    if (toolName !== "write_file" || !task.project) {
+      return { ok: true, input: params };
+    }
+    const scoped = scopeProjectWriteFileInput(params, `context-hub/3-projects/${task.project}`);
+    if (!scoped.ok) return scoped;
+    return { ok: true, input: scoped.input };
+  }
+
+  private buildDirectToolExecuteOptions(
+    toolName: string,
+    task: Task,
+  ): { cwd?: string; env?: Record<string, string> } | undefined {
+    if (toolName !== "shell" || !task.project) return undefined;
+    const projectContextPath = normalizeProjectContextPath(`context-hub/3-projects/${task.project}`);
+    const cwd = projectWorkspaceRoot(
+      this.memoryManager?.getFileMemory()?.getBaseDir(),
+      projectContextPath ?? undefined,
+    );
+    if (!cwd || !projectContextPath) return undefined;
+    return {
+      cwd,
+      env: {
+        LITTLE_CLAW_PROJECT_WORKSPACE: cwd,
+        LITTLE_CLAW_PROJECT_CONTEXT_PATH: projectContextPath,
+      },
+    };
   }
 }
 
