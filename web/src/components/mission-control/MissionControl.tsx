@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Bot,
+  BrainCircuit,
   Check,
   CircleAlert,
   Clock3,
@@ -165,7 +166,7 @@ const navItems = [
   { href: "/mission-control/projects", label: "Projects", icon: Hash },
   { href: "/mission-control/team",     label: "Team",     icon: Users },
   { href: "/mission-control/calendar", label: "Calendar", icon: Clock3 },
-  { href: "/mission-control/memory",   label: "Memory",   icon: FileText },
+  { href: "/mission-control/memory",   label: "Memory",   icon: BrainCircuit },
   { href: "/mission-control/docs",     label: "Docs",     icon: FileText },
   { href: "/mission-control/visual",   label: "Visual",   icon: Eye },
 ];
