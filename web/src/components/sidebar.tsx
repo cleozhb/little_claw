@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, MessageSquare, Sun, Moon, Zap, Trash2, MessageCircle, Users } from "lucide-react";
+import { Plus, MessageSquare, Sun, Moon, Zap, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
@@ -32,28 +32,22 @@ const statusConfig: Record<
   disconnected: { color: "bg-red-500", ping: "bg-red-400", label: "未连接" },
 };
 
-export type AppMode = "chat" | "simulation";
-
 interface SidebarProps {
   sessions: DisplaySession[];
   activeSessionId: string | null;
   connectionStatus: ConnectionStatus;
-  appMode: AppMode;
   onSessionSelect: (id: string) => void;
   onNewChat: () => void;
   onDeleteSession: (id: string) => void;
-  onModeChange: (mode: AppMode) => void;
 }
 
 export function Sidebar({
   sessions,
   activeSessionId,
   connectionStatus,
-  appMode,
   onSessionSelect,
   onNewChat,
   onDeleteSession,
-  onModeChange,
 }: SidebarProps) {
   const { resolvedTheme, setTheme } = useTheme();
   const status = statusConfig[connectionStatus];
@@ -88,38 +82,6 @@ export function Sidebar({
           <Plus className="h-3.5 w-3.5" />
           新对话
         </Button>
-      </div>
-
-      {/* Mode switcher */}
-      <div className="px-3 pb-2">
-        <div className="flex rounded-lg bg-muted/50 p-0.5">
-          <button
-            onClick={() => onModeChange("chat")}
-            className={`
-              flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-medium transition-colors
-              ${appMode === "chat"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-              }
-            `}
-          >
-            <MessageCircle className="h-3 w-3" />
-            聊天
-          </button>
-          <button
-            onClick={() => onModeChange("simulation")}
-            className={`
-              flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-medium transition-colors
-              ${appMode === "simulation"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-              }
-            `}
-          >
-            <Users className="h-3 w-3" />
-            圆桌模拟
-          </button>
-        </div>
       </div>
 
       <Separator className="opacity-50" />
