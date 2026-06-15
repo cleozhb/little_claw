@@ -82,12 +82,19 @@ test("deleteSession removes session and related data", () => {
     toolInput: { command: "ls" },
     toolOutput: "file1.txt",
   });
+  db.createSessionApproval(session.id, {
+    toolName: "bash",
+    params: { command: "ls" },
+    rule: null,
+    message: "Approve running ls?",
+  });
 
   db.deleteSession(session.id);
 
   expect(db.getSession(session.id)).toBeNull();
   expect(db.getMessages(session.id)).toEqual([]);
   expect(db.getToolResults(msg.id)).toEqual([]);
+  expect(db.getSessionPendingApproval(session.id)).toBeNull();
 });
 
 test("addMessage and getMessages", () => {

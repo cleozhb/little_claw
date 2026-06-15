@@ -10,6 +10,7 @@ import type {
 
 const TIMEOUT_MS = 30_000;
 const DEFAULT_STREAM_CHUNK_TIMEOUT_MS = 300_000;
+const DEFAULT_MAX_TOKENS = readMaxOutputTokens();
 
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
@@ -47,6 +48,7 @@ export class OpenAIProvider implements LLMProvider {
       messages: apiMessages,
       stream: true,
       stream_options: { include_usage: true },
+      max_tokens: DEFAULT_MAX_TOKENS,
     };
 
     if (options?.tools?.length) {
@@ -98,8 +100,7 @@ export class OpenAIProvider implements LLMProvider {
       if (!choice) continue;
 
       if (choice.finish_reason) {
-        stopReason =
-          choice.finish_reason === "tool_calls" ? "tool_use" : "end_turn";
+        stopReason = mapFinishReason(choice.finish_reason);
       }
 
       const delta = choice.delta;
@@ -255,4 +256,18 @@ export class OpenAIProvider implements LLMProvider {
 
     return result;
   }
+}
+
+function mapFinishReason(reason: OpenAI.ChatCompletion.Choice["finish_reason"]): string {
+  if (reason === "tool_calls" || reason === "function_call") return "tool_use";
+  if (reason === "length") return "max_tokens";
+  if (reason === "content_filter") return "content_filter";
+  return "end_turn";
+}
+
+function readMaxOutputTokens(): number {
+  const raw = process.env.LLM_MAX_OUTPUT_TOKENS;
+  if (!raw) return 16384;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 16384;
 }

@@ -130,7 +130,7 @@ export class AnthropicProvider implements LLMProvider {
         case "message_delta": {
           // 消息增量：获取停止原因(stop_reason)和输出 token 用量
           if (event.delta?.stop_reason) {
-            stopReason = event.delta.stop_reason === "tool_use" ? "tool_use" : "end_turn";
+            stopReason = mapStopReason(event.delta.stop_reason);
           }
           if (event.usage) {
             outputTokens = event.usage.output_tokens ?? 0;
@@ -223,4 +223,10 @@ export class AnthropicProvider implements LLMProvider {
       apiMessages,
     };
   }
+}
+
+function mapStopReason(reason: Anthropic.Message["stop_reason"]): string {
+  if (reason === "tool_use") return "tool_use";
+  if (reason === "max_tokens") return "max_tokens";
+  return "end_turn";
 }

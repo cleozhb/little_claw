@@ -660,6 +660,12 @@ export interface SessionsListMessage {
   sessions: SessionInfo[];
 }
 
+export interface SessionDeletedMessage {
+  type: "session_deleted";
+  sessionId: string;
+  sessions: SessionInfo[];
+}
+
 export interface ToolsListMessage {
   type: "tools_list";
   tools: ToolInfo[];
@@ -1088,6 +1094,7 @@ export type ServerMessage =
   | SessionCreatedMessage
   | SessionLoadedMessage
   | SessionsListMessage
+  | SessionDeletedMessage
   | SessionRenamedMessage
   | TitleUpdatedMessage
   | StatusInfoMessage

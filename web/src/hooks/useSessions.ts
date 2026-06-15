@@ -23,17 +23,26 @@ export function useSessions() {
 
   // ---- Handle server messages ----
   useEffect(() => {
+    const selectAvailableSession = (list: DisplaySession[]) => {
+      setCurrentSessionId((prev) => {
+        if (prev && list.some((s) => s.id === prev)) return prev;
+        return list[0]?.id ?? null;
+      });
+    };
+
     const unsub = wsClient.onMessage((msg: ServerMessage) => {
       switch (msg.type) {
         case "sessions_list": {
           const list = msg.sessions.map(toDisplaySession);
           setSessions(list);
-          // Auto-select first session if none selected
-          if (list.length > 0) {
-            setCurrentSessionId((prev) =>
-              prev && list.some((s) => s.id === prev) ? prev : list[0].id,
-            );
-          }
+          selectAvailableSession(list);
+          break;
+        }
+
+        case "session_deleted": {
+          const list = msg.sessions.map(toDisplaySession);
+          setSessions(list);
+          selectAvailableSession(list);
           break;
         }
 
@@ -99,21 +108,17 @@ export function useSessions() {
     wsClient.send({ type: "load_session", sessionId: id });
   }, []);
 
-  const deleteSession = useCallback(
-    (id: string) => {
-      wsClient.send({ type: "delete_session", sessionId: id });
-      setSessions((prev) => prev.filter((s) => s.id !== id));
-      setCurrentSessionId((prev) => {
-        if (prev === id) {
-          // Select next available session
-          const remaining = sessions.filter((s) => s.id !== id);
-          return remaining.length > 0 ? remaining[0].id : null;
-        }
-        return prev;
+  const deleteSession = useCallback((id: string) => {
+    wsClient.send({ type: "delete_session", sessionId: id });
+    setSessions((prev) => {
+      const remaining = prev.filter((s) => s.id !== id);
+      setCurrentSessionId((current) => {
+        if (current !== id) return current;
+        return remaining[0]?.id ?? null;
       });
-    },
-    [sessions],
-  );
+      return remaining;
+    });
+  }, []);
 
   return {
     sessions,

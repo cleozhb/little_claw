@@ -710,18 +710,21 @@ export class GatewayServer {
     }
   }
 
-  private handleListSessions(connectionId: string): void {
-    try {
-      const sessions = this.db.listSessions()
-        .filter((s) => s.title !== null || this.db.getMessageCount(s.id) > 0);
-      const list: SessionInfo[] = sessions.map((s) => ({
+  private listSessionInfos(): SessionInfo[] {
+    return this.db.listSessions()
+      .filter((s) => s.title !== null || this.db.getMessageCount(s.id) > 0)
+      .map((s) => ({
         id: s.id,
         title: s.title,
         system_prompt: s.system_prompt,
         created_at: s.created_at,
         updated_at: s.updated_at,
       }));
-      this.sendToConnection(connectionId, { type: "sessions_list", sessions: list });
+  }
+
+  private handleListSessions(connectionId: string): void {
+    try {
+      this.sendToConnection(connectionId, { type: "sessions_list", sessions: this.listSessionInfos() });
     } catch (err) {
       this.sendToConnection(connectionId, {
         type: "error",
@@ -742,8 +745,14 @@ export class GatewayServer {
         return;
       }
       this.db.deleteSession(sessionId);
-      // 删除成功后返回更新后的 session 列表
-      this.handleListSessions(connectionId);
+      if (this.connectionSessions.get(connectionId) === sessionId) {
+        this.connectionSessions.delete(connectionId);
+      }
+      this.sendToConnection(connectionId, {
+        type: "session_deleted",
+        sessionId,
+        sessions: this.listSessionInfos(),
+      });
     } catch (err) {
       this.sendToConnection(connectionId, {
         type: "error",

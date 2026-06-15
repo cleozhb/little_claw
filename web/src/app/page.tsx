@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Sidebar, type AppMode } from "@/components/sidebar";
 import { ChatArea } from "@/components/chat-area";
 import { SimulationView } from "@/components/simulation/SimulationView";
@@ -24,7 +24,16 @@ export default function Home() {
     deleteSession,
   } = useSessions();
 
-  const { messages, isStreaming, activeSkills, sendMessage, abort } = useChat(currentSessionId);
+  const sessionIdKey = sessions.map((s) => s.id).join("\0");
+  const sessionIds = useMemo(
+    () => new Set(sessionIdKey ? sessionIdKey.split("\0") : []),
+    [sessionIdKey],
+  );
+  const currentSessionExists = Boolean(currentSessionId && sessionIds.has(currentSessionId));
+
+  const { messages, isStreaming, activeSkills, sendMessage, abort } = useChat(
+    currentSessionExists ? currentSessionId : null,
+  );
 
   // Connect on mount, fetch session list when connected
   useEffect(() => {
@@ -38,12 +47,12 @@ export default function Home() {
     }
   }, [connectionStatus, listSessions]);
 
-  // Load session messages when switching sessions
+  // Load session messages only when the active session changes.
   useEffect(() => {
-    if (currentSessionId && connectionStatus === "connected") {
+    if (currentSessionId && sessionIds.has(currentSessionId) && connectionStatus === "connected") {
       wsClient.send({ type: "load_session", sessionId: currentSessionId });
     }
-  }, [currentSessionId, connectionStatus]);
+  }, [currentSessionId, sessionIds, connectionStatus]);
 
   const activeSession = sessions.find((s) => s.id === currentSessionId);
 
@@ -90,7 +99,7 @@ export default function Home() {
             messages={messages}
             isStreaming={isStreaming}
             activeSkills={activeSkills}
-            sessionId={currentSessionId}
+            sessionId={currentSessionExists ? currentSessionId : null}
             onMenuClick={() => setSidebarOpen(true)}
             onSend={sendMessage}
             onAbort={abort}

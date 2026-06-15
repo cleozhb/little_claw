@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   Bot,
   BrainCircuit,
@@ -58,7 +58,7 @@ import type {
   TaskStatus,
   TeamMessageInfo,
 } from "@/types/protocol";
-import { shouldUseTeamRouter } from "./channel-routing";
+import { messageMatchesChannelSelection, shouldUseTeamRouter } from "./channel-routing";
 
 const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws";
 const CHANNEL_UNREAD_STORAGE_KEY = "little-claw:mission-control:channel-unread-counts:v1";
@@ -186,6 +186,8 @@ const CHANNEL_COLOR_OVERRIDES: Record<string, (typeof CHANNEL_COLORS)[number]> =
   "venture-radar": { dot: "bg-teal-500", border: "border-l-teal-500", text: "text-teal-700", bg: "bg-teal-50" },
   "health-management": { dot: "bg-emerald-500", border: "border-l-emerald-500", text: "text-emerald-700", bg: "bg-emerald-50" },
 };
+
+const TIMELINE_PREVIEW_CHARS = 1600;
 
 function channelColor(key: string) {
   const override = CHANNEL_COLOR_OVERRIDES[key.toLowerCase()];
@@ -827,8 +829,23 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
 export function MissionControlFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { connectionStatus, error, lastAction, refresh } = useMissionControl();
   const [collapsed, setCollapsed] = useState(false);
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
+
+  useEffect(() => {
+    for (const item of navItems) {
+      router.prefetch(item.href);
+    }
+  }, [router]);
+
+  useEffect(() => {
+    if (!pendingHref) return;
+    if (pathname === pendingHref || (pathname === "/mission-control" && pendingHref === "/mission-control/tasks")) {
+      setPendingHref(null);
+    }
+  }, [pathname, pendingHref]);
 
   return (
     <div className="mc-theme flex h-screen overflow-hidden bg-background text-foreground">
@@ -857,14 +874,16 @@ export function MissionControlFrame({ children }: { children: ReactNode }) {
 
         <nav className="flex-1 space-y-1 px-2 py-2">
           {navItems.map((item) => {
+            const displayPathname = pendingHref ?? pathname;
             const active =
-              pathname === item.href || (pathname === "/mission-control" && item.href.endsWith("/tasks"));
+              displayPathname === item.href || (displayPathname === "/mission-control" && item.href.endsWith("/tasks"));
             const Icon = item.icon;
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 title={collapsed ? item.label : undefined}
+                onClick={() => setPendingHref(item.href)}
                 className={cn(
                   "flex h-8 items-center gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors",
                   collapsed && "justify-center px-0",
@@ -2394,7 +2413,7 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
         <span className="ml-auto text-[10px] text-muted-foreground">{formatDate(message.createdAt)}</span>
       </div>
       <div className="mt-2 text-sm leading-6">
-        {evalArtifact ? <LlmEvalArtifactCard artifact={evalArtifact} /> : <Markdown content={message.content} />}
+        {evalArtifact ? <LlmEvalArtifactCard artifact={evalArtifact} /> : <ExpandableMarkdown content={message.content} />}
       </div>
       <div className="mt-2 flex flex-wrap gap-1">
         <Badge variant="outline" className="h-5 rounded-lg text-[10px]">
@@ -2410,6 +2429,31 @@ function TimelineMessage({ message }: { message: TeamMessageInfo }) {
         ) : null}
       </div>
     </article>
+  );
+}
+
+function ExpandableMarkdown({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = content.length > TIMELINE_PREVIEW_CHARS;
+  const visibleContent = isLong && !expanded
+    ? `${content.slice(0, TIMELINE_PREVIEW_CHARS).trimEnd()}\n\n...`
+    : content;
+
+  return (
+    <>
+      <Markdown content={visibleContent} />
+      {isLong ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-2 h-7 px-2 text-[11px] text-muted-foreground"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "收起" : `展开全文 (${content.length.toLocaleString()} 字符)`}
+        </Button>
+      ) : null}
+    </>
   );
 }
 
@@ -2537,7 +2581,7 @@ function TimelineApprovalCard({
         <h3 className="mt-2 text-sm font-medium">{task.title}</h3>
       ) : null}
       <div className="mt-2 text-sm leading-6 text-muted-foreground">
-        <Markdown content={message.content.replace(/^🔒 \*\*(?:Approval Required|需要审批)\*\*.*?\n\n/, "")} />
+        <ExpandableMarkdown content={message.content.replace(/^🔒 \*\*(?:Approval Required|需要审批)\*\*.*?\n\n/, "")} />
       </div>
       {message.taskId ? (
         <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -2726,14 +2770,7 @@ function isChannelsPath(pathname: string | null) {
 }
 
 function messageMatchesSelection(message: TeamMessageInfo, selection: ChannelSelection) {
-  if (selection.type === "all") return true;
-  if (selection.type === "agent_dm") {
-    return message.channelType === "agent_dm" && message.channelId === selection.agentName;
-  }
-  if (message.channelType !== "project") return false;
-
-  const projectKey = messageProjectKey(message);
-  return projectKey === selection.project || message.channelId === selection.id;
+  return messageMatchesChannelSelection(message, selection);
 }
 
 function messageProjectKey(message: TeamMessageInfo) {

@@ -80,6 +80,36 @@ describe("AgentWorker", () => {
     expect(llm.calls).toHaveLength(1);
   });
 
+  test("preserves project scope on Agent DM replies", async () => {
+    const llm = new ScriptedLLM([
+      { type: "text", text: "hello.py 已完成" },
+    ]);
+    const worker = new AgentWorker({
+      agent: agent("coder", []),
+      tasks,
+      messages,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 2,
+    });
+    messages.createMessage({
+      channelType: "agent_dm",
+      channelId: "coder",
+      project: "hello",
+      senderType: "human",
+      senderId: "mission-control",
+      content: "@coder 用Python写一个hello world",
+    });
+
+    await worker.tick();
+
+    const reply = messages
+      .listMessages({ channelType: "agent_dm", channelId: "coder" })
+      .find((message) => message.senderType === "agent");
+    expect(reply?.project).toBe("hello");
+    expect(reply?.content).toBe("hello.py 已完成");
+  });
+
   test("runs an assigned task through AgentLoop with team prompt and filtered tools", async () => {
     toolRegistry.register(fakeTool("allowed_tool"));
     toolRegistry.register(fakeTool("blocked_tool"));

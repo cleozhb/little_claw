@@ -41,6 +41,7 @@ const RETRY_DELAY_MS = 1_000;
 const DEFAULT_STREAM_CHUNK_TIMEOUT_MS = 300_000;
 const DEFAULT_BACKGROUND_STREAM_CHUNK_TIMEOUT_MS = 900_000;
 const SKILL_RETRIEVAL_TOP_K = 5;
+const EMPTY_MODEL_RESPONSE_MESSAGE = "[Model returned an empty response. Please try again.]";
 
 const PERSONAL_SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron tool. When a user asks you to do something periodically or at a specific time, create a cron job. For example, if asked "remind me every morning at 8am about my schedule", create a cron job with expression "0 8 * * *".
 
@@ -641,20 +642,43 @@ export class AgentLoop {
       // 注意：不能仅凭 stopReason === "end_turn" 就结束，某些 provider 会在返回 tool_calls 的同时
       // 标记 stop_reason 为 end_turn，此时应优先按 tool_calls 执行
       if (toolUseBlocks.length === 0) {
+        let finalTextContent = stopReason === "max_tokens"
+          ? `${textContent}\n\n[Response stopped because the model hit its output limit. Send "continue" to resume.]`
+          : textContent;
+        let supplementalText = finalTextContent !== textContent
+          ? finalTextContent.slice(textContent.length)
+          : "";
+
+        if (finalTextContent.trim().length === 0) {
+          log.warn(
+            `Turn ${i + 1} produced an empty model response`,
+            JSON.stringify({
+              stopReason,
+              usage: { totalInputTokens, totalOutputTokens },
+            }),
+          );
+          finalTextContent = EMPTY_MODEL_RESPONSE_MESSAGE;
+          supplementalText = EMPTY_MODEL_RESPONSE_MESSAGE;
+        }
+
+        if (supplementalText) {
+          yield { type: "text_delta", text: supplementalText };
+        }
+
         log.step(`Turn ${i + 1} COMPLETE — end_turn (no tool calls)`, {
           stopReason,
-          textLength: textContent.length,
-          response: textContent,
+          textLength: finalTextContent.length,
+          response: finalTextContent,
         });
 
-        this.conversation.addAssistant(textContent);
+        this.conversation.addAssistant(finalTextContent);
 
         // Auto-generate session title after first round (fire-and-forget)
         // 只有主 Agent 才需要生成 title，sub-agent 的 EphemeralConversation 无需标题
         if (!this.pendingTitleGeneration && this.config.canSpawnSubAgent) {
           const firstUserMsg = this.conversation.getMessages().find((m) => m.role === "user");
           const titleInput = (firstUserMsg?.content as string) ?? userMessage;
-          this.maybeGenerateTitle(titleInput, textContent);
+          this.maybeGenerateTitle(titleInput, finalTextContent);
         }
 
         // === 注入检查（end_turn 场景）===

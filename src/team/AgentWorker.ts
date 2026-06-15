@@ -606,9 +606,11 @@ export class AgentWorker {
     // 将回复写入 agent_dm channel
     const reply = assistantText.trim();
     if (reply.length > 0) {
+      const replyProject = sharedProject(directMessages);
       this.messages.createMessage({
         channelType: "agent_dm",
         channelId: agentName,
+        project: replyProject,
         senderType: "agent",
         senderId: agentName,
         content: reply,
@@ -1204,6 +1206,11 @@ function uniqueMessages(items: TeamMessage[]): TeamMessage[] {
     seen.add(item.id);
     return true;
   });
+}
+
+function sharedProject(messages: TeamMessage[]): string | undefined {
+  const projects = [...new Set(messages.map((message) => message.project).filter(Boolean))] as string[];
+  return projects.length === 1 ? projects[0] : undefined;
 }
 
 function uniqueStrings(items: string[]): string[] {

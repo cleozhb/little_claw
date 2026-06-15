@@ -104,6 +104,7 @@ export class Database {
   private stmtGetPendingApproval;
   private stmtResolveApproval;
   private stmtGetApprovedCallKeys;
+  private stmtDeleteSessionApprovals;
   private stmtUpdateToolResult;
 
   constructor(dbPath: string) {
@@ -224,6 +225,10 @@ export class Database {
 
     this.stmtGetApprovedCallKeys = this.db.prepare(
       `SELECT tool_name, params FROM session_approvals WHERE session_id = ?1 AND status = 'approved'`
+    );
+
+    this.stmtDeleteSessionApprovals = this.db.prepare(
+      `DELETE FROM session_approvals WHERE session_id = ?1`
     );
 
     this.stmtUpdateToolResult = this.db.prepare(
@@ -369,10 +374,13 @@ export class Database {
   }
 
   deleteSession(id: string): void {
-    // Delete related data first (respect foreign keys)
-    this.stmtDeleteSessionToolResults.run(id);
-    this.stmtDeleteSessionMessages.run(id);
-    this.stmtDeleteSession.run(id);
+    this.db.transaction(() => {
+      // Delete related data first (respect foreign keys)
+      this.stmtDeleteSessionApprovals.run(id);
+      this.stmtDeleteSessionToolResults.run(id);
+      this.stmtDeleteSessionMessages.run(id);
+      this.stmtDeleteSession.run(id);
+    })();
   }
 
   updateSessionTitle(id: string, title: string): void {

@@ -24,6 +24,7 @@ type RoundAction =
 
 const THINKING_RE = /\[THINKING\]([\s\S]*?)\[\/THINKING\]/g;
 const TRANSCRIPT_SUMMARY_THRESHOLD = 4000;
+const PARALLEL_TEXT_MAX_ATTEMPTS = 2;
 
 // --- Response Style Rules ---
 
@@ -92,6 +93,68 @@ function parseResponseTag(text: string): { tag: ResponseTag; body: string } {
     return { tag, body };
   }
   return { tag: "ACT", body: text };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const status = (err as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function sanitizeErrorMessage(message: string): string {
+  return message
+    .replace(/bce-v3\/[A-Za-z0-9/_-]+/g, "bce-v3/[redacted]")
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-[redacted]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function describeSimulationError(err: unknown): string {
+  const status = getErrorStatus(err);
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const message = sanitizeErrorMessage(rawMessage);
+  const lower = message.toLowerCase();
+
+  let category = "LLM 调用失败";
+  if (status === 401 || status === 403) {
+    category = "LLM 鉴权失败";
+  } else if (status === 429 || lower.includes("rate limit") || lower.includes("too many requests")) {
+    category = "LLM 限流";
+  } else if (status === 408 || lower.includes("timeout") || lower.includes("timed out")) {
+    category = "LLM 响应超时";
+  } else if (status === 400 || lower.includes("max_tokens") || lower.includes("context length")) {
+    category = "LLM 请求被拒绝";
+  } else if (lower.includes("connection error") || lower.includes("fetch failed") || lower.includes("econnreset")) {
+    category = "LLM 连接失败";
+  } else if (status !== undefined && status >= 500) {
+    category = "LLM 服务端错误";
+  }
+
+  const statusText = status !== undefined ? `HTTP ${status}` : "";
+  const detail = [statusText, message].filter(Boolean).join("，");
+  return detail ? `${category}：${detail}` : category;
+}
+
+function isRetryableSimulationError(err: unknown): boolean {
+  const status = getErrorStatus(err);
+  if (status === 408 || status === 409 || status === 429) return true;
+  if (status !== undefined && status >= 500) return true;
+
+  const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    message.includes("connection error") ||
+    message.includes("fetch failed") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("econnreset") ||
+    message.includes("etimedout")
+  );
 }
 
 // --- Streaming thinking filter ---
@@ -207,23 +270,32 @@ const LANGUAGE_NAMES: Record<string, string> = {
   "ko": "Korean",
 };
 
+function buildSimulationSystemPrompt(): string {
+  return [
+    "You are a participant in a structured simulation.",
+    "Follow the persona, scenario, and response-format instructions provided in the user message.",
+    "Keep responses grounded in the provided simulation context and use the requested language.",
+  ].join("\n");
+}
+
 /**
- * 构建 persona 的 system prompt。
+ * 构建 persona 的上下文块。注意：这块内容放在 user message 中，不放在
+ * system 字段里；部分 OpenAI-compatible 平台会拒绝复杂或角色扮演型 system。
  * hasTools 为 true 时不添加 [THINKING] 指令（tool-using 路径不需要文本标签思考）。
  * skillInstructions 不为空时，追加到 persona body 之后作为认知框架细节。
  */
-function buildPersonaSystemPrompt(
+function buildPersonaContextPrompt(
   persona: ParsedPersona,
   scenarioBody: string,
   language?: string,
   hasTools?: boolean,
   skillInstructions?: string,
 ): string {
-  let prompt = persona.body;
+  let prompt = `[PERSONA PROFILE]\n${persona.body}`;
 
   // 如果有关联的 Skill instructions，追加到 persona body 之后
   if (skillInstructions) {
-    prompt += "\n\n" + skillInstructions;
+    prompt += "\n\n[PERSONA SKILL INSTRUCTIONS]\n" + skillInstructions;
   }
 
   prompt += "\n\n[SCENARIO]\n" + scenarioBody;
@@ -238,6 +310,10 @@ function buildPersonaSystemPrompt(
   }
 
   return prompt;
+}
+
+function buildPersonaUserMessage(personaContext: string, taskPrompt: string): string {
+  return `${personaContext}\n\n[CURRENT TASK]\n${taskPrompt}`;
 }
 
 /**
@@ -707,8 +783,8 @@ export class SimulationRunner {
     for (const persona of activePersonas) {
       const tools = this.personaTools.get(persona.name);
       const hasTools = !!(tools && tools.length > 0);
-      const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, hasTools, this.resolveSkillInstructions(persona));
-      console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
+      const systemPrompt = buildSimulationSystemPrompt();
+      const personaContext = buildPersonaContextPrompt(persona, this.scenario.body, this.scenario.language, hasTools, this.resolveSkillInstructions(persona));
 
       (async () => {
         try {
@@ -730,7 +806,7 @@ export class SimulationRunner {
               toolUserMessage += `\n\n--- YOUR PREVIOUS ACTIONS (do NOT redo these) ---\n${priorActions.join("\n")}\n--- END PREVIOUS ACTIONS ---`;
             }
             toolUserMessage += `\n\nYou have tools available to take real actions (read files, write files, run commands). Use them to accomplish your goals. After taking actions, provide a brief public summary of what you did.`;
-            const messages: Message[] = [{ role: "user", content: toolUserMessage }];
+            const messages: Message[] = [{ role: "user", content: buildPersonaUserMessage(personaContext, toolUserMessage) }];
             const actionSummaries: string[] = [];
             let finalPublicText = "";
 
@@ -792,55 +868,115 @@ export class SimulationRunner {
           } else {
             // 纯文本 Persona：流式文本生成
             log.step(`[Parallel] Persona "${persona.name}" starting (text-only)`);
-            const rawStream = llmChatStreaming(this.llmProvider, systemPrompt, prompt);
-            const filteredStream = streamWithThinkingFilter(rawStream);
+            let completed = false;
+            let lastError: unknown;
 
-            let fullPublicText = "";
-            let fullThinking = "";
+            for (let attempt = 1; attempt <= PARALLEL_TEXT_MAX_ATTEMPTS; attempt++) {
+              let fullPublicText = "";
+              let fullThinking = "";
 
-            for await (const event of filteredStream) {
-              if (event.type === "public_delta") {
-                fullPublicText += event.text;
+              try {
+                const attemptPrompt = attempt === 1
+                  ? prompt
+                  : `${prompt}\n\nIMPORTANT: Your previous attempt produced no public response. Do NOT use [THINKING] tags on this retry. Start directly with [ACT], [SKIP], or [DONE], then give your public response.`;
+                const rawStream = llmChatStreaming(this.llmProvider, systemPrompt, buildPersonaUserMessage(personaContext, attemptPrompt));
+                const filteredStream = streamWithThinkingFilter(rawStream);
+
+                for await (const event of filteredStream) {
+                  if (event.type === "public_delta") {
+                    fullPublicText += event.text;
+                    enqueue({
+                      type: "persona_text_delta",
+                      simId: this.simId,
+                      persona: persona.name,
+                      text: event.text,
+                    });
+                  } else if (event.type === "thinking") {
+                    fullThinking += event.text;
+                  }
+                }
+
+                if (fullPublicText.trim().length === 0) {
+                  const reason = fullThinking.trim().length > 0
+                    ? "模型只生成了隐藏思考，没有生成公开发言"
+                    : "模型没有生成可见文本";
+
+                  if (attempt < PARALLEL_TEXT_MAX_ATTEMPTS) {
+                    log.warn(
+                      `[Parallel] Persona "${persona.name}" produced no public text on attempt ${attempt}/${PARALLEL_TEXT_MAX_ATTEMPTS}`,
+                      reason,
+                    );
+                    await delay(800 * attempt);
+                    continue;
+                  }
+
+                  throw new Error(reason);
+                }
+
+                if (fullThinking) {
+                  enqueue({
+                    type: "persona_thinking",
+                    simId: this.simId,
+                    persona: persona.name,
+                    thinking: fullThinking.trim(),
+                  });
+                }
+
+                personaResults.set(persona.name, {
+                  publicText: fullPublicText.trim(),
+                  actionSummaries: [],
+                });
+
                 enqueue({
-                  type: "persona_text_delta",
+                  type: "persona_done",
                   simId: this.simId,
                   persona: persona.name,
-                  text: event.text,
+                  fullResponse: fullPublicText.trim(),
                 });
-              } else if (event.type === "thinking") {
-                fullThinking += event.text;
+                completed = true;
+                break;
+              } catch (err) {
+                lastError = err;
+                const reason = describeSimulationError(err);
+                log.warn(
+                  `[Parallel] Persona "${persona.name}" text generation attempt ${attempt}/${PARALLEL_TEXT_MAX_ATTEMPTS} failed`,
+                  reason,
+                );
+
+                if (
+                  attempt < PARALLEL_TEXT_MAX_ATTEMPTS &&
+                  fullPublicText.trim().length === 0 &&
+                  isRetryableSimulationError(err)
+                ) {
+                  await delay(800 * attempt);
+                  continue;
+                }
+
+                throw err;
               }
             }
 
-            if (fullThinking) {
-              enqueue({
-                type: "persona_thinking",
-                simId: this.simId,
-                persona: persona.name,
-                thinking: fullThinking.trim(),
-              });
-            }
-
-            personaResults.set(persona.name, {
-              publicText: fullPublicText.trim(),
-              actionSummaries: [],
-            });
-
-            enqueue({
-              type: "persona_done",
-              simId: this.simId,
-              persona: persona.name,
-              fullResponse: fullPublicText.trim(),
-            });
+            if (!completed) throw lastError;
           }
         } catch (err) {
-          log.error(`[Parallel] Persona "${persona.name}" failed`, err instanceof Error ? err.message : String(err));
-          console.warn(`[SimulationRunner] Parallel persona failed:`, err);
+          const reason = describeSimulationError(err);
+          log.error(`[Parallel] Persona "${persona.name}" failed`, reason);
+          const failureText = `（本轮生成失败，已跳过：${reason}）`;
+          personaResults.set(persona.name, {
+            publicText: failureText,
+            actionSummaries: [],
+          });
+          enqueue({
+            type: "persona_text_delta",
+            simId: this.simId,
+            persona: persona.name,
+            text: failureText,
+          });
           enqueue({
             type: "persona_done",
             simId: this.simId,
             persona: persona.name,
-            fullResponse: "",
+            fullResponse: failureText,
           });
         } finally {
           activeCount--;
@@ -1039,19 +1175,19 @@ export class SimulationRunner {
         log.step(`[Roundtable] Persona "${persona.name}" starting (text-only)`, {
           userMessage,
         });
-        const systemPrompt = buildPersonaSystemPrompt(
+        const systemPrompt = buildSimulationSystemPrompt();
+        const personaContext = buildPersonaContextPrompt(
           persona,
           this.scenario.body,
           this.scenario.language,
           undefined,
           this.resolveSkillInstructions(persona),
         );
-        console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
 
         const rawStream = llmChatStreaming(
           this.llmProvider,
           systemPrompt,
-          userMessage,
+          buildPersonaUserMessage(personaContext, userMessage),
         );
         const filteredStream = streamWithThinkingFilter(rawStream);
 
@@ -1276,7 +1412,8 @@ export class SimulationRunner {
           }
         } else {
           // 纯文本 Persona：流式文本生成（复用 roundtable 的流式路径）
-          const systemPrompt = buildPersonaSystemPrompt(
+          const systemPrompt = buildSimulationSystemPrompt();
+          const personaContext = buildPersonaContextPrompt(
             currentSpeaker,
             this.scenario.body,
             this.scenario.language,
@@ -1287,7 +1424,7 @@ export class SimulationRunner {
           const rawStream = llmChatStreaming(
             this.llmProvider,
             systemPrompt,
-            userMessage,
+            buildPersonaUserMessage(personaContext, userMessage),
           );
           const filteredStream = streamWithThinkingFilter(rawStream);
 
@@ -1428,8 +1565,8 @@ export class SimulationRunner {
       roundActionsCount: roundActions.length,
     });
 
-    const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, undefined, this.resolveSkillInstructions(persona));
-    console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
+    const systemPrompt = buildSimulationSystemPrompt();
+    const personaContext = buildPersonaContextPrompt(persona, this.scenario.body, this.scenario.language, undefined, this.resolveSkillInstructions(persona));
 
     const actionsContext = roundActions.length > 0
       ? roundActions.join("\n")
@@ -1444,7 +1581,7 @@ export class SimulationRunner {
     const fullText = await llmChat(
       this.llmProvider,
       systemPrompt,
-      userMessage,
+      buildPersonaUserMessage(personaContext, userMessage),
     );
 
     const { thinking, publicText } = separateThinking(fullText);
@@ -1516,8 +1653,8 @@ export class SimulationRunner {
       userMessage,
     });
 
-    const systemPrompt = buildPersonaSystemPrompt(persona, this.scenario.body, this.scenario.language, true, this.resolveSkillInstructions(persona));
-    console.log(`[SimulationRunner] systemPrompt for persona ${persona.name}:\n${systemPrompt}`);
+    const systemPrompt = buildSimulationSystemPrompt();
+    const personaContext = buildPersonaContextPrompt(persona, this.scenario.body, this.scenario.language, true, this.resolveSkillInstructions(persona));
 
     const toolDefs: ToolDefinition[] = tools.map((t) => ({
       name: t.name,
@@ -1527,7 +1664,7 @@ export class SimulationRunner {
 
     // 构建对话 messages
     const messages: Message[] = [
-      { role: "user", content: userMessage },
+      { role: "user", content: buildPersonaUserMessage(personaContext, userMessage) },
     ];
 
     // 行动记录（给 transcript 用）
