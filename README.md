@@ -16,17 +16,6 @@
 
 ---
 
-## 项目亮点
-
-| | 亮点 | 说明 |
-|---|---|---|
-| 1 | **零框架依赖** | 不依赖框架，从 LLM 流式调用到 ReAct 循环全部手写，理解每一层在做什么 |
-| 2 | **多 Agent 协调系统 (Lovely Octopus)** | 完整的团队运行时：确定性路由 + LLM 决策、任务队列状态机、HITL 审批门控、跨 Agent 通信 |
-| 3 | **多 Agent 圆桌模拟引擎** | Parallel / Roundtable / Free 三种模式，支持 Persona 角色扮演、论点提取、用户作为 Moderator 参与 |
-| 4 | **语义skills检索** | BM25 + 向量混合检索 → Rerank 二次确认，运行时动态匹配最相关 Skill 注入 System Prompt |
-
----
-
 ## 功能概览
 
 - **核心 Agent 循环** — ReAct (Think → Act → Observe → Loop)，支持流式输出、Abort/Inject 中断注入
@@ -38,10 +27,9 @@
 - **Skill 生态兼容** — 兼容 OpenClaw SKILL.md 格式（13000+ 现成 Skills）
 - **MCP 客户端** — JSON-RPC 2.0 over stdio，config 驱动连接管理
 - **定时调度** — Cron 定时任务 + Event Watcher 条件监控
-- **三层上下文记忆** — Context Hub (PARA 目录结构) + 向量检索 + 每日日志
+- **三层上下文记忆** — Context Hub (PARA 目录结构 project, area, resources, archives) + 向量检索 + 每日日志
 - **团队模式** — 多 Agent 长驻运行，TaskQueue 任务分发，Coordinator 调度决策
 - **HITL 审批** — 软审批（Agent 主动请求）+ 硬门控（规则拦截），自然语言批复
-- **模拟引擎** — 预置 11 个 Persona（Musk、Feynman、苏格拉底等），3 种执行模式
 - **Web UI** — Next.js + React + Tailwind + shadcn/ui，实时流式渲染
 - **飞书集成** — Webhook 适配器，支持 IM 场景接入
 
@@ -80,7 +68,7 @@
 
 ### Gateway — 网关服务
 
-[GatewayServer.ts](src/gateway/GatewayServer.ts) 基于 Bun.serve 的 WebSocket 服务器，处理所有客户端消息、Session 管理、工具/技能/记忆/模拟/团队命令。
+[GatewayServer.ts](src/gateway/GatewayServer.ts) 基于 Bun.serve 的 WebSocket 服务器，处理所有客户端消息、Session 管理、工具/技能/记忆/团队命令。
 
 [SessionRouter.ts](src/gateway/SessionRouter.ts) per-session 的 AgentLoop 管理，串行请求排队、空闲超时清理、消息注入。
 
@@ -137,25 +125,10 @@ Context Hub (~/.little_claw/context-hub/)
 1. 软审批 — Agent 主动调用 `request_approval` 工具请求人工确认
 2. 硬门控 — `approval_rules` 配置规则自动拦截匹配的工具调用
 
-### Simulation — 多 Agent 模拟
-
-[SimulationRunner.ts](src/simulation/SimulationRunner.ts) 支持三种执行模式：
-
-| 模式 | 说明 |
-|------|------|
-| Parallel | 各 Agent 独立反应（真并行），互不可见 |
-| Roundtable | 顺序发言，通过 transcript 看到之前所有人的发言 |
-| Free | 自由互动，维护 worldState，每轮看到环境+所有人行动 |
-
-预置 11 个 Persona（Elon Musk、Sam Altman、Feynman、苏格拉底等），用户可作为 Moderator 参与控制轮次。
-
-[ArgumentExtractor.ts](src/simulation/ArgumentExtractor.ts) 每轮自动提取论点结构（topic、supporters、opposers、consensusLevel）。
-
 ### Web UI
 
 Next.js 前端应用，功能包括：
 - 实时流式对话渲染（ToolCallCard、SubAgentCard、SkillsMatchedBanner）
-- 模拟模式三栏 UI（Argument Map + Discussion + Control Panel）
 - Mission Control 面板（Team、Tasks、Channels、Projects、Memory）
 - 审批交互（ApprovalCard）
 
@@ -285,7 +258,7 @@ AI 应用本质是 I/O 编排（LLM 调用、WebSocket 通信、子进程管理�
 ### 为什么不用 LangChain ？
 
 - 理解每一层的实现细节，调试和定制无障碍
-- Inject（运行中注入指令）、模拟引擎、团队运行时等需求超出框架预设
+- Inject（运行中注入指令）、团队运行时等需求超出框架预设
 - 框架抽象层厚，出问题难排查
 
 ---
