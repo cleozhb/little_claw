@@ -177,6 +177,39 @@ describe("TaskQueue", () => {
     expect(queue.listTasks()).toEqual([]);
   });
 
+  test("rejects failed or cancelled tasks as new dependencies", () => {
+    const failed = queue.createTask({
+      title: "Failed prerequisite",
+      description: "This should not block a retry forever.",
+      createdBy: "human",
+      assignedTo: "coder",
+      maxRetries: 1,
+    });
+    queue.startTask(failed.id);
+    queue.failTask(failed.id, "boom", "coder");
+
+    expect(() =>
+      queue.createTask({
+        title: "Retry as new task",
+        description: "Should be independent instead.",
+        createdBy: "coordinator",
+        dependsOn: [failed.id],
+      }),
+    ).toThrow("dependencies must be tasks that can complete successfully");
+
+    expect(() =>
+      queue.createTaskDag([
+        {
+          key: "retry",
+          title: "Retry as DAG node",
+          description: "Should be independent instead.",
+          createdBy: "coordinator",
+          dependsOn: [failed.id],
+        },
+      ]),
+    ).toThrow("dependencies must be tasks that can complete successfully");
+  });
+
   test("keeps directly assigned dependent tasks pending until dependencies complete", () => {
     const parent = queue.createTask({
       title: "Parent",

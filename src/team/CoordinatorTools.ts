@@ -121,7 +121,7 @@ export function ensureCoordinatorTools(
 function createTaskTool(context: CoordinatorToolContext): Tool {
   return {
     name: "create_task",
-    description: "Create a Lovely Octopus task through TaskQueue.",
+    description: "Create a Lovely Octopus task through TaskQueue. depends_on is only for prerequisite tasks that must complete successfully before this task starts; do not use depends_on to link retries, reruns, or follow-ups to failed/cancelled tasks.",
     parameters: {
       type: "object",
       properties: {
@@ -170,7 +170,7 @@ function createTaskDagTool(context: CoordinatorToolContext): Tool {
   return {
     name: "create_task_dag",
     description:
-      "Create a multi-task DAG atomically through TaskQueue. Use this instead of repeated create_task calls whenever one workflow needs several dependent tasks. Each node needs a key; depends_on may reference earlier/later node keys or existing task ids.",
+      "Create a multi-task DAG atomically through TaskQueue. Use this instead of repeated create_task calls whenever one workflow needs several dependent tasks. Each node needs a key; depends_on may reference earlier/later node keys or existing task ids, but only for prerequisite tasks that must complete successfully. Do not use depends_on for retries, reruns, or follow-ups to failed/cancelled tasks.",
     parameters: {
       type: "object",
       properties: {
@@ -348,7 +348,7 @@ function assignTaskTool(context: CoordinatorToolContext): Tool {
 function delegateTaskTool(context: CoordinatorToolContext): Tool {
   return {
     name: "delegate_task",
-    description: "Create a child task linked to a parent task through TaskQueue.",
+    description: "Create a child task linked to a parent task through TaskQueue. depends_on is only for successful prerequisites; parent_task_id records the delegation relationship and should not be duplicated in depends_on for retries or follow-ups.",
     parameters: {
       type: "object",
       properties: {

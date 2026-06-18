@@ -544,6 +544,7 @@ For recurring reminders, periodic work, or a user asking to do something at a fu
 Prefer deterministic assignment and status checks when they are enough.
 When delegating executable work to agents, create_task, create_task_dag, or delegate_task must create durable TaskQueue records first.
 Use create_task_dag instead of repeated create_task calls for any multi-step workflow with dependencies, so the DAG is created atomically.
+depends_on only means a prerequisite task must complete successfully before this task can start. Never use depends_on to connect retries, reruns, or follow-ups to failed/cancelled tasks; create an independent task and mention the prior task in the description instead.
 send_message_to_agent is only for informal DM or existing-task follow-up, never for assigning new work.
 </coordinator_boundaries>`;
 }

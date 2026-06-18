@@ -206,6 +206,7 @@ export class TaskQueue {
   }
 
   createTask(params: CreateTaskParams): Task {
+    this.assertCreatableDependencies(params.dependsOn ?? []);
     const task = this.buildTask(params, new Date().toISOString());
 
     // createTask 是任务生命周期的入口；创建任务本身也必须写日志，方便重启后追溯来源。
@@ -237,8 +238,14 @@ export class TaskQueue {
       const dependsOn = (node.dependsOn ?? []).map((dependency) => {
         const mapped = keyToId.get(dependency);
         if (mapped) return mapped;
-        if (!this.getTask(dependency)) {
+        const existing = this.getTask(dependency);
+        if (!existing) {
           throw new Error(`Unknown task DAG dependency "${dependency}" for node "${key}".`);
+        }
+        if (isTerminalNonSuccess(existing.status)) {
+          throw new Error(
+            `Task DAG dependency "${dependency}" for node "${key}" is ${existing.status}; dependencies must be tasks that can complete successfully.`,
+          );
         }
         return dependency;
       });
@@ -728,6 +735,20 @@ export class TaskQueue {
     }
   }
 
+  private assertCreatableDependencies(dependencyIds: string[]): void {
+    for (const dependencyId of dependencyIds) {
+      const dependency = this.getTask(dependencyId);
+      if (!dependency) {
+        throw new Error(`Unknown task dependency "${dependencyId}".`);
+      }
+      if (isTerminalNonSuccess(dependency.status)) {
+        throw new Error(
+          `Task dependency "${dependencyId}" is ${dependency.status}; dependencies must be tasks that can complete successfully. Use a task description or related-task metadata for retries/follow-ups instead of depends_on.`,
+        );
+      }
+    }
+  }
+
   private dependenciesCompleted(task: Task): boolean {
     // 缺失的依赖按未完成处理，防止任务引用错误时被提前执行。
     return task.dependsOn.every((dependencyId) => {
@@ -765,6 +786,10 @@ function hasTagOverlap(left: string[], right: string[]): boolean {
   if (left.length === 0 || right.length === 0) return false;
   const rightSet = new Set(right);
   return left.some((tag) => rightSet.has(tag));
+}
+
+function isTerminalNonSuccess(status: TaskStatus): boolean {
+  return status === "failed" || status === "cancelled";
 }
 
 function unique(values: string[]): string[] {
