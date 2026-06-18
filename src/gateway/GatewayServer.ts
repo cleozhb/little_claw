@@ -198,6 +198,12 @@ export class GatewayServer {
 
     this.teamMessages?.onMessageCreated((message) => {
       this.broadcastToAll({ type: "team_message_added", message: serializeTeamMessage(message) });
+      this.notifyFeishuTeamReply(message).catch((err) => {
+        console.error(
+          `[Gateway] Failed to push Feishu team reply for message ${message.id}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      });
     });
 
     this.taskQueue?.onTaskUpdated((task, eventType) => {
@@ -2112,12 +2118,14 @@ mode 等程序枚举值必须保持英文，其余面向用户和模型理解的
       });
     }
 
-    // 4. 先返回 200（飞书要求 1s 内响应），异步处理消息并主动发送 ack。
+    // 4. 先返回 200（飞书要求 1s 内响应），异步按消息意图选择 chat/team 处理。
     const { chatId } = message;
+    const route = this.decideFeishuRoute(message);
+    const routedMessage = { ...message, text: route.text };
 
-    const processor = this.teamRouter
-      ? this.processFeishuTeamMessage(message)
-      : this.processWebhookMessage(chatId, message.text);
+    const processor = route.mode === "team" && this.teamRouter
+      ? this.processFeishuTeamMessage(routedMessage)
+      : this.processWebhookMessage(chatId, route.text);
     processor.catch((err) => {
       console.error(
         `[Feishu] Error processing message from chat ${chatId}:`,
@@ -2129,6 +2137,41 @@ mode 等程序枚举值必须保持英文，其余面向用户和模型理解的
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  /**
+   * 飞书入口路由规则：显式 team/chat 命令优先，其次团队语法和群绑定，其他默认 chat。
+   */
+  private decideFeishuRoute(message: WebhookMessage): { mode: "chat" | "team"; text: string } {
+    const text = message.text.trim();
+
+    const chatCommand = text.match(/^\/chat(?:\s+([\s\S]*))?$/i);
+    if (chatCommand) {
+      return { mode: "chat", text: chatCommand[1]?.trim() ?? "" };
+    }
+
+    const teamCommand = text.match(/^\/team(?:\s+([\s\S]*))?$/i);
+    if (teamCommand) {
+      return { mode: "team", text: teamCommand[1]?.trim() ?? "" };
+    }
+
+    if (this.isExplicitTeamMessage(text)) {
+      return { mode: "team", text };
+    }
+
+    if (this.projectChannels?.resolveExternalChat(message.channelType, message.chatId)) {
+      return { mode: "team", text };
+    }
+
+    return { mode: "chat", text };
+  }
+
+  private isExplicitTeamMessage(text: string): boolean {
+    return (
+      /^@[A-Za-z0-9_-]+(?:\s|$)/.test(text) ||
+      /^#[a-z0-9][a-z0-9_-]*(?:\s|$)/.test(text) ||
+      /^\/task\s+/i.test(text)
+    );
   }
 
   /**
@@ -2191,6 +2234,37 @@ mode 等程序枚举值必须保持英文，其余面向用户和模型理解的
       );
       await this.feishuAdapter.sendToChannel(message.chatId, "消息已收到，但团队路由失败，请稍后重试。");
     }
+  }
+
+  private async notifyFeishuTeamReply(message: TeamMessage): Promise<void> {
+    if (!this.feishuAdapter || !this.teamMessages) return;
+    if (message.externalChannel || message.senderType === "human" || message.senderType === "system") return;
+
+    const source = this.findLatestFeishuSourceMessage(message);
+    if (!source?.externalChatId) return;
+
+    await this.feishuAdapter.sendToChannel(source.externalChatId, message.content);
+  }
+
+  private findLatestFeishuSourceMessage(message: TeamMessage): TeamMessage | null {
+    if (!this.teamMessages) return null;
+
+    const candidates = this.teamMessages.listMessages({
+      channelType: message.channelType,
+      channelId: message.channelId,
+      limit: 100,
+    });
+
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const candidate = candidates[index];
+      if (!candidate || candidate.id === message.id) continue;
+      if (candidate.createdAt > message.createdAt) continue;
+      if (candidate.senderType !== "human") continue;
+      if (candidate.externalChannel !== "feishu" || !candidate.externalChatId) continue;
+      return candidate;
+    }
+
+    return null;
   }
 
   private async notifyFeishuApprovalNeeded(task: Task): Promise<void> {

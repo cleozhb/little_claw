@@ -30,6 +30,8 @@ let scheduleAdapter: TeamScheduleAdapter;
 let router: TeamRouter;
 let gateway: GatewayServer;
 let sent: any[];
+let acks: string[];
+let webhookChats: Array<{ sessionId: string; content: string }>;
 
 const llmProvider: LLMProvider = {
   async *chat() {},
@@ -74,6 +76,7 @@ beforeEach(() => {
     agents: registry,
     tasks,
   });
+  webhookChats = [];
   gateway = new GatewayServer({
     db,
     toolRegistry: new ToolRegistry(),
@@ -86,8 +89,13 @@ beforeEach(() => {
     teamSchedules: schedules,
     teamScheduleAdapter: scheduleAdapter,
     contextHub: new ContextHub(contextDir),
+    async onWebhookChat(sessionId, content) {
+      webhookChats.push({ sessionId, content });
+      return `chat reply: ${content}`;
+    },
   });
   sent = [];
+  acks = [];
   (gateway as any).connections.set("conn-1", {
     send(raw: string) {
       sent.push(JSON.parse(raw));
@@ -105,6 +113,41 @@ afterEach(() => {
     unlinkSync(TEST_DB + "-shm");
   } catch {}
 });
+
+function installFeishuAdapter(text: string, externalMessageId: string): void {
+  (gateway as any).feishuAdapter = {
+    decryptBody(body: Record<string, unknown>) {
+      return body;
+    },
+    handleChallenge() {
+      return null;
+    },
+    verifyToken() {
+      return true;
+    },
+    parseToInternal() {
+      return {
+        channelType: "feishu",
+        chatId: "chat-1",
+        externalMessageId,
+        userId: "open-1",
+        text,
+      };
+    },
+    async sendToChannel(_chatId: string, content: string) {
+      acks.push(content);
+    },
+  };
+}
+
+function postFeishuWebhook(): Promise<Response> {
+  return (gateway as any).handleFeishuWebhook(
+    new Request("http://localhost/webhook/feishu", {
+      method: "POST",
+      body: JSON.stringify({ ok: true }),
+    }),
+  );
+}
 
 describe("Gateway team protocol", () => {
   test("parses new team client messages", () => {
@@ -408,42 +451,84 @@ describe("Gateway team protocol", () => {
     expect(sent.some((msg) => msg.type === "error" && msg.message.includes("updates must be an object"))).toBe(true);
   });
 
-  test("feishu webhook enters TeamRouter and sends ack without running session chat", async () => {
-    const acks: string[] = [];
-    (gateway as any).feishuAdapter = {
-      decryptBody(body: Record<string, unknown>) {
-        return body;
-      },
-      handleChallenge() {
-        return null;
-      },
-      verifyToken() {
-        return true;
-      },
-      parseToInternal() {
-        return {
-          channelType: "feishu",
-          chatId: "chat-1",
-          externalMessageId: "event-1",
-          userId: "open-1",
-          text: "@dev 修复飞书入口",
-        };
-      },
-      async sendToChannel(_chatId: string, content: string) {
-        acks.push(content);
-      },
-    };
+  test("feishu webhook routes explicit team syntax through TeamRouter", async () => {
+    installFeishuAdapter("@dev 修复飞书入口", "event-team-agent");
 
-    const response = await (gateway as any).handleFeishuWebhook(
-      new Request("http://localhost/webhook/feishu", {
-        method: "POST",
-        body: JSON.stringify({ ok: true }),
-      }),
-    );
+    const response = await postFeishuWebhook();
     await Bun.sleep(0);
 
     expect(response.status).toBe(200);
     expect(acks[0]).toContain("@coder");
+    expect(webhookChats.length).toBe(0);
     expect(messages.listMessages({ channelType: "agent_dm", channelId: "coder" }).length).toBe(1);
+  });
+
+  test("feishu webhook defaults plain messages to chat mode", async () => {
+    installFeishuAdapter("帮我解释一下这个报错", "event-chat-default");
+
+    const response = await postFeishuWebhook();
+    await Bun.sleep(0);
+
+    expect(response.status).toBe(200);
+    expect(webhookChats[0]?.content).toBe("帮我解释一下这个报错");
+    expect(acks[0]).toBe("chat reply: 帮我解释一下这个报错");
+    expect(messages.listMessages({ channelType: "coordinator" }).length).toBe(0);
+  });
+
+  test("feishu webhook supports /chat and /team route overrides", async () => {
+    installFeishuAdapter("/chat @dev 只是普通聊天", "event-chat-command");
+    await postFeishuWebhook();
+    await Bun.sleep(0);
+
+    expect(webhookChats[0]?.content).toBe("@dev 只是普通聊天");
+    expect(acks[0]).toBe("chat reply: @dev 只是普通聊天");
+    expect(messages.listMessages({ channelType: "agent_dm", channelId: "coder" }).length).toBe(0);
+
+    installFeishuAdapter("/team @dev 修复飞书入口", "event-team-command");
+    await postFeishuWebhook();
+    await Bun.sleep(0);
+
+    expect(acks[1]).toContain("@coder");
+    expect(messages.listMessages({ channelType: "agent_dm", channelId: "coder" }).length).toBe(1);
+  });
+
+  test("feishu webhook routes bound chats to team mode", async () => {
+    const channel = channels.createChannel({ slug: "lovely-octopus", title: "Lovely Octopus" });
+    channels.bindExternalChat({
+      externalChannel: "feishu",
+      externalChatId: "chat-1",
+      channelType: "project",
+      channelId: channel.id,
+      createdBy: "test",
+    });
+    installFeishuAdapter("继续推进", "event-bound-project");
+
+    const response = await postFeishuWebhook();
+    await Bun.sleep(0);
+
+    expect(response.status).toBe(200);
+    expect(acks[0]).toContain("#lovely-octopus");
+    expect(webhookChats.length).toBe(0);
+    expect(messages.listMessages({ project: "lovely-octopus" }).length).toBe(1);
+  });
+
+  test("pushes later team replies back to the originating Feishu chat", async () => {
+    installFeishuAdapter("/team tinker最近有啥发现？", "event-team-followup");
+    await postFeishuWebhook();
+    await Bun.sleep(0);
+
+    messages.createMessage({
+      channelType: "coordinator",
+      channelId: "default",
+      senderType: "coordinator",
+      senderId: "coordinator",
+      content: "Tinker 最近完成了 Prompt Arena 红队攻防。",
+      status: "resolved",
+      handledBy: "coordinator",
+    });
+    await Bun.sleep(0);
+
+    expect(acks[0]).toContain("coordinator");
+    expect(acks[1]).toBe("Tinker 最近完成了 Prompt Arena 红队攻防。");
   });
 });
