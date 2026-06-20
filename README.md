@@ -1,13 +1,17 @@
 # Little Claw — AI Agent 全栈平台
 
 > 跳出上层框架限制，从 0 到 1 深入探索并构建 AI Agent Runtime
-
-||||
-| :---: | :---: | :---: |
-| <img src="https://github.com/user-attachments/assets/9a84354c-f98b-445f-a203-e0c9272326ff" width="100%" /> | <img src="https://github.com/user-attachments/assets/1f0b86f0-2e41-4576-a131-528e5afcd06e" width="100%" /> | <img src="https://github.com/user-attachments/assets/564b907c-3f58-44ea-ba25-8372d0dc7f52" width="100%" /> |
-| <img src="https://github.com/user-attachments/assets/b38b35ea-d575-4288-804e-38c76f244770" width="100%" /> | <img src="https://github.com/user-attachments/assets/690fe374-9fc7-44f4-b734-2971ecf569d9" width="100%" /> | <img src="https://github.com/user-attachments/assets/f457411a-b578-4281-830f-ffdbd0cf4253" width="100%" /> |
-
 ---
+
+<div align="center">
+  <table width="700">
+    <tr>
+      <td align="center">
+        <video src="https://github.com/user-attachments/assets/6f681b1d-9194-49cb-b5b5-faba399c7cc8" controls muted></video>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ## 功能概览
 
