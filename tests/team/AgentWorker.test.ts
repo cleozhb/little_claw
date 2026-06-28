@@ -705,6 +705,42 @@ describe("AgentWorker", () => {
     expect(approvedKeys.length).toBeGreaterThan(0);
   });
 
+  test("hard deny gate returns a tool error without pausing for approval", async () => {
+    toolRegistry.register(fakeTool("shell"));
+    const task = tasks.createTask({
+      title: "No shell task",
+      description: "The agent must finish without shell.",
+      createdBy: "human",
+      assignedTo: "tinker",
+    });
+    const llm = new ScriptedLLM([
+      { type: "tool", name: "shell", input: { command: "mkdir -p tinker/runs/day" } },
+      { type: "text", text: "改用 write_file 方案完成" },
+    ]);
+    const tinker = agent("tinker", ["shell"]);
+    tinker.config.approval_rules = [
+      { tool: "shell", action: "deny", message: "Tinker 不允许直接执行 shell 命令。" },
+    ];
+    const worker = new AgentWorker({
+      agent: tinker,
+      tasks,
+      messages,
+      db,
+      llmProvider: llm,
+      toolRegistry,
+      maxTurns: 3,
+    });
+
+    await worker.tick();
+
+    const latest = tasks.getTask(task.id);
+    expect(latest?.status).toBe("completed");
+    expect(latest?.result).toBe("改用 write_file 方案完成");
+    expect(llm.calls[0]?.tools.map((tool) => tool.name)).not.toContain("shell");
+    expect(tasks.getTaskLogs(task.id).map((log) => log.eventType)).not.toContain("approval_requested");
+    expect(messages.getPendingForAgent("tinker")).toEqual([]);
+  });
+
   test("hard approval gate stops cleanly when the task already failed", async () => {
     toolRegistry.register(fakeTool("dangerous_tool"));
     const task = tasks.createTask({

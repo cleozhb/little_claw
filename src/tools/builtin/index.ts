@@ -10,8 +10,12 @@ import { createWatcherTool } from "./WatcherTool.ts";
 import type { WatcherToolContext } from "./WatcherTool.ts";
 import { createWebSearchTool } from "./WebSearchTool.ts";
 import { createWebFetchTool } from "./WebFetchTool.ts";
+import { createReadContentRefTool } from "./ReadContentRefTool.ts";
+import { createSearchContentRefTool } from "./SearchContentRefTool.ts";
+import { ContentStore } from "../../memory/ContentStore.ts";
+import type { EmbeddingProvider } from "../../memory/EmbeddingProvider.ts";
 
-export { createReadFileTool, createWriteFileTool, createShellTool, createCronTool, createWatcherTool, createWebSearchTool, createWebFetchTool };
+export { createReadFileTool, createWriteFileTool, createShellTool, createCronTool, createWatcherTool, createWebSearchTool, createWebFetchTool, createReadContentRefTool, createSearchContentRefTool };
 export { createMemoryWriteTool } from "./MemoryWriteTool.ts";
 export { createMemoryReadTool } from "./MemoryReadTool.ts";
 export { createContextWriteTool } from "./ContextWriteTool.ts";
@@ -31,6 +35,8 @@ export interface BuiltinToolsOptions {
   workspaceRoot: string;
   schedulerOptions?: SchedulerToolsOptions;
   summarizerProvider?: LLMProvider;
+  embeddingProvider?: EmbeddingProvider;
+  contentStore?: ContentStore;
 }
 
 export function createBuiltinTools(workspaceRoot: string, schedulerOptions?: SchedulerToolsOptions): BuiltinTools;
@@ -44,12 +50,17 @@ export function createBuiltinTools(
     : arg;
 
   const shellTool = createShellTool(opts.workspaceRoot);
+  const contentStore = opts.contentStore ?? new ContentStore(opts.workspaceRoot, {
+    embeddingProvider: opts.embeddingProvider,
+  });
   const tools: Tool[] = [
-    createReadFileTool(opts.workspaceRoot),
+    createReadFileTool(opts.workspaceRoot, { contentStore }),
     createWriteFileTool(opts.workspaceRoot),
     shellTool,
     createWebSearchTool({ llmProvider: opts.summarizerProvider }),
-    createWebFetchTool({ llmProvider: opts.summarizerProvider }),
+    createWebFetchTool({ llmProvider: opts.summarizerProvider, contentStore }),
+    createReadContentRefTool({ contentStore }),
+    createSearchContentRefTool({ contentStore, embeddingProvider: opts.embeddingProvider }),
   ];
 
   if (opts.schedulerOptions?.cronContext) {

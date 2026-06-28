@@ -294,9 +294,12 @@ describe("TaskQueue", () => {
     expect(retry.status).toBe("pending");
     expect(retry.retryCount).toBe(1);
     expect(retry.assignedTo).toBeUndefined();
+    expect(retry.error).toBe("first failure");
 
     queue.assignTask(task.id, "coder");
-    queue.startTask(task.id);
+    const restarted = queue.startTask(task.id);
+    expect(restarted.error).toBeUndefined();
+    expect(restarted.dueAt).toBeUndefined();
     const failed = queue.failTask(task.id, "second failure");
     expect(failed.status).toBe("failed");
     expect(failed.retryCount).toBe(2);

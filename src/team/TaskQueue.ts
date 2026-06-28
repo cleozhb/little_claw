@@ -342,6 +342,8 @@ export class TaskQueue {
 
     task.status = "running";
     task.assignedTo = agentName ?? task.assignedTo;
+    task.error = undefined;
+    task.dueAt = undefined;
     task.startedAt ??= new Date().toISOString();
     this.saveTask(task);
     this.addLog(task.id, "started", {

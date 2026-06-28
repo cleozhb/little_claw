@@ -5,6 +5,7 @@ import path from "node:path";
 export const PROJECTS_ROOT = path.join(homedir(), ".little_claw", "context-hub", "3-projects");
 const RECENT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 const IGNORED_FILE_NAMES = new Set([".overview.md", ".abstract.md"]);
+const IGNORED_DIRECTORY_NAMES = new Set(["content-refs"]);
 
 export interface ProjectDocFile {
   name: string;
@@ -76,11 +77,13 @@ async function walkProjectDirectory(
       const absolutePath = path.join(directory, entry.name);
 
       if (entry.isDirectory()) {
+        if (IGNORED_DIRECTORY_NAMES.has(entry.name)) return;
+
         await walkProjectDirectory(absolutePath, project, cutoff, files);
         return;
       }
 
-      if (!entry.isFile() || IGNORED_FILE_NAMES.has(entry.name)) return;
+      if (!entry.isFile() || isIgnoredProjectDocPath(entry.name)) return;
 
       let fileStat;
       try {
@@ -113,7 +116,7 @@ export async function resolveProjectDocFile(relativePath: string) {
     throw new Error("Invalid project file path.");
   }
 
-  if (IGNORED_FILE_NAMES.has(path.basename(normalizedPath))) {
+  if (isIgnoredProjectDocPath(normalizedPath)) {
     throw new Error("This project file is ignored.");
   }
 
@@ -138,4 +141,11 @@ export async function resolveProjectDocFile(relativePath: string) {
       updatedAt: fileStat.mtime.toISOString(),
     } satisfies ProjectDocFile,
   };
+}
+
+function isIgnoredProjectDocPath(relativePath: string) {
+  const parts = relativePath.split(/[\\/]+/).filter(Boolean);
+  if (parts.some((part) => IGNORED_DIRECTORY_NAMES.has(part))) return true;
+
+  return IGNORED_FILE_NAMES.has(path.basename(relativePath));
 }

@@ -18,6 +18,8 @@ export interface AgentConfig {
   canSpawnSubAgent: boolean;
   /** 硬审批拦截规则，工具执行前自动检查 */
   approvalRules?: ApprovalRule[];
+  /** Optional hard per-run tool call limits. A call past the limit is rejected before execution. */
+  toolLimits?: Record<string, number>;
 }
 
 /** 创建 AgentConfig 的便捷函数，提供合理默认值 */

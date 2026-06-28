@@ -50,7 +50,7 @@ beforeEach(() => {
     config: {
       name: "coder",
       role: "Implement code tasks.",
-      aliases: ["dev"],
+      aliases: ["dev", "research-project", "rejection-project"],
       tools: ["read_file"],
       task_tags: ["code", "test"],
       max_concurrent_tasks: 1,
@@ -176,7 +176,7 @@ describe("Team mode internal E2E", () => {
     expect(workerCall?.tools.map((tool) => tool.name)).not.toContain("create_task");
     expect(JSON.stringify(workerCall?.messages ?? [])).toContain(projectContext.content);
   });
-  test("project channel message flows through coordinator and worker with results posted back", async () => {
+  test("project channel message is delegated to its owner and worker posts results back", async () => {
     const project = channels.createChannel({
       slug: "research-project",
       title: "Research Project",
@@ -189,21 +189,6 @@ describe("Team mode internal E2E", () => {
     });
 
     const llm = new ScriptedLLM([
-      // Coordinator: create_task tool call
-      {
-        type: "tool",
-        name: "create_task",
-        input: {
-          title: "调研 Claude Code 实现原理",
-          description: "Research Claude Code internals and produce a summary.",
-          tags: ["code"],
-          project: project.slug,
-          channel_id: project.id,
-          source_message_id: humanMessage.id,
-        },
-      },
-      // Coordinator: text reply (posted to project channel)
-      { type: "text", text: "已创建调研任务，正在分配给 coder。" },
       // Worker: text completion (result posted back to project channel)
       { type: "text", text: "Claude Code 实现原理总结：基于 ReAct 循环的智能体架构。" },
     ]);
@@ -219,34 +204,28 @@ describe("Team mode internal E2E", () => {
       projectSummaryThreshold: 99,
     });
 
-    // Tick 1: Coordinator picks up project channel message, creates task
+    // Tick 1: Coordinator deterministically delegates the project channel message to its owner.
     await coordinator.tick();
 
-    // Human message should be injected (consumed by coordinator)
+    // Human message should be injected into the created owner task.
     expect(messages.getMessage(humanMessage.id)?.status).toBe("injected");
 
-    // Task should be created with pending status
+    // Task should be created and assigned directly to the owning agent.
     const createdTask = tasks.listTasks({ project: project.slug })[0];
     expect(createdTask).toBeDefined();
-    expect(createdTask?.status).toBe("pending");
+    expect(createdTask?.status).toBe("assigned");
+    expect(createdTask?.assignedTo).toBe("coder");
     expect(createdTask?.createdBy).toBe("coordinator");
     expect(createdTask?.project).toBe(project.slug);
+    expect(createdTask?.channelId).toBe(project.id);
+    expect(createdTask?.sourceMessageId).toBe(humanMessage.id);
 
-    // Coordinator reply should be posted back to the project channel
+    // Deterministic delegation does not need an inline coordinator reply.
     const coordinatorReplies = messages.listMessages({
       channelType: "project",
       project: project.slug,
     }).filter((m) => m.senderType === "coordinator");
-    expect(coordinatorReplies).toHaveLength(1);
-    expect(coordinatorReplies[0]?.content).toBe("已创建调研任务，正在分配给 coder。");
-    expect(coordinatorReplies[0]?.status).toBe("resolved");
-
-    // Tick 2: assignPendingTasks assigns the task to coder
-    await coordinator.tick();
-
-    const assignedTask = tasks.getTask(createdTask!.id);
-    expect(assignedTask?.status).toBe("assigned");
-    expect(assignedTask?.assignedTo).toBe("coder");
+    expect(coordinatorReplies).toHaveLength(0);
 
     // Worker picks up and completes the task
     const worker = new AgentWorker({
@@ -274,15 +253,14 @@ describe("Team mode internal E2E", () => {
     expect(agentReplies[0]?.content).toBe("Claude Code 实现原理总结：基于 ReAct 循环的智能体架构。");
     expect(agentReplies[0]?.status).toBe("resolved");
 
-    // Verify the complete conversation flow in the project channel:
-    // human message → coordinator reply → agent result
+    // Verify the visible conversation flow in the project channel:
+    // human message → agent result
     const projectMessages = messages.listMessages({
       channelType: "project",
       project: project.slug,
     });
     const senderSequence = projectMessages.map((m) => `${m.senderType}:${m.senderId}`);
     expect(senderSequence).toContain("human:ceo");
-    expect(senderSequence).toContain("coordinator:coordinator");
     expect(senderSequence).toContain("agent:coder");
   });
 
@@ -312,21 +290,7 @@ describe("Team mode internal E2E", () => {
       content: "换一种方案来做吧。",
     });
 
-    const llm = new ScriptedLLM([
-      {
-        type: "tool",
-        name: "create_task",
-        input: {
-          title: "新方案任务",
-          description: "Try a different approach.",
-          tags: ["code"],
-          project: project.slug,
-          channel_id: project.id,
-          source_message_id: newMessage.id,
-        },
-      },
-      { type: "text", text: "已创建新方案任务。" },
-    ]);
+    const llm = new ScriptedLLM([]);
 
     const coordinator = new CoordinatorLoop({
       agents,
@@ -343,7 +307,13 @@ describe("Team mode internal E2E", () => {
 
     // The new message should be picked up (not blocked by rejected task)
     expect(messages.getMessage(newMessage.id)?.status).toBe("injected");
-    expect(llm.calls.length).toBeGreaterThan(0);
+    const createdTask = tasks
+      .listTasks({ project: project.slug })
+      .find((item) => item.id !== task.id);
+    expect(createdTask?.status).toBe("assigned");
+    expect(createdTask?.assignedTo).toBe("coder");
+    expect(createdTask?.sourceMessageId).toBe(newMessage.id);
+    expect(llm.calls).toHaveLength(0);
   });
 });
 

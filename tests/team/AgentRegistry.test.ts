@@ -262,8 +262,9 @@ timeout_minutes: 30
     expect(agent.config.default_project).toBeUndefined();
     expect(agent.config.aliases).toEqual(["tinker", "lab", "experimenter"]);
     expect(agent.config.tools).toEqual([
-      "shell",
       "read_file",
+      "read_content_ref",
+      "search_content_ref",
       "write_file",
       "web_search",
       "memory_read",
@@ -280,6 +281,7 @@ timeout_minutes: 30
     expect(agent.config.requires_approval).toContain("spend more than $5");
     expect(agent.config.approval_rules).toHaveLength(2);
     expect(agent.config.approval_rules[0]?.tool).toBe("shell");
+    expect(agent.config.approval_rules[0]?.action).toBe("deny");
     expect(agent.config.approval_rules[1]?.tool).toBe("write_file");
     expect(agent.config.approval_rules[1]?.field).toBe("path");
     expect(agent.config.approval_rules[1]?.pattern).toBe("^(?!(\\./)?tinker/).*");
@@ -288,6 +290,8 @@ timeout_minutes: 30
     expect(agent.config.context_mode).toBe("always");
     expect(job?.prompt).toContain("task_context execution_date");
     expect(job?.prompt).toContain("tinker/runs/{execution_date}/");
+    expect(job?.prompt).toContain("不要使用 shell");
+    expect(job?.prompt).toContain("不要使用 ~/.little_claw 或绝对路径");
     expect(job?.prompt).toContain("attempts.md");
     expect(job?.prompt).toContain("retry_count 和 max_retries");
     expect(job?.prompt).toContain("不要使用来源材料、记忆条目、项目历史或想法名称中的日期创建运行目录");

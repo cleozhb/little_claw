@@ -295,6 +295,49 @@ test("SpawnAgentTool: sub-agent with tool calls works end-to-end", async () => {
   expect(result.output).toContain("analysis");
 });
 
+test("SpawnAgentTool: long sub-agent output is stored as content_ref", async () => {
+  const storeRoot = mkdtempSync(join(tmpdir(), "little-claw-spawn-content-"));
+  try {
+    const longText = "long sub-agent result ".repeat(250);
+    const llm = createMockLLM([textReply(longText)]);
+    const spawnTool = createSpawnAgentTool({
+      llmProvider: llm,
+      toolRegistry,
+      getAgentRegistry: () => agentRegistry,
+    });
+
+    const result = await spawnTool.execute(
+      {
+        agent_type: "coder",
+        task: "Produce a detailed report",
+      },
+      {
+        contentStoreBaseDir: storeRoot,
+        projectContextPath: "context-hub/3-projects/spawn-project",
+      },
+    );
+
+    expect(result.success).toBe(true);
+    const output = JSON.parse(result.output);
+    expect(output.type).toBe("content_ref");
+    expect(output.project).toBe("spawn-project");
+    expect(output.source).toBe("spawn_agent:coder");
+    expect(output.content_length).toBe(longText.length);
+    expect(output.note).toContain("Sub-agent \"coder\" returned");
+    expect(result.output.length).toBeLessThan(longText.length);
+    expect(await Bun.file(join(
+      storeRoot,
+      "context-hub",
+      "3-projects",
+      "spawn-project",
+      "content-refs",
+      `${output.ref_id}.txt`,
+    )).exists()).toBe(true);
+  } finally {
+    rmSync(storeRoot, { recursive: true, force: true });
+  }
+});
+
 test("SpawnAgentTool: LLM error is propagated as failure", async () => {
   const llm: LLMProvider = {
     async *chat(_messages: Message[], _options?: ChatOptions) {

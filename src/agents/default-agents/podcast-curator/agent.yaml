@@ -13,6 +13,8 @@ direct_message: true
 default_project: podcast-translation
 tools:
   - read_file
+  - read_content_ref
+  - search_content_ref
   - write_file
   - shell
   - web_search

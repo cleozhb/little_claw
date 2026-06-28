@@ -221,7 +221,7 @@ describe("CoordinatorLoop", () => {
     expect(createdTask?.channelId).toBe(channel.id);
     expect(createdTask?.sourceMessageId).toBe(inbound.id);
     expect(createdTask?.description).toContain(inbound.content);
-    expect(messages.getMessage(inbound.id)?.status).toBe("new");
+    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
     expect(llm.calls).toHaveLength(0);
     expect(channels.listMessages(channel.slug).filter((message) => message.senderId === "coordinator")).toHaveLength(0);
   });
@@ -378,7 +378,7 @@ code scoped marker
     expect(createdTask?.status).toBe("assigned");
     expect(createdTask?.assignedTo).toBe("coordinator");
     expect(createdTask?.description).toContain(inbound.content);
-    expect(messages.getMessage(inbound.id)?.status).toBe("new");
+    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
     expect(llm.calls).toHaveLength(0);
   });
 
@@ -413,7 +413,7 @@ code scoped marker
     expect(createdTask?.status).toBe("assigned");
     expect(createdTask?.assignedTo).toBe("coordinator");
     expect(createdTask?.sourceMessageId).toBe(inbound.id);
-    expect(messages.getMessage(inbound.id)?.status).toBe("new");
+    expect(messages.getMessage(inbound.id)?.status).toBe("injected");
     expect(llm.calls).toHaveLength(0);
   });
 

@@ -5,13 +5,14 @@ import { truncateAtSentence, summarizeContent } from "./ContentProcessor.ts";
 const TAVILY_SEARCH_ENDPOINT = "https://api.tavily.com/search";
 const DEFAULT_MAX_RESULTS = 5;
 const MAX_RESULTS_LIMIT = 20;
-const MAX_OUTPUT_LEN = 20_000;
+const MAX_OUTPUT_LEN = 12_000;
+const DEFAULT_CANDIDATE_SNIPPET_CHARS = 220;
 const DEFAULT_CONTENT_MAX_CHARS = 360;
 const MAX_CONTENT_MAX_CHARS = 4_000;
 
 type SearchDepth = "fast" | "basic" | "advanced";
 type SearchTopic = "general" | "news" | "finance";
-type OutputMode = "compact" | "full" | "summary";
+type OutputMode = "candidates" | "compact" | "full" | "summary";
 
 interface TavilySearchResult {
   title?: unknown;
@@ -80,14 +81,14 @@ export function createWebSearchTool(options: WebSearchToolOptions = {}): Tool {
         },
         mode: {
           type: "string",
-          enum: ["compact", "full", "summary"],
+          enum: ["candidates", "compact", "full", "summary"],
           description:
-            "Output shape. Default compact truncates each result content at sentence boundary; full preserves content; summary uses LLM to summarize (requires configured summarizer).",
+            "Output shape. Default candidates returns title/url/short snippet only; compact includes short content; full preserves content within output budget; summary uses the configured summarizer.",
         },
         content_max_chars: {
           type: "number",
           description:
-            "Compact mode only: maximum characters to keep per result content. Default 360, max 4000.",
+            "Compact/summary mode: maximum characters to keep per result content. Default 360, max 4000. Candidate snippets default to 220.",
         },
       },
       required: ["query"],
@@ -117,8 +118,11 @@ export function createWebSearchTool(options: WebSearchToolOptions = {}): Tool {
         include_domains: readStringArray(params.include_domains),
         exclude_domains: readStringArray(params.exclude_domains),
       };
-      const mode = readEnum<OutputMode>(params.mode, ["compact", "full", "summary"], "compact");
-      const contentMaxChars = readContentMaxChars(params.content_max_chars);
+      const mode = readEnum<OutputMode>(params.mode, ["candidates", "compact", "full", "summary"], "candidates");
+      const contentMaxChars = readContentMaxChars(
+        params.content_max_chars,
+        mode === "candidates" ? DEFAULT_CANDIDATE_SNIPPET_CHARS : DEFAULT_CONTENT_MAX_CHARS,
+      );
 
       try {
         const response = await fetchImpl(endpoint, {
@@ -174,6 +178,7 @@ function normalizeTavilyResponse(
   const response = isRecord(data) ? data as TavilySearchResponse : {};
   const results = Array.isArray(response.results) ? response.results : [];
   return {
+    mode: options.mode,
     query: typeof response.query === "string" ? response.query : undefined,
     answer: typeof response.answer === "string" ? response.answer : undefined,
     results: results.map((result) => normalizeResult(result, options)),
@@ -189,19 +194,27 @@ function normalizeResult(
 ): Record<string, unknown> {
   const result = isRecord(value) ? value as TavilySearchResult : {};
   const content = typeof result.content === "string" ? result.content : "";
-  const compactContent = options.mode === "compact"
+  const compactContent = options.mode === "compact" || options.mode === "candidates"
     ? truncateContent(content, options.contentMaxChars)
     : { content, truncatedChars: 0 };
-  return {
+  const normalized: Record<string, unknown> = {
     title: typeof result.title === "string" ? result.title : "",
     url: typeof result.url === "string" ? result.url : "",
-    content: compactContent.content,
-    ...(options.mode === "compact"
-      ? { content_truncated_chars: compactContent.truncatedChars }
-      : {}),
     score: typeof result.score === "number" ? result.score : undefined,
     favicon: typeof result.favicon === "string" ? result.favicon : undefined,
   };
+
+  if (options.mode === "candidates") {
+    normalized.snippet = compactContent.content;
+    normalized.snippet_truncated_chars = compactContent.truncatedChars;
+    return normalized;
+  }
+
+  normalized.content = compactContent.content;
+  if (options.mode === "compact") {
+    normalized.content_truncated_chars = compactContent.truncatedChars;
+  }
+  return normalized;
 }
 
 function readString(value: unknown): string {
@@ -217,8 +230,8 @@ function readMaxResults(value: unknown): number {
   return Math.max(1, Math.min(MAX_RESULTS_LIMIT, Math.floor(value)));
 }
 
-function readContentMaxChars(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_CONTENT_MAX_CHARS;
+function readContentMaxChars(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.min(MAX_CONTENT_MAX_CHARS, Math.floor(value)));
 }
 

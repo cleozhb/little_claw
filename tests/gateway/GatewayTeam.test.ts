@@ -305,7 +305,7 @@ describe("Gateway team protocol", () => {
     await sleep(20);
 
     const created = sent.find((msg) => msg.type === "project_channel_created");
-    const listed = sent.find((msg) => msg.type === "project_channels_list");
+    const listed = sent.findLast((msg) => msg.type === "project_channels_list");
     const hub = new ContextHub(contextDir);
 
     expect(created?.channel.slug).toBe("new-project");

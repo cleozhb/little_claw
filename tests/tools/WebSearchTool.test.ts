@@ -43,14 +43,16 @@ describe("WebSearchTool", () => {
     expect((calls[0]!.init.headers as Record<string, string>).Authorization).toBe("Bearer test-key");
 
     const output = JSON.parse(result.output);
+    expect(output.mode).toBe("candidates");
     expect(output.answer).toBe("A short answer");
     expect(output.results[0].title).toBe("Result one");
-    expect(output.results[0].content).toBe("Useful result");
-    expect(output.results[0].content_truncated_chars).toBe(0);
+    expect(output.results[0].snippet).toBe("Useful result");
+    expect(output.results[0].snippet_truncated_chars).toBe(0);
+    expect(output.results[0].content).toBeUndefined();
     expect(output.results[0].raw_content).toBeUndefined();
   });
 
-  test("defaults to compact output with semantic truncation", async () => {
+  test("defaults to candidate output with semantic truncation", async () => {
     const longContent = "First sentence here. Second sentence follows. " + "x".repeat(1_000);
     const tool = createWebSearchTool({
       apiKey: "test-key",
@@ -68,6 +70,31 @@ describe("WebSearchTool", () => {
     const output = JSON.parse(result.output);
 
     expect(result.success).toBe(true);
+    expect(output.mode).toBe("candidates");
+    expect(output.results[0].snippet.length).toBeLessThanOrEqual(220);
+    expect(output.results[0].snippet_truncated_chars).toBeGreaterThan(0);
+    expect(output.results[0].content).toBeUndefined();
+  });
+
+  test("supports compact output mode", async () => {
+    const longContent = "First sentence here. Second sentence follows. " + "x".repeat(1_000);
+    const tool = createWebSearchTool({
+      apiKey: "test-key",
+      endpoint: "https://tavily.test/search",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({
+          query: "ai funding",
+          results: [
+            { title: "Long result", url: "https://example.com/long", content: longContent, score: 0.8 },
+          ],
+        }), { status: 200 }),
+    });
+
+    const result = await tool.execute({ query: "ai funding", mode: "compact" });
+    const output = JSON.parse(result.output);
+
+    expect(result.success).toBe(true);
+    expect(output.mode).toBe("compact");
     expect(output.results[0].content.length).toBeLessThanOrEqual(360);
     expect(output.results[0].content_truncated_chars).toBeGreaterThan(0);
   });
@@ -110,7 +137,7 @@ describe("WebSearchTool", () => {
 
     const result = await tool.execute({ query: "test", mode: "full" });
     expect(result.success).toBe(true);
-    expect(result.output.length).toBeLessThanOrEqual(20_100);
+    expect(result.output.length).toBeLessThanOrEqual(12_100);
     const output = JSON.parse(result.output);
     expect(output.results_omitted).toBeGreaterThan(0);
   });
@@ -129,7 +156,7 @@ describe("WebSearchTool", () => {
         }), { status: 200 }),
     });
 
-    const result = await tool.execute({ query: "ai funding", content_max_chars: 10_000 });
+    const result = await tool.execute({ query: "ai funding", mode: "compact", content_max_chars: 10_000 });
     const output = JSON.parse(result.output);
 
     expect(result.success).toBe(true);

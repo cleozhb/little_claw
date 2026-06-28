@@ -1,11 +1,13 @@
 import type { Tool, ToolResult } from "../types.ts";
 import type { LLMProvider } from "../../llm/types.ts";
 import { truncateAtSentence, extractArticleContent, summarizeContent } from "./ContentProcessor.ts";
+import { ContentStore } from "../../memory/ContentStore.ts";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_TIMEOUT_MS = 60_000;
 
 type FetchMode = "full" | "article" | "summary";
+type ReturnMode = "digest" | "page" | "legacy";
 const DEFAULT_MAX_CHARS: Record<FetchMode, number> = { full: 20_000, article: 8_000, summary: 600 };
 
 const PRIVATE_IP_PATTERNS = [
@@ -26,15 +28,17 @@ const BLOCKED_HOSTNAMES = new Set(["localhost", "0.0.0.0", "[::1]"]);
 export interface WebFetchToolOptions {
   fetchImpl?: (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
   llmProvider?: LLMProvider;
+  contentStore?: ContentStore;
 }
 
 export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const contentStore = options.contentStore ?? new ContentStore();
 
   return {
     name: "web_fetch",
     description:
-      "Fetch the content of a specific URL and return it as plain text. Use this to read full articles, blog posts, or other web pages when you already have the URL. Only supports http/https.",
+      "Fetch the content of a specific URL. By default, long page text is stored as a content_ref digest that can be paged with read_content_ref. Use return_mode=legacy only when you explicitly need the old inline output. Only supports http/https.",
     parameters: {
       type: "object",
       properties: {
@@ -50,13 +54,19 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
         },
         max_chars: {
           type: "number",
-          description: "Maximum output characters. Defaults: full=20000, article=8000, summary=600.",
+          description: "Maximum inline characters for legacy mode or first-page preview. Defaults: full=20000, article=8000, summary=600.",
+        },
+        return_mode: {
+          type: "string",
+          enum: ["digest", "page", "legacy"],
+          description:
+            "digest (default): store content and return a short content_ref. page: return content_ref plus first page preview. legacy: return old inline JSON content, still truncated by max_chars.",
         },
       },
       required: ["url"],
     },
 
-    async execute(params: Record<string, unknown>): Promise<ToolResult> {
+    async execute(params: Record<string, unknown>, executeOptions): Promise<ToolResult> {
       const rawUrl = typeof params.url === "string" ? params.url.trim() : "";
       if (!rawUrl) {
         return { success: false, output: "", error: "Missing required parameter: url" };
@@ -78,6 +88,7 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
       }
 
       const mode = readEnum(params.mode, ["full", "article", "summary"] as const, "article");
+      const returnMode = readEnum(params.return_mode, ["digest", "page", "legacy"] as const, "digest");
       const maxChars = readMaxChars(params.max_chars, DEFAULT_MAX_CHARS[mode]);
       const timeoutMs = readTimeout(params.timeout_ms);
 
@@ -126,24 +137,66 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool {
           wordCount = body.split(/\s+/).filter(Boolean).length;
         }
 
+        if (returnMode === "legacy") {
+          if (mode === "summary" && options.llmProvider && content.length > 200) {
+            content = await summarizeContent(content, options.llmProvider, { maxOutputChars: maxChars });
+          } else {
+            const truncated = truncateAtSentence(content, maxChars);
+            content = truncated.text;
+          }
+
+          return {
+            success: true,
+            output: JSON.stringify({
+              url: rawUrl,
+              final_url: response.url,
+              title: title || undefined,
+              word_count: wordCount,
+              content_length: content.length,
+              mode,
+              content,
+            }, null, 2),
+          };
+        }
+
+        const effectiveContentStore = executeOptions?.contentStoreBaseDir
+          ? new ContentStore(executeOptions.contentStoreBaseDir)
+          : contentStore;
+        const digest = await effectiveContentStore.storeText({
+          sourceTool: "web_fetch",
+          sourceUri: response.url || rawUrl,
+          title: title || parsed.hostname,
+          content,
+          mimeType: contentType,
+          projectContextPath: executeOptions?.projectContextPath,
+          metadata: {
+            url: rawUrl,
+            final_url: response.url,
+            content_type: contentType,
+            mode,
+            word_count: wordCount,
+            status: response.status,
+          },
+        });
+
         if (mode === "summary" && options.llmProvider && content.length > 200) {
-          content = await summarizeContent(content, options.llmProvider, { maxOutputChars: maxChars });
-        } else {
-          const truncated = truncateAtSentence(content, maxChars);
-          content = truncated.text;
+          digest.digest = await summarizeContent(content, options.llmProvider, { maxOutputChars: maxChars });
+        }
+
+        if (returnMode === "page") {
+          const preview = truncateAtSentence(content, Math.min(maxChars, 3_500)).text;
+          return {
+            success: true,
+            output: JSON.stringify({
+              ...digest,
+              preview,
+            }, null, 2),
+          };
         }
 
         return {
           success: true,
-          output: JSON.stringify({
-            url: rawUrl,
-            final_url: response.url,
-            title: title || undefined,
-            word_count: wordCount,
-            content_length: content.length,
-            mode,
-            content,
-          }, null, 2),
+          output: JSON.stringify(digest, null, 2),
         };
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {

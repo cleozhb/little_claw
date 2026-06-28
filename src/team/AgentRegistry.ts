@@ -67,6 +67,7 @@ export interface AgentYamlConfig {
   timeout_minutes: number;
   max_turns?: number;
   context_mode?: ContextMode;
+  tool_limits?: Record<string, number>;
 }
 
 export interface RegisteredAgent {
@@ -479,6 +480,7 @@ function mergeDefaultAgentConfig(current: AgentYamlConfig, seed: AgentYamlConfig
     requires_approval: mergeStringList(seed.requires_approval, current.requires_approval),
     max_turns: current.max_turns ?? seed.max_turns,
     context_mode: current.context_mode ?? seed.context_mode,
+    tool_limits: mergeToolLimits(seed.tool_limits, current.tool_limits),
   };
 }
 
@@ -491,6 +493,14 @@ function mergeStringList(seedItems: string[], currentItems: string[]): string[] 
     result.push(item);
   }
   return result;
+}
+
+function mergeToolLimits(
+  seedLimits?: Record<string, number>,
+  currentLimits?: Record<string, number>,
+): Record<string, number> | undefined {
+  const merged = { ...(seedLimits ?? {}), ...(currentLimits ?? {}) };
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 function mergeKeyedItems<T extends { key?: string }>(seedItems: T[], currentItems: T[]): T[] {
@@ -581,6 +591,7 @@ function agentConfigToYamlObject(config: AgentYamlConfig): Record<string, unknow
   raw.max_tokens_per_task = config.max_tokens_per_task;
   raw.timeout_minutes = config.timeout_minutes;
   setIfDefined(raw, "max_turns", config.max_turns);
+  setIfDefined(raw, "tool_limits", config.tool_limits);
 
   return raw;
 }
@@ -659,6 +670,7 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
   const timeoutMinutes = readPositiveInteger(raw.timeout_minutes, 30, "timeout_minutes");
   const maxTurns = readOptionalInteger(raw.max_turns, "max_turns", { min: 1 });
   const contextMode = readOptionalContextMode(raw.context_mode);
+  const toolLimits = readToolLimits(raw.tool_limits);
   const approvalConfig = readApprovalConfig(raw.requires_approval, raw.approval_rules);
 
   return {
@@ -682,6 +694,7 @@ function normalizeConfig(raw: unknown): AgentYamlConfig {
     timeout_minutes: timeoutMinutes,
     max_turns: maxTurns,
     context_mode: contextMode,
+    tool_limits: toolLimits,
   };
 }
 
@@ -757,6 +770,25 @@ function readOptionalInteger(value: unknown, key: string, options: { min?: numbe
     throw new Error(`agent.yaml field "${key}" must be an integer >= ${min}.`);
   }
   return value;
+}
+
+function readToolLimits(value: unknown): Record<string, number> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) {
+    throw new Error('agent.yaml field "tool_limits" must be an object mapping tool names to positive integers.');
+  }
+
+  const limits: Record<string, number> = {};
+  for (const [toolName, rawLimit] of Object.entries(value)) {
+    if (!toolName.trim()) {
+      throw new Error('agent.yaml field "tool_limits" cannot contain an empty tool name.');
+    }
+    if (typeof rawLimit !== "number" || !Number.isInteger(rawLimit) || rawLimit <= 0) {
+      throw new Error(`agent.yaml field "tool_limits.${toolName}" must be a positive integer.`);
+    }
+    limits[toolName] = rawLimit;
+  }
+  return Object.keys(limits).length > 0 ? limits : undefined;
 }
 
 function readOptionalContextMode(value: unknown): ContextMode | undefined {

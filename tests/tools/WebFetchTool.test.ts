@@ -1,10 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { createWebFetchTool } from "../../src/tools/builtin/WebFetchTool.ts";
+import { ContentStore } from "../../src/memory/ContentStore.ts";
+
+const TMP = "/tmp/little_claw_web_fetch_test";
+
+afterEach(() => {
+  rmSync(TMP, { recursive: true, force: true });
+});
 
 describe("WebFetchTool", () => {
-  test("fetches URL and returns structured output with article mode by default", async () => {
+  test("fetches URL and returns content_ref digest with article mode by default", async () => {
     const html = "<html><head><title>Test Page</title></head><body><article><p>Hello World</p></article></body></html>";
     const tool = createWebFetchTool({
+      contentStore: new ContentStore(TMP),
       fetchImpl: async () =>
         new Response(html, {
           status: 200,
@@ -16,14 +26,14 @@ describe("WebFetchTool", () => {
     expect(result.success).toBe(true);
 
     const output = JSON.parse(result.output);
-    expect(output.url).toBe("https://example.com/page");
-    expect(output.mode).toBe("article");
+    expect(output.type).toBe("content_ref");
+    expect(output.source).toBe("https://example.com/page");
     expect(output.title).toBe("Test Page");
-    expect(output.content).toContain("Hello World");
-    expect(output.word_count).toBeGreaterThan(0);
+    expect(output.digest).toContain("Hello World");
+    expect(output.ref_id).toMatch(/^ctx_/);
   });
 
-  test("full mode uses basic HTML stripping", async () => {
+  test("legacy full mode uses basic HTML stripping", async () => {
     const html = `<html><body>
       <script>alert('xss')</script>
       <nav><a href="/">Home</a></nav>
@@ -32,11 +42,12 @@ describe("WebFetchTool", () => {
     </body></html>`;
 
     const tool = createWebFetchTool({
+      contentStore: new ContentStore(TMP),
       fetchImpl: async () =>
         new Response(html, { status: 200, headers: { "content-type": "text/html" } }),
     });
 
-    const result = await tool.execute({ url: "https://example.com", mode: "full" });
+    const result = await tool.execute({ url: "https://example.com", mode: "full", return_mode: "legacy" });
     const output = JSON.parse(result.output);
     expect(output.mode).toBe("full");
     expect(output.content).toContain("Title");
@@ -103,11 +114,12 @@ describe("WebFetchTool", () => {
     const content = "A. B. C. D. E. F. G. " + "x".repeat(500);
     const html = `<html><body><article><p>${content}</p></article></body></html>`;
     const tool = createWebFetchTool({
+      contentStore: new ContentStore(TMP),
       fetchImpl: async () =>
         new Response(html, { status: 200, headers: { "content-type": "text/html" } }),
     });
 
-    const result = await tool.execute({ url: "https://example.com", max_chars: 200 });
+    const result = await tool.execute({ url: "https://example.com", max_chars: 200, return_mode: "legacy" });
     const output = JSON.parse(result.output);
     expect(output.content.length).toBeLessThanOrEqual(200);
     expect(output.content.length).toBeGreaterThan(0);
@@ -116,12 +128,45 @@ describe("WebFetchTool", () => {
   test("returns plain text without HTML processing for non-HTML content", async () => {
     const jsonContent = JSON.stringify({ key: "value" });
     const tool = createWebFetchTool({
+      contentStore: new ContentStore(TMP),
       fetchImpl: async () =>
         new Response(jsonContent, { status: 200, headers: { "content-type": "application/json" } }),
     });
-    const result = await tool.execute({ url: "https://api.example.com/data" });
+    const result = await tool.execute({ url: "https://api.example.com/data", return_mode: "legacy" });
     const output = JSON.parse(result.output);
     expect(output.content).toContain(jsonContent);
+  });
+
+  test("digest mode honors execution content store base dir", async () => {
+    const storeRoot = join(TMP, "store");
+    const html = "<html><head><title>Project Page</title></head><body><article><p>Project scoped content.</p></article></body></html>";
+    const tool = createWebFetchTool({
+      contentStore: new ContentStore(join(TMP, "fallback")),
+      fetchImpl: async () =>
+        new Response(html, {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+    });
+
+    const result = await tool.execute(
+      { url: "https://example.com/project" },
+      {
+        contentStoreBaseDir: storeRoot,
+        projectContextPath: "context-hub/3-projects/web-project",
+      },
+    );
+    expect(result.success).toBe(true);
+    const output = JSON.parse(result.output);
+    expect(output.project).toBe("web-project");
+    expect(await Bun.file(join(
+      storeRoot,
+      "context-hub",
+      "3-projects",
+      "web-project",
+      "content-refs",
+      `${output.ref_id}.txt`,
+    )).exists()).toBe(true);
   });
 
   test("respects timeout parameter", async () => {

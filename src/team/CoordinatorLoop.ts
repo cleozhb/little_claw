@@ -512,7 +512,7 @@ export class CoordinatorLoop {
       messageCount: pendingMessages.length,
     });
 
-    return this.tasks.createTask({
+    const task = this.tasks.createTask({
       title,
       description:
         `Handle the pending human request(s) in #${channel.slug}.\n\n` +
@@ -525,6 +525,12 @@ export class CoordinatorLoop {
       createdBy: this.coordinatorName,
       priority: 0,
     });
+
+    for (const message of pendingMessages) {
+      this.messages.markInjected(message.id, this.coordinatorName);
+    }
+
+    return task;
   }
 }
 

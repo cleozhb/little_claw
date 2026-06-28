@@ -21,4 +21,16 @@ describe("loadConfig", () => {
     process.env.CHAT_MAIN_AGENT = "../bad";
     expect(loadConfig().chat.mainAgentName).toBe("assistant");
   });
+
+  test("reads summarizer provider config from SUMMARIZER_API_KEY", () => {
+    process.env.SUMMARIZER_API_KEY = "sum-key";
+    process.env.SUMMARIZER_BASE_URL = "https://summarizer.example/v1";
+    process.env.SUMMARIZER_MODEL = "summary-model";
+
+    expect(loadConfig().summarizer).toEqual({
+      apiKey: "sum-key",
+      baseUrl: "https://summarizer.example/v1",
+      model: "summary-model",
+    });
+  });
 });

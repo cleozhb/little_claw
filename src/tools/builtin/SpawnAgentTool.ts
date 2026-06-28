@@ -11,13 +11,14 @@ import type { MemoryManager } from "../../memory/MemoryManager.ts";
 import type { SkillManager } from "../../skills/SkillManager.ts";
 import type { AgentRegistry, RegisteredAgent } from "../../team/AgentRegistry.ts";
 import { buildTeamAgentSystemPrompt } from "../../team/AgentWorker.ts";
+import { ContentStore } from "../../memory/ContentStore.ts";
 import { createLogger } from "../../utils/logger.ts";
 
 const log = createLogger("SpawnAgent");
 
 const SUB_AGENT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const SUMMARY_THRESHOLD = 3000; // chars — trigger summarization above this
-const SUMMARY_MAX_CHARS = 1500;
+const CONTENT_REF_THRESHOLD = 3000; // chars — store long sub-agent results as content_ref above this
+const EMPTY_MODEL_RESPONSE_MESSAGE = "[Model returned an empty response. Please try again.]";
 
 export type SubAgentEventCallback = (event: AgentEvent) => void;
 
@@ -29,6 +30,7 @@ export interface SpawnAgentToolOptions {
   shellTool?: ShellTool;
   memoryManager?: MemoryManager;
   contextRetriever?: ContextRetriever;
+  contentStore?: ContentStore;
 }
 
 export interface SpawnAgentTool extends Tool {
@@ -219,16 +221,37 @@ export function createSpawnAgentTool(
         };
       }
 
+      const meaningfulResultText = isEmptyModelFallback(resultText) ? "" : resultText;
       let output = hitMaxTurns
-        ? `[NOTE: Sub-agent "${agent.config.name}" reached maximum iterations and returned partial results]\n\n${resultText}`
-        : resultText || "(sub-agent produced no text output)";
+        ? `[NOTE: Sub-agent "${agent.config.name}" reached maximum iterations and returned partial results]\n\n${meaningfulResultText}`
+        : meaningfulResultText || "(sub-agent produced no text output)";
 
-      // 结果长度控制：超过阈值时做摘要压缩
-      if (output.length > SUMMARY_THRESHOLD) {
+      // 结果长度控制：超过阈值时转存为 content_ref，父 agent 需要细节时分页读取。
+      if (output.length > CONTENT_REF_THRESHOLD) {
         const originalLength = output.length;
-        log.info(`Sub-agent "${agent.config.name}" result too long (${originalLength} chars), summarizing...`);
-        const summarized = await summarizeResult(llmProvider, output);
-        output = `[Sub-agent returned ${originalLength} chars, summarized below]\n\n${summarized}`;
+        log.info(`Sub-agent "${agent.config.name}" result too long (${originalLength} chars), storing as content_ref...`);
+        const digest = await getContentStore(toolOptions, options).storeText({
+          sourceTool: "spawn_agent",
+          sourceUri: `spawn_agent:${agent.config.name}`,
+          title: `Sub-agent result: ${agent.config.name}`,
+          content: output,
+          mimeType: "text/plain",
+          projectContextPath: options?.projectContextPath,
+          metadata: {
+            agent_name: agent.config.name,
+            requested_agent_type: agentType,
+            task,
+            context: context ?? null,
+            hit_max_turns: hitMaxTurns,
+            original_output_length: originalLength,
+          },
+        });
+        output = JSON.stringify({
+          ...digest,
+          note:
+            `Sub-agent "${agent.config.name}" returned ${originalLength} chars. ` +
+            "The full result was stored as content_ref; use read_content_ref for details.",
+        }, null, 2);
       }
 
       log.step(`Sub-agent "${agent.config.name}" completed`, {
@@ -274,42 +297,18 @@ function normalizeAgentToken(value: string): string {
   return value.trim().replace(/^@/, "").toLowerCase();
 }
 
-/**
- * 调用 LLM 对过长的 Sub-Agent 结果做摘要压缩。
- * 失败时 fallback 为首尾截断。
- */
-async function summarizeResult(
-  llmProvider: LLMProvider,
-  result: string,
-): Promise<string> {
-  try {
-    const prompt = `Summarize the following sub-agent output into a concise result, preserving all key decisions, action items, and technical details. Keep under ${SUMMARY_MAX_CHARS} characters.\n\nOriginal output:\n${result}`;
+function isEmptyModelFallback(text: string): boolean {
+  return text.trim() === EMPTY_MODEL_RESPONSE_MESSAGE;
+}
 
-    let summary = "";
-    for await (const event of llmProvider.chat(
-      [{ role: "user", content: prompt }],
-      { system: "You are a concise summarizer. Output only the summary, nothing else." },
-    )) {
-      if (event.type === "text_delta") {
-        summary += event.text;
-      }
-    }
-
-    if (summary.length > 0) {
-      return summary;
-    }
-  } catch (err) {
-    console.error(
-      `[WARN] Failed to summarize sub-agent result: ${err instanceof Error ? err.message : String(err)}`,
-    );
+function getContentStore(
+  toolOptions: SpawnAgentToolOptions,
+  executeOptions?: ToolExecuteOptions,
+): ContentStore {
+  if (executeOptions?.contentStoreBaseDir) {
+    return new ContentStore(executeOptions.contentStoreBaseDir);
   }
-
-  // fallback：保留前 1000 + 后 1000 字符
-  return (
-    result.slice(0, 1000) +
-    "\n\n[... truncated ...]\n\n" +
-    result.slice(-1000)
-  );
+  return toolOptions.contentStore ?? new ContentStore(toolOptions.memoryManager?.getFileMemory()?.getBaseDir());
 }
 
 /**

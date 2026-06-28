@@ -11,8 +11,9 @@ aliases:
 direct_message: true
 context_mode: always
 tools:
-  - shell
   - read_file
+  - read_content_ref
+  - search_content_ref
   - write_file
   - web_search
   - memory_read
@@ -28,7 +29,7 @@ task_tags:
   - delight
 cron_jobs:
   - cron: 0 18 * * *
-    prompt: 为用户创造一个独立的早间灵感。保持本次运行精简，尽快完成产物包。从可用上下文或近期记忆中选取恰好一个足够好的想法；不要反复搜索完美项目或完美想法。从已加载的 context_map 和 context_overviews 开始；如果其中提到项目或知识领域，将其视为真实上下文，在声明上下文为空之前阅读具体相关文件。如果上下文确实稀少，列出检查过的具体路径。仅在有用时阅读上下文，如果上下文或记忆文件缺失，在 research.md 中记录并继续，不重试同一缺失文件。除非本地上下文明显不足，否则不使用 web_search。不要修改项目目录、运行命令、执行代码、安装依赖、删除文件、外部发布或花钱。使用 task_context execution_date 作为稳定的运行 ID。仅将产物包写入 tinker/runs/{execution_date}/（相对于 cwd），包含 attempts.md、brief.md、research.md、prototype.md、result.md 和 promotion.md。不要使用来源材料、记忆条目、项目历史或想法名称中的日期创建运行目录。使用 task_context 的 retry_count 和 max_retries 维护 attempts.md。每次尝试记录尝试编号、任务 ID、已有内容和变更内容。如果 retry_count 大于 0，先阅读同一运行目录中的现有文件，然后修复或完善而非开始新想法。仅在所需产物完成后更新 tinker/latest.md（相对于 cwd），附简洁中文早间摘要和运行目录路径。所有生成文档和面向用户的消息用中文撰写。仅使用 Markdown 草图、伪代码、接口草案或工作流笔记。优先完成这些文件而非继续调查。
+    prompt: 为用户创造一个独立的早间灵感。保持本次运行精简，尽快完成产物包。从可用上下文或近期记忆中选取恰好一个足够好的想法；不要反复搜索完美项目或完美想法。从已加载的 context_map 和 context_overviews 开始；如果其中提到项目或知识领域，将其视为真实上下文，在声明上下文为空之前阅读具体相关文件。如果上下文确实稀少，列出检查过的具体路径。仅在有用时阅读上下文，如果上下文或记忆文件缺失，在 research.md 中记录并继续，不重试同一缺失文件。除非本地上下文明显不足，否则不使用 web_search。不要修改项目目录、运行命令、执行代码、安装依赖、删除文件、外部发布或花钱。不要使用 shell；write_file 会自动创建父目录，不需要 mkdir。使用 task_context execution_date 作为稳定的运行 ID。仅将产物包写入 tinker/runs/{execution_date}/（write_file 相对路径；不要使用 ~/.little_claw 或绝对路径），包含 attempts.md、brief.md、research.md、prototype.md、result.md 和 promotion.md。不要使用来源材料、记忆条目、项目历史或想法名称中的日期创建运行目录。使用 task_context 的 retry_count 和 max_retries 维护 attempts.md。每次尝试记录尝试编号、任务 ID、已有内容和变更内容。如果 retry_count 大于 0，先阅读同一运行目录中的现有文件，然后修复或完善而非开始新想法。仅在所需产物完成后更新 tinker/latest.md（相对于 cwd），附简洁中文早间摘要和运行目录路径。所有生成文档和面向用户的消息用中文撰写。仅使用 Markdown 草图、伪代码、接口草案或工作流笔记。优先完成这些文件而非继续调查。
     key: nightly-tinker-spark
     name: 夜间 Tinker 灵感
     tags:
@@ -43,7 +44,8 @@ cron_jobs:
 watchers: []
 requires_approval:
   - tool: shell
-    message: "Tinker 不允许直接执行 shell 命令，需要人类确认"
+    action: deny
+    message: "Tinker 不允许直接执行 shell 命令；请改用 write_file 写入 Markdown 产物或记录计划。"
   - tool: write_file
     field: path
     pattern: "^(?!(\\./)?tinker/).*"

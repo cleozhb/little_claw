@@ -39,6 +39,11 @@ const TEAM_OS_SCHEDULER_APPROVAL_RULE: ApprovalRule = {
   message:
     "团队任务不应直接创建或测试操作系统级定时/提醒；请改用内部 TeamScheduleStore。确需系统集成时需要人类审批。",
 };
+const TINKER_SHELL_DENY_RULE: ApprovalRule = {
+  tool: "shell",
+  action: "deny",
+  message: "Tinker 不允许直接执行 shell 命令；请改用 write_file 写入 Markdown 产物或记录计划。",
+};
 
 export type TaskProgressCallback = (taskId: string, agentName: string, delta: string) => void;
 
@@ -571,10 +576,11 @@ export class AgentWorker {
       config: createAgentConfig({
         name: agentName,
         systemPrompt: buildTeamAgentSystemPrompt(this.agent),
-        allowedTools: this.agent.config.tools,
-        approvalRules: teamWorkerApprovalRules(this.agent.config.approval_rules),
+        allowedTools: teamWorkerAllowedTools(this.agent),
+        approvalRules: teamWorkerApprovalRules(this.agent),
         maxTurns: this.maxTurns,
         canSpawnSubAgent: false,
+        toolLimits: this.agent.config.tool_limits,
       }),
       skillManager: this.skillManager,
       configuredSkillNames: this.agent.config.skills,
@@ -893,13 +899,14 @@ export class AgentWorker {
         name: agentName,
         systemPrompt: buildTeamAgentSystemPrompt(this.agent),
         allowedTools: uniqueStrings([
-          ...this.agent.config.tools,
+          ...teamWorkerAllowedTools(this.agent),
           REPORT_PROGRESS_TOOL,
           REQUEST_APPROVAL_TOOL,
         ]),
-        approvalRules: teamWorkerApprovalRules(this.agent.config.approval_rules),
+        approvalRules: teamWorkerApprovalRules(this.agent),
         maxTurns: this.maxTurns,
         canSpawnSubAgent: false,
+        toolLimits: this.agent.config.tool_limits,
       }),
       skillManager: this.skillManager,
       configuredSkillNames: this.agent.config.skills,
@@ -1119,8 +1126,17 @@ function ensureTeamTaskTools(toolRegistry: ToolRegistry, tasks: TaskQueue): void
   }
 }
 
-function teamWorkerApprovalRules(agentRules: ApprovalRule[] | undefined): ApprovalRule[] {
-  return [TEAM_OS_SCHEDULER_APPROVAL_RULE, ...(agentRules ?? [])];
+function teamWorkerAllowedTools(agent: RegisteredAgent): string[] {
+  if (agent.config.name !== "tinker") return agent.config.tools;
+  return agent.config.tools.filter((tool) => tool !== "shell");
+}
+
+function teamWorkerApprovalRules(agent: RegisteredAgent): ApprovalRule[] {
+  return [
+    TEAM_OS_SCHEDULER_APPROVAL_RULE,
+    ...(agent.config.name === "tinker" ? [TINKER_SHELL_DENY_RULE] : []),
+    ...(agent.config.approval_rules ?? []),
+  ];
 }
 
 function reportProgressTool(tasks: TaskQueue): Tool {

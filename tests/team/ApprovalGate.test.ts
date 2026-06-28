@@ -48,6 +48,32 @@ describe("checkApprovalGate", () => {
     expect(checkApprovalGate(rules, "write_file", { path: "context-hub/notes.md" }).action).toBe("pause");
   });
 
+  test("matches absolute workspace paths as relative paths", () => {
+    const rules: ApprovalRule[] = [{ tool: "write_file", field: "path", pattern: "^(?!(\\./)?tinker/).*" }];
+    const workspaceRoot = "/tmp/little_claw_approval_workspace";
+
+    expect(checkApprovalGate(
+      rules,
+      "write_file",
+      { path: "/tmp/little_claw_approval_workspace/tinker/runs/day/result.md" },
+      { workspaceRoot },
+    ).action).toBe("allow");
+    expect(checkApprovalGate(
+      rules,
+      "write_file",
+      { path: "/tmp/little_claw_approval_workspace/context-hub/notes.md" },
+      { workspaceRoot },
+    ).action).toBe("pause");
+  });
+
+  test("supports hard deny rules", () => {
+    const rules: ApprovalRule[] = [{ tool: "shell", action: "deny", message: "Shell is disabled." }];
+    const result = checkApprovalGate(rules, "shell", { command: "mkdir -p tinker/runs/day" });
+
+    expect(result.action).toBe("deny");
+    expect(result.rule?.message).toBe("Shell is disabled.");
+  });
+
   test("uses custom field override", () => {
     const rules: ApprovalRule[] = [{ tool: "shell", field: "args", pattern: "^--force$" }];
     const result = checkApprovalGate(rules, "shell", { command: "deploy", args: "--force" });

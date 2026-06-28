@@ -19,6 +19,7 @@ import { SkillPromptBuilder, SKILL_GUIDE } from "../skills/SkillPromptBuilder.ts
 import { filterSkillCandidates } from "../skills/SkillFilter.ts";
 import { generateTitle } from "./TitleGenerator.ts";
 import { allocateBudget, estimateTokens, formatLongTermMemory } from "../memory/TokenBudget.ts";
+import { ContentStore } from "../memory/ContentStore.ts";
 import { createLogger } from "../utils/logger.ts";
 import {
   buildContextPolicy,
@@ -31,7 +32,10 @@ import {
   projectWorkspaceRoot,
   scopeProjectWriteFileInput,
 } from "./ProjectWorkspace.ts";
+import { compactConversationHistory } from "./ConversationCompaction.ts";
 import type { ToolExecuteOptions } from "../tools/types.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const log = createLogger("AgentLoop");
 
@@ -42,6 +46,10 @@ const DEFAULT_STREAM_CHUNK_TIMEOUT_MS = 300_000;
 const DEFAULT_BACKGROUND_STREAM_CHUNK_TIMEOUT_MS = 900_000;
 const SKILL_RETRIEVAL_TOP_K = 5;
 const EMPTY_MODEL_RESPONSE_MESSAGE = "[Model returned an empty response. Please try again.]";
+const TOOL_RESULT_SINGLE_HARD_CHARS = 4_000;
+const TOOL_RESULT_PAGE_HARD_CHARS = 9_000;
+const TOOL_RESULT_ROUND_HARD_CHARS = 12_000;
+const MAX_CONTENT_REF_READS_PER_ROUND = 3;
 
 const PERSONAL_SCHEDULER_GUIDANCE = `You can create scheduled tasks using the manage_cron tool. When a user asks you to do something periodically or at a specific time, create a cron job. For example, if asked "remind me every morning at 8am about my schedule", create a cron job with expression "0 8 * * *".
 
@@ -168,6 +176,8 @@ export class AgentLoop {
 
   /** 当前是否正在 run() 中 */
   private _isRunning = false;
+  /** Lazily created content store for tool-result budget fallback. */
+  private contentStore?: ContentStore;
 
   constructor(
     client: LLMProvider,
@@ -450,6 +460,7 @@ export class AgentLoop {
 
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    const toolCallCounts = new Map<string, number>();
 
     // ReAct 主循环：最多迭代 config.maxTurns 次，防止无限循环
     for (let i = 0; i < this.config.maxTurns; i++) {
@@ -741,6 +752,8 @@ export class AgentLoop {
         output: string;
         isError: boolean;
       }> = [];
+      let roundToolResultChars = 0;
+      let contentRefReadsThisRound = 0;
 
       for (const block of toolUseBlocks) {
         // Abort 检查（工具执行前）
@@ -778,14 +791,47 @@ export class AgentLoop {
           log.info(preparedToolInput.note);
         }
 
+        if (block.name === "read_content_ref") {
+          if (contentRefReadsThisRound >= MAX_CONTENT_REF_READS_PER_ROUND) {
+            const error =
+              `read_content_ref is limited to ${MAX_CONTENT_REF_READS_PER_ROUND} pages per agent turn. ` +
+              "Use search_content_ref to locate relevant chunks, or explain the missing fields before continuing in the next turn.";
+            const result = { success: false, output: "", error };
+            yield { type: "tool_result", name: block.name, result };
+            toolResultParams.push({
+              toolUseId: block.id,
+              toolName: block.name,
+              input: toolInput,
+              output: error,
+              isError: true,
+            });
+            continue;
+          }
+          contentRefReadsThisRound++;
+        }
+
         // --- Pre-execute approval gate ---
         if (this.config.approvalRules?.length) {
           const callKey = `${block.name}:${JSON.stringify(toolInput)}`;
           if (!this.approvedCalls.has(callKey) && !this.approvedCalls.has(block.name)) {
-            const gateResult = checkApprovalGate(this.config.approvalRules, block.name, toolInput);
+            const gateResult = checkApprovalGate(this.config.approvalRules, block.name, toolInput, {
+              workspaceRoot: this.getContentStoreBaseDir(),
+            });
             if (gateResult.action !== "allow") {
               const msg = (gateResult.rule as { message?: string })?.message
                 ?? `Tool "${block.name}" requires human approval (matched: ${(gateResult.rule as { pattern?: string })?.pattern ?? "all calls"}).`;
+              if (gateResult.action === "deny") {
+                const result = { success: false, output: "", error: `[DENIED] ${msg}` };
+                yield { type: "tool_result", name: block.name, result };
+                toolResultParams.push({
+                  toolUseId: block.id,
+                  toolName: block.name,
+                  input: toolInput,
+                  output: result.error,
+                  isError: true,
+                });
+                continue;
+              }
               const result = { success: true, output: `[APPROVAL REQUIRED] ${msg}` };
               yield { type: "tool_result", name: block.name, result };
               yield { type: "approval_gate_triggered", rule: gateResult.rule, toolName: block.name, params: toolInput };
@@ -819,6 +865,25 @@ export class AgentLoop {
           continue;
         }
 
+        const toolLimit = this.config.toolLimits?.[block.name];
+        if (toolLimit !== undefined) {
+          const used = toolCallCounts.get(block.name) ?? 0;
+          if (used >= toolLimit) {
+            const error = this.formatToolLimitError(block.name, toolLimit);
+            const result = { success: false, output: "", error };
+            yield { type: "tool_result", name: block.name, result };
+            toolResultParams.push({
+              toolUseId: block.id,
+              toolName: block.name,
+              input: toolInput,
+              output: error,
+              isError: true,
+            });
+            continue;
+          }
+          toolCallCounts.set(block.name, used + 1);
+        }
+
         try {
           const toolAbortController = new AbortController();
           this.currentToolAbortController = toolAbortController;
@@ -829,20 +894,32 @@ export class AgentLoop {
           const executeOptions = this.buildToolExecuteOptions(block.name, toolAbortController.signal);
           const result = await tool.execute(toolInput, executeOptions);
           this.currentToolAbortController = null;
-          log.toolResult(block.name, {
-            success: result.success,
-            output: result.output,
-            error: result.error,
+          const originalOutput = result.success
+            ? result.output
+            : result.error ?? result.output ?? "Unknown error";
+          const budgetedOutput = await this.applyToolResultBudget({
+            toolName: block.name,
+            input: toolInput,
+            output: originalOutput,
+            isError: !result.success,
+            currentRoundChars: roundToolResultChars,
           });
-          yield { type: "tool_result", name: block.name, result };
+          roundToolResultChars += budgetedOutput.length;
+          const budgetedResult = result.success
+            ? { success: true, output: budgetedOutput }
+            : { success: false, output: "", error: budgetedOutput };
+          log.toolResult(block.name, {
+            success: budgetedResult.success,
+            output: budgetedResult.output,
+            error: budgetedResult.error,
+          });
+          yield { type: "tool_result", name: block.name, result: budgetedResult };
           toolResultParams.push({
             toolUseId: block.id,
             toolName: block.name,
             input: toolInput,
-            output: result.success
-              ? result.output
-              : result.error ?? "Unknown error",
-            isError: !result.success,
+            output: budgetedOutput,
+            isError: !budgetedResult.success,
           });
         } catch (err) {
           this.currentToolAbortController = null;
@@ -939,8 +1016,23 @@ export class AgentLoop {
     return scopeProjectWriteFileInput(input, this.projectContextPath);
   }
 
+  private formatToolLimitError(toolName: string, limit: number): string {
+    const base = `${toolName} is limited to ${limit} call(s) per agent run and the quota is exhausted.`;
+    if (toolName === "web_search" || toolName === "web_fetch") {
+      return `${base} Do not call web_search or web_fetch again in this task. Use existing raw JSON, content_ref data, and prior tool results; proceed to analysis and write the final output.`;
+    }
+    if (toolName === "read_content_ref" || toolName === "search_content_ref") {
+      return `${base} Do not call read_content_ref or search_content_ref again in this task. Use already-read pages, raw JSON digests, and prior tool results; proceed to write the final output and stop.`;
+    }
+    return `${base} Continue with existing information or finish the task without this tool.`;
+  }
+
   private buildToolExecuteOptions(toolName: string, signal: AbortSignal): ToolExecuteOptions {
-    const options: ToolExecuteOptions = { signal };
+    const options: ToolExecuteOptions = {
+      signal,
+      projectContextPath: this.projectContextPath,
+      contentStoreBaseDir: this.getContentStoreBaseDir(),
+    };
     if (toolName !== "shell") return options;
 
     const env = this.collectShellEnv();
@@ -953,6 +1045,74 @@ export class AgentLoop {
       options.cwd = cwd;
     }
     return options;
+  }
+
+  private async applyToolResultBudget(input: {
+    toolName: string;
+    input: unknown;
+    output: string;
+    isError: boolean;
+    currentRoundChars: number;
+  }): Promise<string> {
+    if (!input.output) return input.output;
+
+    const singleHard = input.toolName === "read_content_ref"
+      ? TOOL_RESULT_PAGE_HARD_CHARS
+      : TOOL_RESULT_SINGLE_HARD_CHARS;
+    const overSingle = input.output.length > singleHard;
+    const overRound = input.currentRoundChars + input.output.length > TOOL_RESULT_ROUND_HARD_CHARS;
+    if (!overSingle && !overRound) return input.output;
+
+    try {
+      const digest = await this.getContentStore().storeText({
+        sourceTool: input.toolName,
+        sourceUri: this.getToolSourceUri(input.toolName, input.input),
+        title: `Tool result: ${input.toolName}`,
+        content: input.output,
+        mimeType: "text/plain",
+        projectContextPath: this.projectContextPath,
+        metadata: {
+          tool_name: input.toolName,
+          tool_input: input.input,
+          is_error: input.isError,
+          budget_reason: overSingle ? "single_tool_result_hard_limit" : "round_tool_result_hard_limit",
+          original_output_length: input.output.length,
+        },
+      });
+      return JSON.stringify({
+        ...digest,
+        budget_note:
+          `Tool output was ${input.output.length} chars and was stored as content_ref to keep the LLM context small.`,
+      }, null, 2);
+    } catch (err) {
+      const note = err instanceof Error ? err.message : String(err);
+      return truncateHeadTail(
+        input.output,
+        singleHard,
+        `\n\n[truncated: tool output exceeded context budget and Content Store failed: ${note}]`,
+      );
+    }
+  }
+
+  private getContentStore(): ContentStore {
+    if (!this.contentStore) {
+      this.contentStore = new ContentStore(this.getContentStoreBaseDir());
+    }
+    return this.contentStore;
+  }
+
+  private getContentStoreBaseDir(): string {
+    return this.memoryManager?.getFileMemory()?.getBaseDir() ?? join(homedir(), ".little_claw");
+  }
+
+  private getToolSourceUri(toolName: string, input: unknown): string | null {
+    if (!input || typeof input !== "object") return toolName;
+    const record = input as Record<string, unknown>;
+    for (const key of ["url", "path", "file", "query", "command"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+    return toolName;
   }
 
   private collectShellEnv(): Record<string, string> {
@@ -1039,18 +1199,32 @@ export class AgentLoop {
     if (projectWorkspaceGuidance) {
       coreSystemParts.push(projectWorkspaceGuidance);
     }
+    const toolLimitGuidance = this.getToolLimitGuidance();
+    if (toolLimitGuidance) {
+      coreSystemParts.push(toolLimitGuidance);
+    }
     coreSystemParts.push(memoryGuidance);
     coreSystemParts.push(`Current time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`);
     const coreSystemPrompt = coreSystemParts.join("\n\n");
 
     // 获取当前对话中最后一条用户消息（用于 skill 相关性匹配和预算分配）
-    const messages = this.conversation.getMessages();
-    const lastUserMsg = messages.length > 0
-      ? messages.filter((m) => m.role === "user").pop()
+    const rawMessages = this.conversation.getMessages();
+    const lastUserMsg = rawMessages.length > 0
+      ? rawMessages.filter((m) => m.role === "user").pop()
       : undefined;
     const userMessageText = lastUserMsg
       ? (typeof lastUserMsg.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg.content))
       : "";
+    const compaction = compactConversationHistory(rawMessages);
+    const messages = compaction.messages;
+    if (compaction.compacted) {
+      log.step("Conversation compaction", {
+        omittedMessages: compaction.omittedMessages,
+        originalTokens: compaction.originalTokens,
+        compactedTokens: compaction.compactedTokens,
+        keptMessages: messages.length,
+      });
+    }
 
     // 构建 skill prompt
     let skillPrompt = "";
@@ -1197,6 +1371,17 @@ export class AgentLoop {
     return SHORT_MEMORY_GUIDANCE;
   }
 
+  private getToolLimitGuidance(): string | null {
+    const limits = this.config.toolLimits;
+    if (!limits || Object.keys(limits).length === 0) return null;
+    const lines = Object.entries(limits)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([toolName, limit]) => `- ${toolName}: at most ${limit} call(s) per run`);
+    return `Tool call hard limits:
+${lines.join("\n")}
+When a quota is exhausted, do not try alternate queries or replacement URLs for that tool. Continue with existing evidence and finish the requested output.`;
+  }
+
   private getProjectWorkspaceGuidance(): string | null {
     const projectContextPath = normalizeProjectContextPath(this.projectContextPath);
     if (!projectContextPath) return null;
@@ -1307,4 +1492,12 @@ function readPositiveIntegerEnv(key: string): number | null {
   if (!raw) return null;
   const value = Number.parseInt(raw, 10);
   return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function truncateHeadTail(text: string, maxChars: number, suffix: string): string {
+  if (text.length <= maxChars) return text;
+  const budget = Math.max(200, maxChars - suffix.length - 32);
+  const head = Math.ceil(budget * 0.65);
+  const tail = Math.max(0, budget - head);
+  return `${text.slice(0, head)}\n\n...[middle truncated]...\n\n${tail > 0 ? text.slice(-tail) : ""}${suffix}`;
 }

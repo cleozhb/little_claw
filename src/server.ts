@@ -281,6 +281,14 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     model: config.llmModel,
     baseURL: config.llmBaseUrl,
   });
+  const summarizerProvider = config.summarizer?.apiKey
+    ? createProvider({
+        provider: config.llmProvider,
+        apiKey: config.summarizer.apiKey,
+        model: config.summarizer.model,
+        baseURL: config.summarizer.baseUrl,
+      })
+    : undefined;
 
   const dataDir = join(import.meta.dir, "..", "data");
   mkdirSync(dataDir, { recursive: true });
@@ -343,14 +351,19 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   /** 从 AsyncLocalStorage 读取当前 sessionId，跨 session 并发安全 */
   const getSessionId = () => sessionIdStorage.getStore() ?? "";
 
-  const builtinTools = createBuiltinTools(workspaceRoot, {
-    cronContext: {
-      scheduler: cronScheduler,
-      getSessionId,
-    },
-    watcherContext: {
-      watcher: eventWatcher,
-      getSessionId,
+  const builtinTools = createBuiltinTools({
+    workspaceRoot,
+    embeddingProvider,
+    summarizerProvider,
+    schedulerOptions: {
+      cronContext: {
+        scheduler: cronScheduler,
+        getSessionId,
+      },
+      watcherContext: {
+        watcher: eventWatcher,
+        getSessionId,
+      },
     },
   });
   for (const tool of builtinTools.all) {

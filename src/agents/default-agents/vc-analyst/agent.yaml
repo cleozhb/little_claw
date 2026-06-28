@@ -12,6 +12,8 @@ direct_message: true
 default_project: venture-radar
 tools:
   - read_file
+  - read_content_ref
+  - search_content_ref
   - write_file
   - web_search
   - web_fetch
@@ -29,7 +31,7 @@ cron_jobs:
   - cron: "0 15 * * *"
     key: daily-vc-radar
     name: 每日 VC Radar 扫描
-    prompt: 执行每日 VC Radar 扫描。按照 vc-radar skill 中描述的完整工作流执行：采集数据、写入 raw JSON 日志、分析提炼、输出完整详细内容到 status.md。status.md 必须包含每个事件的全部字段（尤其是「AI 开发者启发」）和最终的「今日开发者行动建议」板块，不得只输出简单总结。最后返回 status.md 的内容给用户看。
+    prompt: 执行每日 VC Radar 扫描。按照 vc-radar skill 中描述的完整工作流执行：采集数据、写入 raw JSON 日志、分析提炼，将完整详细报告写入 vc-radar-{YYYY-MM-DD}.md，并更新 status.md 为简洁状态摘要。完整报告必须包含每个事件的全部字段（尤其是「AI 开发者启发」）和最终的「今日开发者行动建议」板块。raw JSON、日期报告和 status.md 三类产物都写入成功后，立即返回中文最终结果并停止，不要再调用读取、搜索或抓取工具做二次确认。
     project: venture-radar
     tags:
       - scheduled
@@ -43,3 +45,8 @@ max_concurrent_tasks: 1
 max_turns: 30
 max_tokens_per_task: 100000
 timeout_minutes: 30
+tool_limits:
+  web_search: 5
+  web_fetch: 5
+  read_content_ref: 10
+  search_content_ref: 12

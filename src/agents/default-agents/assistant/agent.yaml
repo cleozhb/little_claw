@@ -12,6 +12,8 @@ direct_message: true
 default_project: personal
 tools:
   - read_file
+  - read_content_ref
+  - search_content_ref
   - write_file
   - web_search
   - memory_read

@@ -11,6 +11,10 @@ export interface ToolExecuteOptions {
   env?: Record<string, string>;
   /** ShellTool only: run this execution from a narrower workspace root. */
   cwd?: string;
+  /** Current context-hub project path, when a tool call belongs to a project task. */
+  projectContextPath?: string;
+  /** Base directory for content refs, usually ~/.little_claw. */
+  contentStoreBaseDir?: string;
 }
 
 export interface Tool {
