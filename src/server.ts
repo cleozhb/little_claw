@@ -269,7 +269,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   }
 
   const host = process.env.GATEWAY_HOST ?? "localhost";
-  const port = parseInt(process.env.GATEWAY_PORT ?? "4000", 10);
+  const port = parseInt(process.env.GATEWAY_PORT ?? "5000", 10);
 
   console.log(
     `Provider: ${config.llmProvider}, Model: ${config.llmModel}, BaseURL: ${config.llmBaseUrl ?? "(default)"}`,

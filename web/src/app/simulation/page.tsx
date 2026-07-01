@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { SimulationView } from "@/components/simulation/SimulationView";
 import { wsClient } from "@/lib/websocket";
 
-const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws";
+const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:5000/ws";
 
 export default function SimulationPage() {
   const router = useRouter();

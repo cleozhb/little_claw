@@ -35,7 +35,7 @@ const tabs: Array<{ kind: MemoryKind; label: string; icon: typeof CalendarDays }
 
 const MEMORY_API_BASE_URL =
   process.env.NEXT_PUBLIC_GATEWAY_HTTP_URL ??
-  gatewayHttpUrlFromWebSocketUrl(process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws");
+  gatewayHttpUrlFromWebSocketUrl(process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:5000/ws");
 
 export function MemoryView() {
   const [kind, setKind] = useState<MemoryKind>("daily");

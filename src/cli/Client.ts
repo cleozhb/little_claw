@@ -194,7 +194,7 @@ export class GatewayClient {
   private recentMessages: MessageSummary[] = [];
 
   constructor(options?: ClientOptions) {
-    this.url = options?.url ?? "ws://localhost:4000/ws";
+    this.url = options?.url ?? "ws://localhost:5000/ws";
     this.maxReconnects = options?.maxReconnects ?? 3;
   }
 
@@ -2173,7 +2173,7 @@ function formatTime(isoString: string): string {
 
 export async function startCli() {
   const host = process.env.GATEWAY_HOST ?? "localhost";
-  const port = process.env.GATEWAY_PORT ?? "4000";
+  const port = process.env.GATEWAY_PORT ?? "5000";
   const url = `ws://${host}:${port}/ws`;
 
   console.log(`Connecting to gateway at ${url}...`);

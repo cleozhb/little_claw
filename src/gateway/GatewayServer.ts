@@ -166,7 +166,7 @@ export class GatewayServer {
   private webhookChatSessions = new Map<string, string>();
 
   constructor(options: GatewayOptions) {
-    this.port = options.port ?? 4000;
+    this.port = options.port ?? 5000;
     this.hostname = options.hostname ?? "localhost";
     this.db = options.db;
     this.toolRegistry = options.toolRegistry;

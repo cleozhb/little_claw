@@ -60,7 +60,7 @@ import type {
 } from "@/types/protocol";
 import { messageMatchesChannelSelection, shouldUseTeamRouter } from "./channel-routing";
 
-const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws";
+const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:5000/ws";
 const CHANNEL_UNREAD_STORAGE_KEY = "little-claw:mission-control:channel-unread-counts:v1";
 
 type ChannelSelection =

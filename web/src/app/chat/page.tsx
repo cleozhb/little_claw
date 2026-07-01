@@ -7,7 +7,7 @@ import { wsClient, useConnectionStatus } from "@/lib/websocket";
 import { useSessions } from "@/hooks/useSessions";
 import { useChat } from "@/hooks/useChat";
 
-const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:4000/ws";
+const WS_URL = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:5000/ws";
 
 export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
