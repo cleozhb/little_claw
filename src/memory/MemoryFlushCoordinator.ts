@@ -1,6 +1,6 @@
 import type { Database, MessageRecord } from "../db/Database.ts";
 import type { LLMProvider } from "../llm/types.ts";
-import type { Message, TextBlock, ToolResultBlock, ToolUseBlock } from "../types/message.ts";
+import type { AssistantContentBlock, Message, ToolResultBlock } from "../types/message.ts";
 import { type AppClock, systemAppClock } from "../utils/AppClock.ts";
 import { generateSummaryResult } from "./SummaryGenerator.ts";
 import type { LongTermMemoryExtractor, LongTermMemoryResult } from "./LongTermMemoryExtractor.ts";
@@ -168,7 +168,7 @@ function recordsToMessages(records: MessageRecord[], db: Database): Message[] {
     const blocks = Array.isArray(parsed)
       ? parsed
       : [{ type: "text", text: typeof parsed === "string" ? parsed : String(parsed) }];
-    messages.push({ role: "assistant", content: blocks as Array<TextBlock | ToolUseBlock> });
+    messages.push({ role: "assistant", content: blocks as AssistantContentBlock[] });
     const toolResults = db.getToolResults(record.id);
     if (toolResults.length > 0) {
       const results: ToolResultBlock[] = toolResults.map((result) => ({

@@ -5,6 +5,15 @@ export interface TextBlock {
   text: string;
 }
 
+/**
+ * 模型在 thinking 模式下返回的隐藏推理内容。
+ * 该块不会展示给用户，只用于同一用户回合内的工具调用续传。
+ */
+export interface ReasoningBlock {
+  type: "reasoning";
+  reasoning_content: string;
+}
+
 export interface ToolUseBlock {
   type: "tool_use";
   id: string;
@@ -28,8 +37,10 @@ export interface UserMessage {
 
 export interface AssistantMessage {
   role: "assistant";
-  content: Array<TextBlock | ToolUseBlock>;
+  content: AssistantContentBlock[];
 }
+
+export type AssistantContentBlock = TextBlock | ReasoningBlock | ToolUseBlock;
 
 export interface ToolResultMessage {
   role: "user";
@@ -52,6 +63,12 @@ export type Message =
 export interface TextDeltaEvent {
   type: "text_delta";
   text: string;
+}
+
+/** Hidden reasoning delta; consumed by AgentLoop but never forwarded to users. */
+export interface ReasoningDeltaEvent {
+  type: "reasoning_delta";
+  reasoning_content: string;
 }
 
 export interface ToolUseStartEvent {
@@ -77,6 +94,7 @@ export interface MessageEndEvent {
 
 export type StreamEvent =
   | TextDeltaEvent
+  | ReasoningDeltaEvent
   | ToolUseStartEvent
   | ToolUseDeltaEvent
   | ToolUseEndEvent

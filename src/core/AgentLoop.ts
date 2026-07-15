@@ -3,7 +3,7 @@ import type { ToolRegistry } from "../tools/ToolRegistry.ts";
 import type { ConversationLike } from "./ConversationLike.ts";
 import type {
   AgentEvent,
-  TextBlock,
+  AssistantContentBlock,
   ToolUseBlock,
   AgentSkillsMatchedEvent,
 } from "../types/message.ts";
@@ -487,6 +487,7 @@ export class AgentLoop {
       // === Reason 阶段：调用 LLM，流式接收推理结果 ===
       // --- Call LLM ---
       let textContent = "";
+      let reasoningContent = "";
       const toolUseBlocks: ToolUseBlock[] = [];
       let stopReason = "end_turn";
 
@@ -507,6 +508,7 @@ export class AgentLoop {
 
         // 每次重试前重置流式状态
         textContent = "";
+        reasoningContent = "";
         pendingToolArgs.clear();
         pendingToolMeta.clear();
         stopReason = "end_turn";
@@ -553,6 +555,10 @@ export class AgentLoop {
               console.error(`[debug] stream event: ${event.type}`, JSON.stringify(event).slice(0, 200));
             }
             switch (event.type) {
+              case "reasoning_delta":
+                reasoningContent += event.reasoning_content;
+                break;
+
               case "text_delta":
                 textContent += event.text;
                 yield { type: "text_delta", text: event.text };
@@ -736,7 +742,13 @@ export class AgentLoop {
 
       // --- Has tool calls: execute them ---
       // === Act 阶段：LLM 请求了工具调用，逐个执行并收集结果 ===
-      const assistantBlocks: Array<TextBlock | ToolUseBlock> = [];
+      const assistantBlocks: AssistantContentBlock[] = [];
+      if (reasoningContent) {
+        assistantBlocks.push({
+          type: "reasoning",
+          reasoning_content: reasoningContent,
+        });
+      }
       if (textContent) {
         assistantBlocks.push({ type: "text", text: textContent });
       }

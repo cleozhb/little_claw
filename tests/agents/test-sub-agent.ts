@@ -28,6 +28,7 @@ async function main() {
     apiKey: config.llmApiKey,
     model: config.llmModel,
     baseURL: config.llmBaseUrl,
+    thinkingEnabled: config.llmThinkingEnabled,
   });
 
   // 只注册 read_file, write_file, shell 三个工具

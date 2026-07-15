@@ -1,4 +1,4 @@
-import type { Message, TextBlock, ToolResultBlock, ToolUseBlock } from "../types/message.ts";
+import type { AssistantContentBlock, Message, ToolResultBlock } from "../types/message.ts";
 import { estimateTokens } from "../memory/TokenBudget.ts";
 
 const DEFAULT_MIN_MESSAGES = 12;
@@ -115,7 +115,7 @@ function summarizeMessage(message: Message, ordinal: number): string {
     return `${ordinal}. ${message.role}: ${truncate(message.content.replace(/\s+/g, " ").trim(), 450)}`;
   }
 
-  const blocks = message.content as Array<TextBlock | ToolUseBlock | ToolResultBlock>;
+  const blocks = message.content as Array<AssistantContentBlock | ToolResultBlock>;
   if (message.role === "assistant") {
     const parts = blocks.map((block) => {
       if (block.type === "text") {
@@ -188,4 +188,3 @@ function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
-

@@ -1,7 +1,6 @@
 import type {
+  AssistantContentBlock,
   Message,
-  TextBlock,
-  ToolUseBlock,
   ToolResultBlock,
 } from "../types/message.ts";
 
@@ -30,7 +29,7 @@ export class EphemeralConversation {
     });
   }
 
-  addToolUse(assistantContent: Array<TextBlock | ToolUseBlock>): string {
+  addToolUse(assistantContent: AssistantContentBlock[]): string {
     this.messages.push({ role: "assistant", content: assistantContent });
     return `ephemeral-${++this.idCounter}`;
   }

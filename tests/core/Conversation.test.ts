@@ -186,6 +186,44 @@ test("loadExisting restores tool_use + tool_result sequence", () => {
   expect(loaded).toEqual(original);
 });
 
+test("loadExisting preserves hidden reasoning for an interrupted thinking tool turn", () => {
+  const conv = Conversation.createNew(db);
+  const sessionId = conv.getSessionId();
+
+  conv.addUser("check the weather");
+  const messageId = conv.addToolUse([
+    { type: "reasoning", reasoning_content: "I should call the weather tool." },
+    {
+      type: "tool_use",
+      id: "tu_thinking",
+      name: "weather",
+      input: { city: "Beijing" },
+    },
+  ]);
+  conv.addToolResults(messageId, [{
+    toolUseId: "tu_thinking",
+    toolName: "weather",
+    input: { city: "Beijing" },
+    output: "sunny",
+    isError: false,
+  }]);
+
+  const restored = Conversation.loadExisting(db, sessionId);
+  expect(restored.getMessages()).toEqual(conv.getMessages());
+  expect(restored.getMessages()[1]).toEqual({
+    role: "assistant",
+    content: [
+      { type: "reasoning", reasoning_content: "I should call the weather tool." },
+      {
+        type: "tool_use",
+        id: "tu_thinking",
+        name: "weather",
+        input: { city: "Beijing" },
+      },
+    ],
+  });
+});
+
 test("loadExisting restores multiple tool calls in one message", () => {
   const conv = Conversation.createNew(db);
   const sessionId = conv.getSessionId();

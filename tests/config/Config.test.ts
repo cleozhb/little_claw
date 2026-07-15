@@ -33,4 +33,20 @@ describe("loadConfig", () => {
       model: "summary-model",
     });
   });
+
+  test("reads optional thinking mode switch", () => {
+    process.env.LLM_THINKING_ENABLED = "true";
+    expect(loadConfig().llmThinkingEnabled).toBe(true);
+
+    process.env.LLM_THINKING_ENABLED = "off";
+    expect(loadConfig().llmThinkingEnabled).toBe(false);
+
+    delete process.env.LLM_THINKING_ENABLED;
+    expect(loadConfig().llmThinkingEnabled).toBeUndefined();
+  });
+
+  test("rejects invalid thinking mode switch", () => {
+    process.env.LLM_THINKING_ENABLED = "sometimes";
+    expect(() => loadConfig()).toThrow("LLM_THINKING_ENABLED must be true or false");
+  });
 });

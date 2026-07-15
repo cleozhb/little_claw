@@ -1,10 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { LLMProvider, ChatOptions, ToolDefinition } from "./types.ts";
 import type {
+  AssistantContentBlock,
   Message,
   StreamEvent,
-  TextBlock,
-  ToolUseBlock,
   ToolResultBlock,
 } from "../types/message.ts";
 
@@ -200,19 +199,26 @@ export class AnthropicProvider implements LLMProvider {
 
       // Assistant message with content blocks — native Anthropic format
       if (msg.role === "assistant" && Array.isArray(msg.content)) {
-        const blocks = msg.content as Array<TextBlock | ToolUseBlock>;
-        const anthropicBlocks: Anthropic.ContentBlockParam[] = blocks.map((block) => {
+        const blocks = msg.content as AssistantContentBlock[];
+        const anthropicBlocks: Anthropic.ContentBlockParam[] = [];
+        for (const block of blocks) {
           if (block.type === "text") {
-            return { type: "text" as const, text: block.text };
+            anthropicBlocks.push({ type: "text", text: block.text });
+            continue;
+          }
+          // reasoning_content is an OpenAI-compatible provider field. Do not
+          // expose or replay it through the Anthropic message format.
+          if (block.type === "reasoning") {
+            continue;
           }
           // tool_use block
-          return {
-            type: "tool_use" as const,
+          anthropicBlocks.push({
+            type: "tool_use",
             id: block.id,
             name: block.name,
             input: block.input as Record<string, unknown>,
-          };
-        });
+          });
+        }
         apiMessages.push({ role: "assistant", content: anthropicBlocks });
         continue;
       }

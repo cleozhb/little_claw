@@ -20,6 +20,7 @@ export interface Config {
   llmApiKey: string;
   llmModel: string;
   llmBaseUrl?: string;
+  llmThinkingEnabled?: boolean;
   chat: {
     mainAgentName: string;
   };
@@ -41,6 +42,10 @@ export function loadConfig(): Config {
     llmApiKey: process.env.LLM_API_KEY ?? "",
     llmModel: process.env.LLM_MODEL ?? "deepseek-v3.2",
     llmBaseUrl: process.env.LLM_BASE_URL ?? undefined,
+    llmThinkingEnabled: readOptionalBoolean(
+      "LLM_THINKING_ENABLED",
+      process.env.LLM_THINKING_ENABLED,
+    ),
     chat: {
       mainAgentName: readAgentName(process.env.CHAT_MAIN_AGENT, "assistant"),
     },
@@ -61,6 +66,14 @@ export function loadConfig(): Config {
         }
       : undefined,
   };
+}
+
+function readOptionalBoolean(name: string, value: string | undefined): boolean | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  throw new Error(`${name} must be true or false, got "${value}"`);
 }
 
 function readAgentName(value: string | undefined, fallback: string): string {

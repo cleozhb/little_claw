@@ -1,7 +1,6 @@
 import type {
+  AssistantContentBlock,
   Message,
-  TextBlock,
-  ToolUseBlock,
 } from "../types/message.ts";
 
 /**
@@ -11,7 +10,7 @@ import type {
 export interface ConversationLike {
   addUser(content: string): void;
   addAssistant(content: string): void;
-  addToolUse(assistantContent: Array<TextBlock | ToolUseBlock>): string;
+  addToolUse(assistantContent: AssistantContentBlock[]): string;
   addToolResults(
     messageId: string,
     results: Array<{

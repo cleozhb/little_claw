@@ -123,7 +123,20 @@ export function createLogger(module: string): Logger {
         parts.push(`[System Prompt]\n${data.system}`);
       }
       if (data.messages) {
-        parts.push(`[Messages] ${JSON.stringify(data.messages)}`);
+        parts.push(`[Messages] ${JSON.stringify(data.messages, (_key, value) => {
+          if (
+            value &&
+            typeof value === "object" &&
+            value.type === "reasoning" &&
+            typeof value.reasoning_content === "string"
+          ) {
+            return {
+              type: "reasoning",
+              reasoning_content: `[hidden ${value.reasoning_content.length} chars]`,
+            };
+          }
+          return value;
+        })}`);
       }
       if (data.tools) {
         const toolNames = Array.isArray(data.tools)

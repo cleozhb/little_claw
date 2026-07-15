@@ -1,7 +1,6 @@
 import type {
+  AssistantContentBlock,
   Message,
-  TextBlock,
-  ToolUseBlock,
   ToolResultBlock,
 } from "../types/message.ts";
 import type { Database } from "../db/Database.ts";
@@ -108,7 +107,7 @@ export class Conversation {
           // 结构化助手消息（text + tool_use 混合块）
           this.messages.push({
             role: "assistant",
-            content: content as Array<TextBlock | ToolUseBlock>,
+            content: content as AssistantContentBlock[],
           });
 
           // If this assistant message contains tool_use blocks,
@@ -177,7 +176,7 @@ export class Conversation {
     ]);
   }
 
-  addToolUse(assistantContent: Array<TextBlock | ToolUseBlock>): string {
+  addToolUse(assistantContent: AssistantContentBlock[]): string {
     this.messages.push({ role: "assistant", content: assistantContent });
     const record = this.db.addMessage(
       this.sessionId,

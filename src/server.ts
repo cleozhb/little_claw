@@ -278,7 +278,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const port = parseInt(process.env.GATEWAY_PORT ?? "5000", 10);
 
   console.log(
-    `Provider: ${config.llmProvider}, Model: ${config.llmModel}, BaseURL: ${config.llmBaseUrl ?? "(default)"}`,
+    `Provider: ${config.llmProvider}, Model: ${config.llmModel}, BaseURL: ${config.llmBaseUrl ?? "(default)"}, Thinking: ${config.llmThinkingEnabled === undefined ? "provider-default" : config.llmThinkingEnabled ? "enabled" : "disabled"}`,
   );
 
   const llmProvider = createProvider({
@@ -286,6 +286,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
     apiKey: config.llmApiKey,
     model: config.llmModel,
     baseURL: config.llmBaseUrl,
+    thinkingEnabled: config.llmThinkingEnabled,
   });
   const summarizerProvider = config.summarizer?.apiKey
     ? createProvider({
@@ -293,6 +294,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
         apiKey: config.summarizer.apiKey,
         model: config.summarizer.model,
         baseURL: config.summarizer.baseUrl,
+        thinkingEnabled: config.llmThinkingEnabled,
       })
     : undefined;
 

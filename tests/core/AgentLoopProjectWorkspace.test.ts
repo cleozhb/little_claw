@@ -103,6 +103,53 @@ test("AgentLoop stores oversized tool output as content_ref before continuing", 
   expect(JSON.stringify(llm.seenMessages.at(-1))).not.toContain("x".repeat(5_000));
 });
 
+test("AgentLoop preserves reasoning_content across tool sub-turns without exposing it", async () => {
+  const registry = new ToolRegistry();
+  registry.register(outputTool("weather", "sunny"));
+  const conversation = new EphemeralConversation("test thinking");
+  const llm = new RecordingLLM([
+    {
+      type: "tool",
+      name: "weather",
+      input: { city: "Beijing" },
+      reasoning: "I need the weather tool before answering.",
+    },
+    { type: "text", text: "It is sunny." },
+  ]);
+  const loop = new AgentLoop(llm, registry, conversation, {
+    config: createAgentConfig({
+      name: "assistant",
+      systemPrompt: "test thinking",
+      allowedTools: ["weather"],
+      maxTurns: 3,
+      canSpawnSubAgent: false,
+    }),
+  });
+
+  const visibleText: string[] = [];
+  for await (const event of loop.run("How is the weather?")) {
+    if (event.type === "text_delta") visibleText.push(event.text);
+  }
+
+  expect(visibleText.join("")).toBe("It is sunny.");
+  const secondRequest = llm.seenMessages[1]!;
+  expect(secondRequest[1]).toEqual({
+    role: "assistant",
+    content: [
+      {
+        type: "reasoning",
+        reasoning_content: "I need the weather tool before answering.",
+      },
+      {
+        type: "tool_use",
+        id: "tool-1-0",
+        name: "weather",
+        input: { city: "Beijing" },
+      },
+    ],
+  });
+});
+
 test("AgentLoop limits read_content_ref calls per round", async () => {
   const calls: Array<{ input: Record<string, unknown>; options?: ToolExecuteOptions }> = [];
   const registry = new ToolRegistry();
@@ -250,7 +297,7 @@ test("AgentLoop sends a compacted conversation view to the model", async () => {
 
 type ScriptedReply =
   | { type: "text"; text: string }
-  | { type: "tool"; name: string; input: Record<string, unknown> }
+  | { type: "tool"; name: string; input: Record<string, unknown>; reasoning?: string }
   | { type: "tools"; calls: Array<{ name: string; input: Record<string, unknown> }> };
 
 class ScriptedLLM implements LLMProvider {
@@ -269,6 +316,9 @@ class ScriptedLLM implements LLMProvider {
     }
 
     const calls = reply.type === "tools" ? reply.calls : [reply];
+    if (reply.type === "tool" && reply.reasoning) {
+      yield { type: "reasoning_delta", reasoning_content: reply.reasoning };
+    }
     for (const [index, call] of calls.entries()) {
       const id = `tool-${this.replies.length}-${index}`;
       yield { type: "tool_use_start", id, name: call.name };

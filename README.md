@@ -152,6 +152,15 @@ bun run cli      # 启动 CLI 客户端
 bun test
 ```
 
+Thinking 模式可通过环境变量显式控制：
+
+```bash
+# true: 开启；false: 关闭；不配置: 沿用上游 Provider 默认值
+LLM_THINKING_ENABLED=true
+```
+
+DeepSeek/千帆在 thinking 模式下进行多轮工具调用时，Little Claw 会自动保存并回传当前用户回合的 `reasoning_content`；进入下一条用户消息后不会继续发送旧推理内容。
+
 ---
 ## 稳定运行
 在项目根目录跑后端：

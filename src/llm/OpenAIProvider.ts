@@ -1,10 +1,9 @@
 import OpenAI from "openai";
 import type { LLMProvider, ChatOptions, ToolDefinition } from "./types.ts";
 import type {
+  AssistantContentBlock,
   Message,
   StreamEvent,
-  TextBlock,
-  ToolUseBlock,
   ToolResultBlock,
 } from "../types/message.ts";
 
@@ -15,9 +14,11 @@ const DEFAULT_MAX_TOKENS = readMaxOutputTokens();
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
   private model: string;
+  private thinkingEnabled?: boolean;
 
-  constructor(apiKey: string, model: string, baseURL?: string) {
+  constructor(apiKey: string, model: string, baseURL?: string, thinkingEnabled?: boolean) {
     this.model = model;
+    this.thinkingEnabled = thinkingEnabled;
     this.client = new OpenAI({
       apiKey,
       baseURL,
@@ -43,13 +44,21 @@ export class OpenAIProvider implements LLMProvider {
   ): AsyncGenerator<StreamEvent> {
     const apiMessages = this.toOpenAIMessages(messages, options?.system);
 
-    const params: OpenAI.ChatCompletionCreateParamsStreaming = {
+    const params: OpenAI.ChatCompletionCreateParamsStreaming & {
+      thinking?: { type: "enabled" | "disabled" };
+    } = {
       model: this.model,
       messages: apiMessages,
       stream: true,
       stream_options: { include_usage: true },
       max_tokens: DEFAULT_MAX_TOKENS,
     };
+
+    // thinking is a provider extension supported by DeepSeek/Qianfan-compatible APIs.
+    // Leave it absent when the env switch is unset so standard OpenAI endpoints keep working.
+    if (this.thinkingEnabled !== undefined) {
+      params.thinking = { type: this.thinkingEnabled ? "enabled" : "disabled" };
+    }
 
     if (options?.tools?.length) {
       params.tools = this.toOpenAITools(options.tools);
@@ -103,8 +112,19 @@ export class OpenAIProvider implements LLMProvider {
         stopReason = mapFinishReason(choice.finish_reason);
       }
 
-      const delta = choice.delta;
+      const delta = choice.delta as typeof choice.delta & {
+        reasoning_content?: string | null;
+      };
       if (!delta) continue;
+
+      // Thinking content is hidden from the user, but must be replayed with the
+      // assistant tool-call message on the next API request in the same turn.
+      if (delta.reasoning_content) {
+        yield {
+          type: "reasoning_delta",
+          reasoning_content: delta.reasoning_content,
+        };
+      }
 
       // Text content
       // 文本增量：LLM 生成的文本内容片段
@@ -196,7 +216,18 @@ export class OpenAIProvider implements LLMProvider {
       result.push({ role: "system", content: system });
     }
 
-    for (const msg of messages) {
+    // reasoning_content is only valid during the tool sub-turns of the latest
+    // user request. Older turns are intentionally stripped per provider docs.
+    let latestUserTurnIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]!;
+      if (message.role === "user" && typeof message.content === "string") {
+        latestUserTurnIndex = i;
+        break;
+      }
+    }
+
+    for (const [messageIndex, msg] of messages.entries()) {
       if (msg.role === "system") {
         result.push({ role: "system", content: msg.content });
         continue;
@@ -223,13 +254,16 @@ export class OpenAIProvider implements LLMProvider {
 
       // Assistant message with content blocks
       if (msg.role === "assistant" && Array.isArray(msg.content)) {
-        const blocks = msg.content as Array<TextBlock | ToolUseBlock>;
+        const blocks = msg.content as AssistantContentBlock[];
         let textContent = "";
+        let reasoningContent = "";
         const toolCalls: OpenAI.ChatCompletionMessageToolCall[] = [];
 
         for (const block of blocks) {
           if (block.type === "text") {
             textContent += block.text;
+          } else if (block.type === "reasoning") {
+            reasoningContent += block.reasoning_content;
           } else if (block.type === "tool_use") {
             toolCalls.push({
               id: block.id,
@@ -242,10 +276,21 @@ export class OpenAIProvider implements LLMProvider {
           }
         }
 
-        const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
+        const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam & {
+          reasoning_content?: string;
+        } = {
           role: "assistant",
-          content: textContent || null,
+          // DeepSeek thinking tool-call messages require content to be present;
+          // an empty string is valid and safer than null across compatible APIs.
+          content: textContent,
         };
+        if (
+          reasoningContent &&
+          this.thinkingEnabled !== false &&
+          messageIndex > latestUserTurnIndex
+        ) {
+          assistantMsg.reasoning_content = reasoningContent;
+        }
         if (toolCalls.length) {
           assistantMsg.tool_calls = toolCalls;
         }
