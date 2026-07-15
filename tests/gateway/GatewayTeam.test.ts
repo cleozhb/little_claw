@@ -140,6 +140,12 @@ function installFeishuAdapter(text: string, externalMessageId: string): void {
   };
 }
 
+test("stop leaves the injected database open", async () => {
+  await gateway.stop();
+
+  expect(() => db.listAllSessions()).not.toThrow();
+});
+
 function postFeishuWebhook(): Promise<Response> {
   return (gateway as any).handleFeishuWebhook(
     new Request("http://localhost/webhook/feishu", {

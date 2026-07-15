@@ -356,9 +356,6 @@ export class GatewayServer {
       this.server = null;
     }
 
-    // 关闭数据库
-    this.db.close();
-
     console.log("[Gateway] stopped");
   }
 
