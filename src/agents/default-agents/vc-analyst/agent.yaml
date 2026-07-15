@@ -19,6 +19,7 @@ tools:
   - web_fetch
   - memory_read
   - memory_write
+  - context_read
   - context_write
 skills:
   - vc-radar

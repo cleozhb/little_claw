@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { projectWorkspaceRoot, scopeProjectWritePath } from "../../src/core/ProjectWorkspace.ts";
+import {
+  projectWorkspaceRoot,
+  resolveProjectExecutionContext,
+  scopeProjectWritePath,
+} from "../../src/core/ProjectWorkspace.ts";
 
 test("project workspace root resolves from context-hub project paths", () => {
   expect(
@@ -37,4 +41,28 @@ test("project write paths reject explicit non-project destinations", () => {
     error:
       'Project task write denied: write_file path "../status.md" must stay under context-hub/3-projects/technology-blog/.',
   });
+});
+
+test("prefers a project channel custom context path", () => {
+  const context = resolveProjectExecutionContext({
+    project: "demo",
+    channelId: "channel-1",
+    projectChannels: {
+      getChannel: (id) => id === "channel-1"
+        ? { contextPath: "context-hub/3-projects/custom-demo" }
+        : null,
+    },
+  });
+  expect(context?.projectContextPath).toBe("context-hub/3-projects/custom-demo");
+});
+
+test("rejects explicit project paths outside the project context root", () => {
+  expect(() => resolveProjectExecutionContext({
+    project: "demo",
+    projectChannels: { getChannel: () => ({ contextPath: "context-hub/4-knowledge/demo" }) },
+  })).toThrow(/must be under/);
+  expect(() => resolveProjectExecutionContext({
+    project: "demo",
+    projectChannels: { getChannel: () => ({ contextPath: "context-hub/3-projects/../escape" }) },
+  })).toThrow(/must be under/);
 });

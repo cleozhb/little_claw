@@ -16,6 +16,7 @@ tools:
   - search_content_ref
   - write_file
   - shell
+  - context_read
 skills: []
 task_tags:
   - code

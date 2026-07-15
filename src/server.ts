@@ -25,15 +25,20 @@ import { EventWatcher } from "./scheduler/EventWatcher.ts";
 import type { SchedulerEvent } from "./scheduler/types.ts";
 import { VectorStore } from "./memory/VectorStore.ts";
 import { MemoryManager } from "./memory/MemoryManager.ts";
-import { IdentityExtractor } from "./memory/IdentityExtractor.ts";
 import { createEmbeddingProvider } from "./memory/EmbeddingProvider.ts";
 import { FileMemoryManager } from "./memory/FileMemoryManager.ts";
 import { createMemoryWriteTool } from "./tools/builtin/MemoryWriteTool.ts";
 import { createMemoryReadTool } from "./tools/builtin/MemoryReadTool.ts";
+import { createContextReadTool } from "./tools/builtin/ContextReadTool.ts";
 import { createContextWriteTool } from "./tools/builtin/ContextWriteTool.ts";
 import { ContextIndexer } from "./memory/ContextIndexer.ts";
 import { ContextRetriever } from "./memory/ContextRetriever.ts";
 import { ContextMetaGenerator } from "./memory/ContextMetaGenerator.ts";
+import { MemoryIndexer } from "./memory/MemoryIndexer.ts";
+import { MemoryRetriever } from "./memory/MemoryRetriever.ts";
+import { LongTermMemoryExtractor } from "./memory/LongTermMemoryExtractor.ts";
+import { MemoryFlushCoordinator } from "./memory/MemoryFlushCoordinator.ts";
+import { EmbeddingRecoveryScheduler } from "./memory/EmbeddingRecoveryScheduler.ts";
 import { SimulationManager } from "./simulation/SimulationManager.ts";
 import { FeishuAdapter } from "./gateway/adapters/FeishuAdapter.ts";
 import { AgentRegistry, type RegisteredAgent } from "./team/AgentRegistry.ts";
@@ -151,6 +156,7 @@ export function createLovelyOctopusRuntime(options: LovelyOctopusRuntimeOptions)
     onTaskProgress: options.onTaskProgress,
   });
   const coordinatorLoop = new CoordinatorLoop({
+    db: options.db,
     agents: agentRegistry,
     tasks: taskQueue,
     messages: teamMessages,
@@ -308,13 +314,26 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   // 文件记忆层初始化（~/.little_claw/ 下的 context-hub/, memory/）
   const fileMemory = new FileMemoryManager();
   await fileMemory.initialize();
+  const memoryStore = fileMemory.getMemoryStore();
+  const memoryIndexer = new MemoryIndexer(db, embeddingProvider, memoryStore);
+  const memoryRetriever = new MemoryRetriever(db, embeddingProvider);
+  const longTermMemoryExtractor = new LongTermMemoryExtractor(memoryStore, llmProvider);
+  const memoryFlushCoordinator = new MemoryFlushCoordinator(
+    db,
+    llmProvider,
+    memoryStore,
+    longTermMemoryExtractor,
+    memoryIndexer,
+  );
 
   const memoryManager = new MemoryManager(
     vectorStore,
     llmProvider,
     db,
     fileMemory,
-    new IdentityExtractor(fileMemory.getContextHub(), llmProvider),
+    memoryIndexer,
+    memoryRetriever,
+    memoryFlushCoordinator,
   );
 
   // --- Context Hub: 自动补全元文件 + 索引 + 检索 ---
@@ -322,9 +341,19 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   const contextMetaGenerator = new ContextMetaGenerator(contextHub, llmProvider);
   const contextIndexer = new ContextIndexer(db, embeddingProvider, contextHub);
   const contextRetriever = new ContextRetriever(db, embeddingProvider);
+  const embeddingRecovery = new EmbeddingRecoveryScheduler(memoryIndexer, contextIndexer);
+
+  const memoryIndexInitialization = memoryIndexer
+    .indexAll()
+    .then(() => {
+      console.log(`Memory: ${db.getMemoryIndexCount()} Markdown chunk(s) indexed`);
+    })
+    .catch((err) => {
+      console.error("Memory index init failed:", err instanceof Error ? err.message : String(err));
+    });
 
   // 启动时补全缺失的 .abstract.md / .overview.md（fire-and-forget），随后建索引
-  contextMetaGenerator
+  const contextIndexInitialization = contextMetaGenerator
     .scanAndGenerate()
     .then(({ generated }) => {
       if (generated > 0) {
@@ -371,8 +400,9 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   }
 
   // --- 记忆工具注册 ---
-  toolRegistry.register(createMemoryWriteTool(fileMemory, vectorStore));
+  toolRegistry.register(createMemoryWriteTool(fileMemory, memoryIndexer));
   toolRegistry.register(createMemoryReadTool(fileMemory));
+  toolRegistry.register(createContextReadTool(fileMemory));
   toolRegistry.register(createContextWriteTool(fileMemory, contextIndexer, contextMetaGenerator));
 
   // --- Skill 系统初始化 ---
@@ -454,9 +484,9 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
   console.log(`Tools: ${toolLine}`);
 
   // 打印记忆状态
-  const memoryCount = vectorStore.getCount();
-  const memoryBySession = vectorStore.getCountBySession();
-  console.log(`Memory: ${memoryCount} entries across ${memoryBySession.length} sessions`);
+  const legacyMemoryCount = vectorStore.getCount();
+  const memoryIndexCount = db.getMemoryIndexCount();
+  console.log(`Memory: ${memoryIndexCount} indexed chunk(s), ${legacyMemoryCount} legacy vector entr${legacyMemoryCount === 1 ? "y" : "ies"}`);
 
   // --- Simulation 系统初始化 ---
   const simulationManager = new SimulationManager({
@@ -597,6 +627,7 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
       });
     },
     getActiveSessionCount: () => sessionRouter.getActiveSessionCount(),
+    onSessionDelete: (sessionId) => sessionRouter.evictSession(sessionId),
   });
 
   lovelyOctopus.start();
@@ -674,13 +705,18 @@ export async function startServer(): Promise<{ gateway: GatewayServer; cleanup: 
       cronScheduler.stop();
       eventWatcher.stop();
       await lovelyOctopus.stop();
+      await gateway.stop();
       feishuAdapter?.dispose();
       await mcpManager.disconnectAll();
       // 关闭前保存所有活跃 session 的记忆
       await sessionRouter.saveAllMemories();
+      await memoryManager.drainFlushes();
       sessionRouter.dispose();
-      await gateway.stop();
+      await Promise.all([memoryIndexInitialization, contextIndexInitialization]);
+      await embeddingRecovery.stop();
+      await Promise.all([memoryIndexer.drain(), contextIndexer.drain()]);
       vectorStore.close();
+      db.close();
     })();
     return cleanupPromise;
   };

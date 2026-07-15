@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, CalendarDays, FileJson, FileText, RefreshCcw } from "lucide-react";
+import { BookOpen, CalendarDays, FileJson, FileText, Inbox, RefreshCcw } from "lucide-react";
 
 import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-type MemoryKind = "daily" | "identity";
+type MemoryKind = "memory" | "daily" | "logs";
 
 interface MemoryFile {
   name: string;
@@ -29,8 +29,9 @@ interface JsonLine {
 }
 
 const tabs: Array<{ kind: MemoryKind; label: string; icon: typeof CalendarDays }> = [
-  { kind: "daily", label: "Daily Log", icon: CalendarDays },
-  { kind: "identity", label: "长期记忆", icon: BookOpen },
+  { kind: "memory", label: "Memory", icon: BookOpen },
+  { kind: "daily", label: "Daily Notes", icon: CalendarDays },
+  { kind: "logs", label: "Logs", icon: FileJson },
 ];
 
 const MEMORY_API_BASE_URL =
@@ -38,7 +39,7 @@ const MEMORY_API_BASE_URL =
   gatewayHttpUrlFromWebSocketUrl(process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://localhost:5000/ws");
 
 export function MemoryView() {
-  const [kind, setKind] = useState<MemoryKind>("daily");
+  const [kind, setKind] = useState<MemoryKind>("memory");
   const [files, setFiles] = useState<MemoryFile[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loadedFile, setLoadedFile] = useState<LoadedFile | null>(null);
@@ -98,7 +99,7 @@ export function MemoryView() {
   }, [kind, selectedPath, files]);
 
   const parsedLines = useMemo(() => {
-    if (kind !== "daily" || !loadedFile?.content) return [];
+    if (kind !== "logs" || !loadedFile?.content) return [];
     return parseJsonLines(loadedFile.content);
   }, [kind, loadedFile?.content]);
 
@@ -110,7 +111,7 @@ export function MemoryView() {
             <div>
               <h1 className="text-base font-semibold">Memory</h1>
               <div className="mt-1 text-xs text-muted-foreground">
-                {kind === "daily" ? "~/.little_claw/memory" : "~/.little_claw/context-hub/0-identity"}
+                {memoryRootLabel(kind)}
               </div>
             </div>
             <Button
@@ -124,7 +125,7 @@ export function MemoryView() {
             </Button>
           </div>
 
-          <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+          <div className="mt-3 grid grid-cols-3 gap-1 rounded-lg bg-muted p-1">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               return (
@@ -170,8 +171,10 @@ export function MemoryView() {
                 )}
               >
                 <div className="flex items-center gap-2">
-                  {kind === "daily" ? (
+                  {kind === "logs" ? (
                     <FileJson className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : file.name === "inbox.md" ? (
+                    <Inbox className="h-4 w-4 shrink-0 text-muted-foreground" />
                   ) : (
                     <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
                   )}
@@ -199,7 +202,7 @@ export function MemoryView() {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold">{loadedFile?.file.name ?? "Select a memory file"}</div>
             <div className="truncate text-xs text-muted-foreground">
-              {loadedFile?.file.path ?? (kind === "daily" ? "Daily logs" : "Identity memory")}
+              {loadedFile?.file.path ?? memoryEmptyLabel(kind)}
             </div>
           </div>
           {loadedFile ? (
@@ -221,7 +224,7 @@ export function MemoryView() {
             </div>
           ) : isLoadingFile ? (
             <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">Loading content</div>
-          ) : kind === "daily" && loadedFile ? (
+          ) : kind === "logs" && loadedFile ? (
             <DailyLogDetails lines={parsedLines} />
           ) : loadedFile ? (
             <div className="text-sm leading-6">
@@ -241,6 +244,18 @@ function memoryApiUrl(params: { kind: MemoryKind; path?: string }) {
   url.searchParams.set("kind", params.kind);
   if (params.path) url.searchParams.set("path", params.path);
   return url.toString();
+}
+
+function memoryRootLabel(kind: MemoryKind) {
+  if (kind === "memory") return "~/.little_claw/memory";
+  if (kind === "daily") return "~/.little_claw/memory/daily";
+  return "~/.little_claw/logs/conversations";
+}
+
+function memoryEmptyLabel(kind: MemoryKind) {
+  if (kind === "memory") return "Long-term memory and inbox";
+  if (kind === "daily") return "Daily notes";
+  return "Conversation logs";
 }
 
 function gatewayHttpUrlFromWebSocketUrl(wsUrl: string) {

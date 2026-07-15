@@ -20,6 +20,7 @@ tools:
   - web_search
   - memory_read
   - memory_write
+  - context_read
   - context_write
 skills:
   - podcast-translation-skill

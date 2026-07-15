@@ -32,7 +32,7 @@ __pycache__
 .idea
 
 # database
-data/
+data*/
 
 # LLM tool workspace sandbox
 workspace/

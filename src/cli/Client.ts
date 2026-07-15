@@ -593,6 +593,15 @@ export class GatewayClient {
     return (resp as { deletedCount: number }).deletedCount;
   }
 
+  async memoryRebuild(): Promise<number> {
+    const resp = await this.request(
+      { type: "memory_rebuild" } as ClientMessage,
+      "memory_rebuild_result",
+      60_000,
+    );
+    return (resp as { indexed: number }).indexed;
+  }
+
   // --- Context Hub ---
 
   async contextMap(): Promise<{ map: string; entryCount: number }> {
@@ -815,12 +824,13 @@ export class ClientRepl {
   /agents                List available agent types
   /memory                Show memory statistics
   /memory search <query> Search memories by query
-  /memory clear          Clear all memories (requires confirmation)
+  /memory rebuild        Rebuild derived memory index from Markdown files
+  /memory clear          Clear derived memory index only (Markdown files stay)
   /context map           Show the L0 context-hub map (one line per folder)
   /context overview <p>  Show the .overview.md of a directory (path under context-hub/)
   /context search <q>    Test context-hub overview retrieval
   /context rebuild       Regenerate missing meta files and re-index overviews
-  /inbox                 Show 1-inbox/inbox.md
+  /inbox                 Show memory/inbox.md
   /inbox add <text>      Append a quick item to inbox.md
   /status                Show server status
   /quit                  Exit the chat
@@ -1337,10 +1347,10 @@ Type ${CYAN}/help${RESET} for available commands.
   private async handleMemory(): Promise<void> {
     try {
       const stats = await this.client.memoryStats();
-      console.log(`${BOLD}Memory:${RESET} ${stats.totalCount} entries across ${stats.bySession.length} sessions`);
+      console.log(`${BOLD}Memory index:${RESET} ${stats.totalCount} chunk(s) across ${stats.bySession.length} source file(s)`);
       if (stats.bySession.length > 0) {
         for (const s of stats.bySession) {
-          console.log(`  ${DIM}session ${YELLOW}${s.sessionId.slice(0, 8)}...${RESET}${DIM}: ${s.count} entries${RESET}`);
+          console.log(`  ${YELLOW}${s.sessionId}${RESET}${DIM}: ${s.count} chunk(s)${RESET}`);
         }
       }
       console.log();
@@ -1368,9 +1378,13 @@ Type ${CYAN}/help${RESET} for available commands.
         const sim = (r.similarity * 100).toFixed(1);
         const date = r.createdAt.slice(0, 10);
         const preview = r.content.length > 100 ? r.content.slice(0, 100) + "..." : r.content;
+        const source = r.sourcePath ?? r.sessionId;
         console.log(
-          `  ${YELLOW}${i + 1}${RESET}. ${DIM}[${sim}%]${RESET} ${DIM}(${date}, session ${r.sessionId.slice(0, 8)}...)${RESET}`,
+          `  ${YELLOW}${i + 1}${RESET}. ${DIM}[${sim}%]${RESET} ${DIM}(${date}, ${source})${RESET}`,
         );
+        if (r.matchReason) {
+          console.log(`     ${DIM}${r.matchReason}${RESET}`);
+        }
         console.log(`     ${preview}`);
       }
       console.log();
@@ -1382,7 +1396,7 @@ Type ${CYAN}/help${RESET} for available commands.
   private async handleMemoryClear(rl: readline.Interface): Promise<void> {
     let confirm: string;
     try {
-      confirm = await rl.question(`${YELLOW}Clear ALL memories? This cannot be undone. (y/N) ${RESET}`);
+      confirm = await rl.question(`${YELLOW}Clear the derived memory index? Markdown memory files will not be deleted. (y/N) ${RESET}`);
     } catch {
       return;
     }
@@ -1393,9 +1407,19 @@ Type ${CYAN}/help${RESET} for available commands.
 
     try {
       const deleted = await this.client.memoryClear();
-      console.log(`${GREEN}Cleared ${deleted} memory entries.${RESET}\n`);
+      console.log(`${GREEN}Cleared ${deleted} memory index entr${deleted === 1 ? "y" : "ies"}.${RESET}\n`);
     } catch (err) {
       console.log(`${RED}Failed to clear memories: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  private async handleMemoryRebuild(): Promise<void> {
+    console.log(`${DIM}Rebuilding memory index from Markdown files...${RESET}`);
+    try {
+      const indexed = await this.client.memoryRebuild();
+      console.log(`${GREEN}Done.${RESET} Indexed ${indexed} memory chunk(s).\n`);
+    } catch (err) {
+      console.log(`${RED}Memory rebuild failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
     }
   }
 
@@ -1495,7 +1519,7 @@ Type ${CYAN}/help${RESET} for available commands.
         console.log("Inbox is empty.\n");
         return;
       }
-      console.log(`${BOLD}1-inbox/inbox.md${RESET}`);
+      console.log(`${BOLD}memory/inbox.md${RESET}`);
       console.log(`${DIM}---${RESET}`);
       console.log(content);
       console.log(`${DIM}---${RESET}\n`);
@@ -1927,6 +1951,11 @@ Type ${CYAN}/help${RESET} for available commands.
 
         if (input === "/memory clear") {
           await this.handleMemoryClear(rl);
+          continue;
+        }
+
+        if (input === "/memory rebuild") {
+          await this.handleMemoryRebuild();
           continue;
         }
 

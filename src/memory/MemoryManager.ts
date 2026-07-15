@@ -2,9 +2,10 @@ import type { VectorStore } from "./VectorStore.ts";
 import type { LLMProvider } from "../llm/types.ts";
 import type { Database } from "../db/Database.ts";
 import type { Message } from "../types/message.ts";
-import { generateSummary } from "./SummaryGenerator.ts";
 import type { FileMemoryManager } from "./FileMemoryManager.ts";
-import type { IdentityExtractor } from "./IdentityExtractor.ts";
+import type { MemoryIndexer } from "./MemoryIndexer.ts";
+import type { MemoryRetriever } from "./MemoryRetriever.ts";
+import type { FlushOptions, FlushReport, MemoryFlushCoordinator } from "./MemoryFlushCoordinator.ts";
 
 // ---------------------------------------------------------------------------
 // MemoryManager — 长期记忆的存储与检索
@@ -46,62 +47,47 @@ export class MemoryManager {
   private llmProvider: LLMProvider;
   private db: Database;
   private fileMemory?: FileMemoryManager;
-  private identityExtractor?: IdentityExtractor;
-  private lastDistilledCount = new Map<string, number>();
+  private memoryIndexer?: MemoryIndexer;
+  private memoryRetriever?: MemoryRetriever;
+  private flushCoordinator?: MemoryFlushCoordinator;
 
   constructor(
     vectorStore: VectorStore,
     llmProvider: LLMProvider,
     db: Database,
     fileMemory?: FileMemoryManager,
-    identityExtractor?: IdentityExtractor,
+    memoryIndexer?: MemoryIndexer,
+    memoryRetriever?: MemoryRetriever,
+    flushCoordinator?: MemoryFlushCoordinator,
   ) {
     this.vectorStore = vectorStore;
     this.llmProvider = llmProvider;
     this.db = db;
     this.fileMemory = fileMemory;
-    this.identityExtractor = identityExtractor;
+    this.memoryIndexer = memoryIndexer;
+    this.memoryRetriever = memoryRetriever;
+    this.flushCoordinator = flushCoordinator;
   }
 
   /**
-   * 生成对话摘要并存入向量数据库 + sessions 表备份。
+   * 生成对话摘要并写入 memory/daily/YYYY-MM-DD.md + sessions 表备份。
    * @param channelId 可选的频道/项目 ID，用于记忆隔离。Team 模式下传入 project 频道 ID。
    */
   async saveSummary(sessionId: string, messages: Message[], channelId?: string): Promise<void> {
-    if (messages.length === 0) return;
+    if (messages.length === 0 || !this.flushCoordinator) return;
+    await this.flushCoordinator.flushSession(sessionId, { reason: "execution_end", force: true });
+  }
 
-    const summary = await generateSummary(this.llmProvider, messages);
-    if (!summary) return;
+  flushSession(sessionId: string, options: FlushOptions): Promise<FlushReport> | undefined {
+    return this.flushCoordinator?.flushSession(sessionId, options);
+  }
 
-    // 获取 session 信息用于丰富 metadata
-    const session = this.db.getSession(sessionId);
-    const metadata: Record<string, unknown> = {
-      sessionId,
-      channelId: channelId ?? null,
-      title: session?.title ?? null,
-      createdAt: new Date().toISOString(),
-      messageCount: messages.length,
-    };
+  flushAll(sessionIds: string[]): Promise<FlushReport[]> {
+    return this.flushCoordinator?.flushAll(sessionIds, "shutdown") ?? Promise.resolve([]);
+  }
 
-    // 存入向量数据库
-    await this.vectorStore.store(sessionId, summary, metadata);
-
-    // 纯文本备份到 sessions 表
-    this.db.updateSessionSummary(sessionId, summary);
-
-    // 从增量消息中蒸馏身份信息到 profile.md（fire-and-forget，失败不阻塞）
-    if (this.identityExtractor) {
-      const lastCount = this.lastDistilledCount.get(sessionId) ?? 0;
-      const newMsgs = messages.slice(lastCount);
-      this.lastDistilledCount.set(sessionId, messages.length);
-      if (newMsgs.length > 0) {
-        this.identityExtractor.extractAndUpdate(newMsgs).catch((err) => {
-          if (process.env.DEBUG) {
-            console.error(`[debug] Identity extraction failed:`, err);
-          }
-        });
-      }
-    }
+  drainFlushes(): Promise<void> {
+    return this.flushCoordinator?.drain() ?? Promise.resolve();
   }
 
   /**
@@ -141,6 +127,17 @@ export class MemoryManager {
     topK: number = 5,
     channelId?: string,
   ): Promise<string[]> {
+    if (this.memoryRetriever) {
+      const results = await this.memoryRetriever.retrieve(query, {
+        topK,
+        maxPerSource: 1,
+      });
+      return results.map((result) => {
+        const date = result.updatedAt.slice(0, 10);
+        return `[${date}, ${result.sourcePath}#${result.chunkIndex}] ${result.content}`;
+      });
+    }
+
     // 多取一些以弥补过滤掉当前 session 后可能不够的情况
     const results = await this.vectorStore.search(query, topK + 3);
 
@@ -177,8 +174,8 @@ export class MemoryManager {
   /**
    * 加载文件记忆上下文。
    * 三层加载系统：
-   *   - identity（0-identity/profile.md，按策略加载）
-   *   - inbox（1-inbox/inbox.md，按策略加载）
+   *   - identity（memory/MEMORY.md，按策略加载）
+   *   - inbox（memory/inbox.md，按策略加载）
    *   - contextMap（所有 .abstract.md 拼接的 L0 全局地图，按策略加载）
    */
   async loadFileMemoryContext(
@@ -204,5 +201,13 @@ export class MemoryManager {
   /** 获取 VectorStore 实例（供 Gateway 直接查询统计/搜索） */
   getVectorStore(): VectorStore {
     return this.vectorStore;
+  }
+
+  getMemoryIndexer(): MemoryIndexer | undefined {
+    return this.memoryIndexer;
+  }
+
+  getMemoryRetriever(): MemoryRetriever | undefined {
+    return this.memoryRetriever;
   }
 }

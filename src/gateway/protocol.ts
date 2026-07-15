@@ -408,6 +408,10 @@ export interface MemoryClearMessage {
   type: "memory_clear";
 }
 
+export interface MemoryRebuildMessage {
+  type: "memory_rebuild";
+}
+
 /** Client → Server: 中断当前 Agent 执行 */
 export interface AbortMessage {
   type: "abort";
@@ -559,6 +563,7 @@ export type ClientMessage =
   | MemorySearchMessage
   | MemoryStatsMessage
   | MemoryClearMessage
+  | MemoryRebuildMessage
   | AbortMessage
   | InjectMessage
   | MatchSkillsMessage
@@ -843,6 +848,14 @@ export interface MemoryResultEntry {
   sessionId: string;
   similarity: number;
   createdAt: string;
+  sourcePath?: string;
+  sourceKind?: string;
+  chunkIndex?: number;
+  score?: number;
+  bm25Score?: number;
+  vectorScore?: number;
+  matchReason?: string;
+  embeddingStatus?: "ready" | "missing";
 }
 
 /** Server → Client: 记忆搜索结果 */
@@ -862,6 +875,15 @@ export interface MemoryStatsResultMessage {
 export interface MemoryClearedMessage {
   type: "memory_cleared";
   deletedCount: number;
+}
+
+/** Server → Client: 记忆索引重建结果 */
+export interface MemoryRebuildResultMessage {
+  type: "memory_rebuild_result";
+  indexed: number;
+  embeddingReady?: number;
+  embeddingMissing?: number;
+  degraded?: boolean;
 }
 
 /** Server → Client: Agent 已中断 */
@@ -975,6 +997,7 @@ export interface ContextSearchResultMessage {
     vectorScore: number;
     matchReason: string;
     overviewPreview: string;
+    embeddingStatus?: "ready" | "missing";
   }>;
 }
 
@@ -983,6 +1006,9 @@ export interface ContextRebuildResultMessage {
   type: "context_rebuild_result";
   generated: number;
   indexed: number;
+  embeddingReady?: number;
+  embeddingMissing?: number;
+  degraded?: boolean;
 }
 
 /** inbox 内容 */
@@ -1116,6 +1142,7 @@ export type ServerMessage =
   | MemoryResultsMessage
   | MemoryStatsResultMessage
   | MemoryClearedMessage
+  | MemoryRebuildResultMessage
   | AbortedMessage
   | InjectedMessage
   | SkillsMatchedMessage
@@ -1173,6 +1200,7 @@ const CLIENT_MESSAGE_TYPES = new Set<ClientMessage["type"]>([
   "memory_search",
   "memory_stats",
   "memory_clear",
+  "memory_rebuild",
   "abort",
   "inject",
   "match_skills",
@@ -1299,6 +1327,8 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "memory_stats":
       break;
     case "memory_clear":
+      break;
+    case "memory_rebuild":
       break;
     case "abort":
       requireString(msg, "sessionId");

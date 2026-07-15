@@ -1,6 +1,9 @@
 import { createAgentConfig } from "../agents/AgentConfig.ts";
 import { AgentLoop } from "../core/AgentLoop.ts";
+import { resolveProjectExecutionContext } from "../core/ProjectWorkspace.ts";
 import { EphemeralConversation } from "../core/EphemeralConversation.ts";
+import { Conversation } from "../core/Conversation.ts";
+import type { Database } from "../db/Database.ts";
 import type { ContextRetriever } from "../memory/ContextRetriever.ts";
 import type { MemoryManager } from "../memory/MemoryManager.ts";
 import type { LLMProvider } from "../llm/types.ts";
@@ -39,6 +42,7 @@ export interface CoordinatorLoopOptions {
   maxTurns?: number;
   projectSummaryThreshold?: number;
   coordinatorName?: string;
+  db?: Database;
 }
 
 export type CoordinatorLoopState = "idle" | "running" | "stopped";
@@ -69,6 +73,7 @@ export class CoordinatorLoop {
   private maxTurns: number;
   private projectSummaryThreshold: number;
   private coordinatorName: string;
+  private db?: Database;
 
   private stopped = true;
   private loopPromise: Promise<void> | null = null;
@@ -92,6 +97,7 @@ export class CoordinatorLoop {
     this.maxTurns = options.maxTurns ?? 30;
     this.projectSummaryThreshold = options.projectSummaryThreshold ?? 10;
     this.coordinatorName = options.coordinatorName ?? "coordinator";
+    this.db = options.db;
 
     ensureCoordinatorTools(this.toolRegistry, {
       tasks: this.tasks,
@@ -297,11 +303,14 @@ export class CoordinatorLoop {
     },
   ): Promise<void> {
     const coordinator = this.requireCoordinatorAgent();
-    const conversation = new EphemeralConversation("Lovely Octopus coordinator execution.");
+    const systemPrompt = buildCoordinatorSystemPrompt(coordinator);
+    const conversation = this.db
+      ? Conversation.createNew(this.db, systemPrompt, "coordinator_run")
+      : new EphemeralConversation("Lovely Octopus coordinator execution.");
     const loop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
       config: createAgentConfig({
         name: coordinator.config.name,
-        systemPrompt: buildCoordinatorSystemPrompt(coordinator),
+        systemPrompt,
         allowedTools: uniqueStrings([
           ...coordinator.config.tools,
           ...COORDINATOR_TOOL_NAMES,
@@ -320,7 +329,7 @@ export class CoordinatorLoop {
       runMode: "coordinator",
       contextMode: replyTarget.replyChannelType === "project" ? "project" : "always",
       projectContextPath: replyTarget.replyChannelType === "project"
-        ? `context-hub/3-projects/${replyTarget.project}`
+        ? this.resolveProjectContextPath(replyTarget.project, replyTarget.replyChannelId)
         : undefined,
     });
 
@@ -330,6 +339,7 @@ export class CoordinatorLoop {
 
     this.currentLoop = loop;
     let assistantText = "";
+    let executionError: unknown;
     try {
       this.currentTaskDefaults = this.buildTaskDefaults(pendingMessages, replyTarget);
       for await (const event of loop.run(buildCoordinatorUserPrompt({
@@ -341,10 +351,21 @@ export class CoordinatorLoop {
           assistantText += event.text;
         }
       }
+    } catch (err) {
+      executionError = err;
     } finally {
       this.currentTaskDefaults = undefined;
       this.currentLoop = null;
     }
+
+    const coordinatorSessionId = conversation.getSessionId();
+    if (coordinatorSessionId !== "ephemeral") {
+      await this.memoryManager?.flushSession(coordinatorSessionId, {
+        reason: "execution_end",
+        force: true,
+      });
+    }
+    if (executionError) throw executionError;
 
     const reply = assistantText.trim();
     if (!reply) return;
@@ -516,7 +537,7 @@ export class CoordinatorLoop {
       title,
       description:
         `Handle the pending human request(s) in #${channel.slug}.\n\n` +
-        `Project workspace: context-hub/3-projects/${channel.slug}\n\n` +
+        `Project workspace: ${this.resolveProjectContextPath(channel.slug, channel.id)}\n\n` +
         `Messages:\n${formatMessages(pendingMessages)}`,
       project: channel.slug,
       channelId: channel.id,
@@ -531,6 +552,14 @@ export class CoordinatorLoop {
     }
 
     return task;
+  }
+
+  private resolveProjectContextPath(project: string, channelId?: string): string {
+    return resolveProjectExecutionContext({
+      project,
+      channelId,
+      projectChannels: this.channels,
+    })!.projectContextPath;
   }
 }
 

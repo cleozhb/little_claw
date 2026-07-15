@@ -143,7 +143,8 @@ export function createSpawnAgentTool(
           memoryManager: toolOptions.memoryManager,
           contextRetriever: toolOptions.contextRetriever,
           runMode: "agent_dm",
-          contextMode: "auto",
+          contextMode: options?.projectContextPath ? "project" : "auto",
+          projectContextPath: options?.projectContextPath,
         },
       );
 

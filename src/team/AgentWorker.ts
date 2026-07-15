@@ -6,6 +6,7 @@ import type { ConversationLike } from "../core/ConversationLike.ts";
 import {
   normalizeProjectContextPath,
   projectWorkspaceRoot,
+  resolveProjectExecutionContext,
   scopeProjectWriteFileInput,
 } from "../core/ProjectWorkspace.ts";
 import type { Database } from "../db/Database.ts";
@@ -343,6 +344,7 @@ export class AgentWorker {
       approvalResumeStatus: approvalResumeStatus ?? "(none)",
     });
     const running = this.tasks.startTask(task.id, agentName);
+    const projectContextPath = this.resolveProjectContextPath(running.project, running.channelId);
     this.currentTaskId = running.id;
     this.stateValue = "running";
 
@@ -353,7 +355,7 @@ export class AgentWorker {
     // --- Approved: 直接执行被拦截的工具调用，跳过 LLM ---
     let directExecuted = false;
     if (approvalResumeStatus === "approved") {
-      const directResult = await this.directExecuteApprovedTool(running, conversation);
+      const directResult = await this.directExecuteApprovedTool(running, conversation, projectContextPath);
       if (directResult) {
         directExecuted = true;
         if (this.onTaskProgress) {
@@ -362,7 +364,7 @@ export class AgentWorker {
       }
     }
 
-    const loop = this.getTaskLoop(running.id, conversation, running.project, task.channelId);
+    const loop = this.getTaskLoop(running.id, conversation, running.channelId, projectContextPath);
 
     this.currentLoop = loop;
 
@@ -415,9 +417,19 @@ export class AgentWorker {
       prompt = "已批准的工具调用已经执行。请继续完成任务，所有可见输出使用中文。";
     } else if (approvalResumeStatus) {
       // 软审批(无 approvalData.tool) 或直接执行失败，走 LLM resume
-      prompt = buildTaskResumePrompt(running, initialMessages, approvalResumeStatus);
+      prompt = buildTaskResumePrompt(
+        running,
+        initialMessages,
+        approvalResumeStatus,
+        projectContextPath,
+      );
     } else {
-      prompt = buildTaskUserPrompt(running, initialMessages, this.getSourceMessage(running));
+      prompt = buildTaskUserPrompt(
+        running,
+        initialMessages,
+        this.getSourceMessage(running),
+        projectContextPath,
+      );
     }
 
     let assistantText = "";
@@ -456,6 +468,9 @@ export class AgentWorker {
           this.currentLoop?.abort();
         }
       }
+    } catch (err) {
+      errorMessage = err instanceof Error ? err.message : String(err);
+      log.warn(`AgentLoop 抛出异常：${running.id}`, errorMessage);
     } finally {
       // Flush any remaining delta
       if (flushTimer) clearTimeout(flushTimer);
@@ -502,6 +517,7 @@ export class AgentWorker {
     }
     if (latest.status === "cancelled") {
       log.info(`任务已取消：${latest.id}`);
+      await this.flushExecutionSession(conversation.getSessionId());
       this.stateValue = "idle";
       return latest;
     }
@@ -510,6 +526,9 @@ export class AgentWorker {
         `任务状态已由外部改为 ${latest.status}，Worker 不再收尾：${latest.id}`,
         `agent: ${agentName}`,
       );
+      if (latest.status === "completed" || latest.status === "failed") {
+        await this.flushExecutionSession(conversation.getSessionId());
+      }
       this.stateValue = "idle";
       return latest;
     }
@@ -534,7 +553,8 @@ export class AgentWorker {
         );
       } else {
         this.postTaskNotification(failed, `❌ 失败：${errorMessage}`);
-        await this.archiveTaskTerminalState(failed, "failed", errorMessage);
+        await this.flushExecutionSession(conversation.getSessionId());
+        await this.archiveTaskTerminalState(failed, "failed", errorMessage, projectContextPath);
       }
       this.stateValue = "idle";
       return this.tasks.getTask(latest.id)!;
@@ -548,7 +568,8 @@ export class AgentWorker {
     });
     const trimmedResult = assistantText.trim() || "任务已完成。";
     this.postTaskNotification(completed, trimmedResult);
-    await this.archiveTaskTerminalState(completed, "completed", trimmedResult);
+    await this.flushExecutionSession(conversation.getSessionId());
+    await this.archiveTaskTerminalState(completed, "completed", trimmedResult, projectContextPath);
     this.stateValue = "idle";
     return completed;
   }
@@ -568,10 +589,14 @@ export class AgentWorker {
       agent: agentName,
       messageCount: directMessages.length,
     });
-    const conversation = new EphemeralConversation("Lovely Octopus agent direct message.");
+    const conversation = this.db
+      ? Conversation.createNew(this.db, "Lovely Octopus agent direct message.", "agent_dm_run")
+      : new EphemeralConversation("Lovely Octopus agent direct message.");
     // Agent DM 没有关联任务，因此不注入 report_progress/request_approval 两个任务工具。
     // DM 消息可能来自不同频道，取第一条消息的 channelId 做记忆隔离
     const dmChannelId = directMessages[0]?.channelId;
+    const dmProject = sharedProject(directMessages);
+    const projectContextPath = this.resolveProjectContextPath(dmProject, undefined);
     const loop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
       config: createAgentConfig({
         name: agentName,
@@ -589,7 +614,8 @@ export class AgentWorker {
       contextRetriever: this.contextRetriever,
       channelId: dmChannelId,
       runMode: "agent_dm",
-      contextMode: "auto",
+      contextMode: projectContextPath ? "project" : "auto",
+      projectContextPath,
     });
 
     for (const message of directMessages) {
@@ -607,12 +633,13 @@ export class AgentWorker {
     } finally {
       this.currentLoop = null;
       this.stateValue = "idle";
+      await this.flushExecutionSession(conversation.getSessionId());
       log.info(`Agent DM 处理完成：${agentName}`);
     }
     // 将回复写入 agent_dm channel
     const reply = assistantText.trim();
     if (reply.length > 0) {
-      const replyProject = sharedProject(directMessages);
+      const replyProject = dmProject;
       this.messages.createMessage({
         channelType: "agent_dm",
         channelId: agentName,
@@ -631,11 +658,12 @@ export class AgentWorker {
     task: Task,
     status: "completed" | "failed",
     content: string,
+    projectContextPath?: string,
   ): Promise<void> {
     if (!this.contextHub || !task.project) return;
     try {
       await this.contextHub.writeFile(
-        `3-projects/${task.project}/status.md`,
+        `${(projectContextPath ?? this.resolveProjectContextPath(task.project, task.channelId))!.slice("context-hub/".length)}/status.md`,
         formatTaskArchiveEntry(task, status, this.agent.config.name, content),
         "append",
       );
@@ -892,7 +920,12 @@ export class AgentWorker {
     return new EphemeralConversation("Lovely Octopus team task execution.");
   }
 
-  private getTaskLoop(_taskId: string, conversation: ConversationLike, project?: string, channelId?: string): AgentLoop {
+  private getTaskLoop(
+    _taskId: string,
+    conversation: ConversationLike,
+    channelId: string | undefined,
+    projectContextPath: string | undefined,
+  ): AgentLoop {
     const agentName = this.agent.config.name;
     const loop = new AgentLoop(this.llmProvider, this.toolRegistry, conversation, {
       config: createAgentConfig({
@@ -915,8 +948,8 @@ export class AgentWorker {
       contextRetriever: this.contextRetriever,
       channelId,
       runMode: "team_worker",
-      contextMode: project ? "project" : this.agent.config.context_mode ?? "auto",
-      projectContextPath: project ? `context-hub/3-projects/${project}` : undefined,
+      contextMode: projectContextPath ? "project" : this.agent.config.context_mode ?? "auto",
+      projectContextPath,
     });
     return loop;
   }
@@ -928,6 +961,7 @@ export class AgentWorker {
   private async directExecuteApprovedTool(
     task: Task,
     conversation: ConversationLike,
+    projectContextPath?: string,
   ): Promise<{ toolName: string; output: string } | null> {
     const data = task.approvalData as { tool?: string; params?: Record<string, unknown> } | undefined;
     if (!data?.tool) return null;
@@ -960,7 +994,7 @@ export class AgentWorker {
     });
 
     try {
-      const preparedParams = this.prepareDirectToolParams(data.tool, data.params ?? {}, task);
+      const preparedParams = this.prepareDirectToolParams(data.tool, data.params ?? {}, task, projectContextPath);
       if (!preparedParams.ok) {
         if (toolUseId) {
           conversation.replaceLastToolResult?.(toolUseId, preparedParams.error, true);
@@ -970,7 +1004,7 @@ export class AgentWorker {
 
       const result = await tool.execute(
         preparedParams.input,
-        this.buildDirectToolExecuteOptions(data.tool, task),
+        this.buildDirectToolExecuteOptions(data.tool, task, projectContextPath),
       );
       const output = result.success ? result.output : (result.error ?? "Tool execution failed");
 
@@ -994,11 +1028,15 @@ export class AgentWorker {
     toolName: string,
     params: Record<string, unknown>,
     task: Task,
+    projectContextPath?: string,
   ): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {
     if (toolName !== "write_file" || !task.project) {
       return { ok: true, input: params };
     }
-    const scoped = scopeProjectWriteFileInput(params, `context-hub/3-projects/${task.project}`);
+    const scoped = scopeProjectWriteFileInput(
+      params,
+      projectContextPath ?? this.resolveProjectContextPath(task.project, task.channelId),
+    );
     if (!scoped.ok) return scoped;
     return { ok: true, input: scoped.input };
   }
@@ -1006,9 +1044,12 @@ export class AgentWorker {
   private buildDirectToolExecuteOptions(
     toolName: string,
     task: Task,
+    resolvedProjectContextPath?: string,
   ): { cwd?: string; env?: Record<string, string> } | undefined {
     if (toolName !== "shell" || !task.project) return undefined;
-    const projectContextPath = normalizeProjectContextPath(`context-hub/3-projects/${task.project}`);
+    const projectContextPath = normalizeProjectContextPath(
+      resolvedProjectContextPath ?? this.resolveProjectContextPath(task.project, task.channelId),
+    );
     const cwd = projectWorkspaceRoot(
       this.memoryManager?.getFileMemory()?.getBaseDir(),
       projectContextPath ?? undefined,
@@ -1021,6 +1062,19 @@ export class AgentWorker {
         LITTLE_CLAW_PROJECT_CONTEXT_PATH: projectContextPath,
       },
     };
+  }
+
+  private resolveProjectContextPath(project?: string, channelId?: string): string | undefined {
+    return resolveProjectExecutionContext({
+      project,
+      channelId,
+      projectChannels: this.projectChannels,
+    })?.projectContextPath;
+  }
+
+  private async flushExecutionSession(sessionId: string): Promise<void> {
+    if (sessionId === "ephemeral") return;
+    await this.memoryManager?.flushSession(sessionId, { reason: "execution_end", force: true });
   }
 }
 
@@ -1044,12 +1098,18 @@ ${agent.operatingInstructions.trim()}
 </agent_operating_instructions>`;
 }
 
-export function buildTaskUserPrompt(task: Task, teamMessages: TeamMessage[], sourceMessage?: TeamMessage): string {
+export function buildTaskUserPrompt(
+  task: Task,
+  teamMessages: TeamMessage[],
+  sourceMessage?: TeamMessage,
+  projectContextPath?: string,
+): string {
   // 任务描述和近期团队消息放在 user prompt，便于 AgentLoop 保持原有 system prompt 机制。
   const sourceSection = sourceMessage
     ? `\nsource_message:\n- [${sourceMessage.channelType}:${sourceMessage.channelId}] ${sourceMessage.senderId}: ${sourceMessage.content}\n`
     : "";
   const executionDate = formatTaskExecutionDate(task.createdAt);
+  const workspace = projectContextPath ?? (task.project ? `context-hub/3-projects/${task.project}` : undefined);
   const promptBody = `<task_context>
 id: ${task.id}
 title: ${task.title}
@@ -1059,8 +1119,8 @@ execution_date: ${executionDate}
 retry_count: ${task.retryCount}
 max_retries: ${task.maxRetries}
 project: ${task.project ?? "none"}
-project_workspace: ${task.project ? `context-hub/3-projects/${task.project}` : "none"}
-workspace_instruction: ${task.project ? `Create and edit project files under context-hub/3-projects/${task.project}/ unless the task explicitly names another path.` : "No project workspace is attached to this task."}
+project_workspace: ${workspace ?? "none"}
+workspace_instruction: ${workspace ? `Create and edit project files under ${workspace}/ unless the task explicitly names another path.` : "No project workspace is attached to this task."}
 approval_response: ${task.approvalResponse ?? "none"}${sourceSection}
 recent_team_messages:
 ${formatTeamMessages(teamMessages)}
@@ -1095,8 +1155,9 @@ export function buildTaskResumePrompt(
   task: Task,
   teamMessages: TeamMessage[],
   decision: "approved" | "rejected" = task.status === "approved" ? "approved" : "rejected",
+  projectContextPath?: string,
 ): string {
-  return `${buildTaskUserPrompt(task, teamMessages)}
+  return `${buildTaskUserPrompt(task, teamMessages, undefined, projectContextPath)}
 
 <user_update>
 人类审批决定：**${decision === "approved" ? "已批准" : "已拒绝"}**

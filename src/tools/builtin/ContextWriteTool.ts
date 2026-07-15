@@ -8,11 +8,10 @@ import type { ContextMetaGenerator } from "../../memory/ContextMetaGenerator.ts"
 // ---------------------------------------------------------------------------
 //
 // 写入规则（按目录）：
-//   0-identity/profile.md: 可 append 或 overwrite（overwrite 用于修正过期信息）
-//   1-inbox/inbox.md: 安全兜底，格式化 todo/idea
 //   2-areas/{area}/: 只写已有目录
 //   3-projects/{project}/: 只写已有目录，可在目录内创建新文件
 //   4-knowledge/: 可创建新文件
+//   NEVER: 0-identity/ 或 1-inbox/（已迁移到 memory/）
 //   NEVER: 5-archive/
 //   NEVER: 创建 2-areas/ 或 3-projects/ 下的新顶层子目录
 // ---------------------------------------------------------------------------
@@ -25,21 +24,15 @@ export function createContextWriteTool(
   return {
     name: "context_write",
     description:
-      "Write information to the user's context hub. Choose the correct location:\n\n" +
-      "- 0-identity/profile.md: User preferences and personal info " +
-      "(name, timezone, coding style, dietary preferences). " +
-      "Use overwrite to correct or update outdated info.\n\n" +
-      "- 1-inbox/inbox.md: Temporary ideas, todos, and fleeting thoughts. " +
-      'User said "remind me to..." or "I should..." or any unstructured thought. ' +
-      'Format: "- [ ] {content} ({date})" for todos, "- {content} ({date})" for ideas. ' +
-      "This is the safe catch-all — when unsure where something goes, put it here.\n\n" +
+      "Write project, area, or knowledge information to the user's context hub. Choose the correct location:\n\n" +
       "- 2-areas/{area}/{file}: Updates to ongoing areas of focus. " +
       "Only write to EXISTING area directories.\n\n" +
       "- 3-projects/{project}/{file}: Project updates, decisions, progress. " +
       "Only write to EXISTING project directories. Can create new files within.\n\n" +
       "- 4-knowledge/{file}: Reference information, SOPs, research notes. " +
       "Can create new files here when user shares reusable knowledge.\n\n" +
-      "NEVER write to: 5-archive/\n" +
+      "NEVER write to: 0-identity/, 1-inbox/, or 5-archive/\n" +
+      "Use memory_write for memory/MEMORY.md, memory/inbox.md, and memory/daily/YYYY-MM-DD.md.\n" +
       "NEVER create new top-level directories under 2-areas/ or 3-projects/.\n\n" +
       "After writing, the overview index is automatically updated.",
     parameters: {
@@ -48,8 +41,7 @@ export function createContextWriteTool(
         path: {
           type: "string",
           description:
-            'Path relative to context-hub/. Examples: "0-identity/profile.md", ' +
-            '"1-inbox/inbox.md", "3-projects/little-claw/todo.md", ' +
+            'Path relative to context-hub/. Examples: "3-projects/little-claw/todo.md", ' +
             '"4-knowledge/sops/deployment.md".',
         },
         content: {
@@ -67,11 +59,21 @@ export function createContextWriteTool(
     },
 
     async execute(params: Record<string, unknown>): Promise<ToolResult> {
-      const path = params.path as string;
+      const path = stripContextHubPrefix(params.path as string);
       const content = params.content as string;
       const mode = (params.mode as string) ?? "append";
 
       // --- 验证规则 ---
+
+      if (path.startsWith("0-identity") || path.startsWith("1-inbox")) {
+        return {
+          success: false,
+          output: "",
+          error:
+            "context-hub/0-identity and context-hub/1-inbox are deprecated. " +
+            "Use memory_write for memory/MEMORY.md or memory/inbox.md.",
+        };
+      }
 
       // 5-archive 保护
       if (path.startsWith("5-archive")) {
@@ -79,6 +81,19 @@ export function createContextWriteTool(
           success: false,
           output: "",
           error: "Cannot write to 5-archive/. Users move items to archive manually.",
+        };
+      }
+
+      if (
+        !path.startsWith("2-areas/") &&
+        !path.startsWith("3-projects/") &&
+        !path.startsWith("4-knowledge/")
+      ) {
+        return {
+          success: false,
+          output: "",
+          error:
+            "context_write only supports context-hub/2-areas, context-hub/3-projects, and context-hub/4-knowledge paths.",
         };
       }
 
@@ -209,4 +224,8 @@ function affectedMetadataDirs(filePath: string, directDir: string): string[] {
   }
 
   return [...dirs];
+}
+
+function stripContextHubPrefix(path: string): string {
+  return path.startsWith("context-hub/") ? path.slice("context-hub/".length) : path;
 }

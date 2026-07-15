@@ -285,6 +285,7 @@ Type ${CYAN}/help${RESET} for available commands.
   /** List sessions, filtering out empty ones (no title and no messages). */
   private listVisibleSessions(limit: number): Session[] {
     return this.db.listSessions(limit)
+      .filter((s) => s.mode === "chat")
       .filter((s) => s.title !== null || this.db.getMessageCount(s.id) > 0);
   }
 

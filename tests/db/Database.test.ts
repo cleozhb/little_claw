@@ -63,6 +63,14 @@ test("listSessions respects limit", () => {
   expect(list.length).toBe(2);
 });
 
+test("ordinary session listing hides internal execution sessions", () => {
+  const chat = db.createSession(undefined, "chat");
+  const coordinator = db.createSession(undefined, "coordinator_run");
+  expect(db.listSessions().map((session) => session.id)).toContain(chat.id);
+  expect(db.listSessions().map((session) => session.id)).not.toContain(coordinator.id);
+  expect(db.listAllSessions().map((session) => session.id)).toContain(coordinator.id);
+});
+
 test("updateSessionTitle", () => {
   const session = db.createSession();
   db.updateSessionTitle(session.id, "My Chat");
@@ -113,6 +121,28 @@ test("addMessage and getMessages", () => {
   expect(JSON.parse(messages[1]!.content)).toEqual([
     { type: "text", text: "Hi there!" },
   ]);
+});
+
+test("tracks independent memory flush cursors in insertion order", () => {
+  const session = db.createSession();
+  const initial = db.getMemoryFlushState(session.id);
+  expect(initial.dailyCursorMessageId).toBeNull();
+  expect(initial.longTermCursorMessageId).toBeNull();
+
+  const first = db.addMessage(session.id, "user", "first");
+  const second = db.addMessage(session.id, "assistant", "second");
+  expect(db.getMessagesAfter(session.id, null).map((message) => message.id)).toEqual([
+    first.id,
+    second.id,
+  ]);
+  expect(db.getMessagesAfter(session.id, first.id).map((message) => message.id)).toEqual([
+    second.id,
+  ]);
+
+  db.updateDailyCursor(session.id, second.id, "2026-07-11T00:00:00.000Z");
+  const updated = db.getMemoryFlushState(session.id);
+  expect(updated.dailyCursorMessageId).toBe(second.id);
+  expect(updated.longTermCursorMessageId).toBeNull();
 });
 
 test("addMessage updates session timestamp", () => {

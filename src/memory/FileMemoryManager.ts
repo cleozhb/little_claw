@@ -1,27 +1,27 @@
 import { join } from "node:path";
-import { mkdirSync, existsSync, appendFileSync } from "node:fs";
 import { ContextHub } from "./ContextHub.ts";
 import type { Message } from "../types/message.ts";
+import { MemoryStore } from "./MemoryStore.ts";
 
 // ---------------------------------------------------------------------------
 // FileMemoryManager — 基于文件的记忆层（OpenClaw 风格）
 // ---------------------------------------------------------------------------
 //
 // 管理 ~/.little_claw/ 下的文件记忆：
-//   context-hub/  — 三层上下文系统（L0 abstract / L1 overview / L2 files）
-//   memory/
-//     YYYY-MM-DD.md  — 每日日志
+//   memory/      — 个人长期记忆 + 每日工作笔记
+//   logs/        — 原始对话流水
+//   context-hub/ — 项目/领域/知识库资料
 // ---------------------------------------------------------------------------
 
 export class FileMemoryManager {
   private baseDir: string;
-  private memoryDir: string;
   private contextHub: ContextHub;
+  private memoryStore: MemoryStore;
 
   constructor(baseDir?: string) {
     this.baseDir = baseDir ?? join(process.env.HOME ?? "~", ".little_claw");
-    this.memoryDir = join(this.baseDir, "memory");
     this.contextHub = new ContextHub(this.baseDir);
+    this.memoryStore = new MemoryStore(this.baseDir);
   }
 
   /**
@@ -29,7 +29,7 @@ export class FileMemoryManager {
    * 已存在的文件不会被覆盖。
    */
   async initialize(): Promise<void> {
-    mkdirSync(this.memoryDir, { recursive: true });
+    await this.memoryStore.initialize();
     await this.contextHub.initialize();
   }
 
@@ -38,6 +38,10 @@ export class FileMemoryManager {
   /** 获取 ContextHub 实例 */
   getContextHub(): ContextHub {
     return this.contextHub;
+  }
+
+  getMemoryStore(): MemoryStore {
+    return this.memoryStore;
   }
 
   /**
@@ -50,72 +54,47 @@ export class FileMemoryManager {
   }
 
   /**
-   * 读取用户身份（0-identity/profile.md）。
+   * 读取长期个人记忆（memory/MEMORY.md）。
    * 每次对话自动加载，不走检索。
    */
   async readIdentity(): Promise<string | null> {
-    return this.contextHub.readFile("0-identity/profile.md");
+    return this.memoryStore.readMemory("MEMORY.md");
   }
 
   /**
-   * 读取 inbox（1-inbox/inbox.md）。
+   * 读取 memory inbox（memory/inbox.md）。
    * 每次对话自动加载，不走检索。
    */
   async readInbox(): Promise<string | null> {
-    return this.contextHub.readFile("1-inbox/inbox.md");
+    return this.memoryStore.readMemory("inbox.md");
   }
 
   /** 读取指定的记忆文件（支持相对路径和绝对路径） */
   async readFile(filePath: string): Promise<string | null> {
-    // 支持 context-hub/ 路径
-    if (filePath.startsWith("context-hub/")) {
-      return this.contextHub.readFile(filePath);
-    }
-    const resolved = this.resolveMemoryPath(filePath);
-    return this.readFileIfExists(resolved);
+    return this.memoryStore.readMemory(filePath);
   }
 
   // --- 写入接口 ---
 
   /** 写入指定的记忆文件 */
-  async writeFile(filePath: string, content: string): Promise<void> {
-    // 支持 context-hub/ 路径
-    if (filePath.startsWith("context-hub/")) {
-      await this.contextHub.writeFile(filePath, content, "overwrite");
-      return;
-    }
-    const resolved = this.resolveMemoryPath(filePath);
-    const dir = resolved.substring(0, resolved.lastIndexOf("/"));
-    mkdirSync(dir, { recursive: true });
-    await Bun.write(resolved, content);
+  async writeFile(filePath: string, content: string): Promise<boolean> {
+    return this.memoryStore.writeMemory(filePath, content, "overwrite");
   }
 
   /** 追加内容到指定的记忆文件 */
-  async appendToFile(filePath: string, content: string): Promise<void> {
-    // 支持 context-hub/ 路径
-    if (filePath.startsWith("context-hub/")) {
-      await this.contextHub.writeFile(filePath, content, "append");
-      return;
-    }
-    const resolved = this.resolveMemoryPath(filePath);
-    const dir = resolved.substring(0, resolved.lastIndexOf("/"));
-    mkdirSync(dir, { recursive: true });
-
-    const existing = await this.readFileIfExists(resolved);
-    const newContent = existing ? `${existing}\n${content}` : content;
-    await Bun.write(resolved, newContent);
+  async appendToFile(filePath: string, content: string): Promise<boolean> {
+    return this.memoryStore.writeMemory(filePath, content, "append");
   }
 
   /** 写入今天的日志文件（旧接口，保留向后兼容） */
-  async writeTodayLog(content: string): Promise<void> {
-    const today = this.getTodayDate();
-    await this.appendToFile(`memory/${today}.md`, content);
+  async writeTodayLog(content: string): Promise<{ path: string; changed: boolean }> {
+    return this.memoryStore.writeDailyNote(content);
   }
 
   /**
    * 将对话消息增量追加到每日 JSONL 日志文件。
    *
-   * 文件路径: ~/.little_claw/memory/YYYY-MM-DD.jsonl
+   * 文件路径: ~/.little_claw/logs/conversations/YYYY-MM-DD.jsonl
    * 每行一条 JSON 记录，包含 session 元信息和消息原文。
    * 使用 appendFileSync 保证每条消息即时落盘，即使进程崩溃也不丢数据。
    *
@@ -132,41 +111,26 @@ export class FileMemoryManager {
   ): void {
     if (messages.length === 0) return;
 
-    const today = this.getTodayDate();
-    const filePath = join(this.memoryDir, `${today}.jsonl`);
-
-    // 确保 memory 目录存在
-    mkdirSync(this.memoryDir, { recursive: true });
-
-    const ts = new Date().toISOString();
-
-    const lines = messages.map((msg) => {
-      const record = {
-        session: { id: sessionId, title: sessionTitle, channelId: channelId ?? null },
-        ts,
-        role: msg.role,
-        content: msg.content,
-      };
-      return JSON.stringify(record);
-    });
-
-    // 追加写入，每条消息一行，末尾换行
-    appendFileSync(filePath, lines.join("\n") + "\n", "utf-8");
+    this.memoryStore.appendConversationLog(sessionId, sessionTitle, channelId, messages);
   }
 
   /** 获取今天的日期字符串 YYYY-MM-DD */
   getTodayDate(): string {
-    const now = new Date();
-    return now.toISOString().slice(0, 10);
+    return this.memoryStore.getTodayDate();
   }
 
   /** 获取所有日志文件路径（包括 .md 和 .jsonl） */
   async listLogFiles(): Promise<string[]> {
     const glob = new Bun.Glob("*.{md,jsonl}");
     const files: string[] = [];
-    for await (const path of glob.scan({ cwd: this.memoryDir })) {
+    for await (const path of glob.scan({ cwd: this.memoryStore.getMemoryDir() })) {
       if (/^\d{4}-\d{2}-\d{2}\.(md|jsonl)$/.test(path)) {
-        files.push(join(this.memoryDir, path));
+        files.push(join(this.memoryStore.getMemoryDir(), path));
+      }
+    }
+    for await (const path of glob.scan({ cwd: this.memoryStore.getConversationLogsDir() })) {
+      if (/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(path)) {
+        files.push(join(this.memoryStore.getConversationLogsDir(), path));
       }
     }
     return files.sort();
@@ -179,46 +143,6 @@ export class FileMemoryManager {
 
   /** 获取 memory 目录路径 */
   getMemoryDir(): string {
-    return this.memoryDir;
-  }
-
-  // --- 内部方法 ---
-
-  /**
-   * 解析记忆文件路径。支持：
-   * - "memory/2026-04-04.md" → ~/.little_claw/memory/2026-04-04.md
-   * - 绝对路径但必须在 baseDir 下
-   */
-  private resolveMemoryPath(filePath: string): string {
-    // 如果已经是绝对路径，检查是否在 baseDir 下
-    if (filePath.startsWith("/")) {
-      if (!filePath.startsWith(this.baseDir)) {
-        throw new Error(
-          `Path must be within ${this.baseDir}, got: ${filePath}`,
-        );
-      }
-      return filePath;
-    }
-    // 相对路径，拼接 baseDir
-    const resolved = join(this.baseDir, filePath);
-    // 防止路径遍历
-    if (!resolved.startsWith(this.baseDir)) {
-      throw new Error(
-        `Path traversal detected: ${filePath}`,
-      );
-    }
-    return resolved;
-  }
-
-  private async readFileIfExists(path: string): Promise<string | null> {
-    const file = Bun.file(path);
-    if (!(await file.exists())) return null;
-    return file.text();
-  }
-
-  private async ensureFile(path: string, template: string): Promise<void> {
-    if (!existsSync(path)) {
-      await Bun.write(path, template);
-    }
+    return this.memoryStore.getMemoryDir();
   }
 }

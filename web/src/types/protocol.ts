@@ -261,6 +261,10 @@ export interface MemoryClearMessage {
   type: "memory_clear";
 }
 
+export interface MemoryRebuildMessage {
+  type: "memory_rebuild";
+}
+
 export interface AbortMessage {
   type: "abort";
   sessionId: string;
@@ -440,6 +444,7 @@ export type ClientMessage =
   | MemorySearchMessage
   | MemoryStatsMessage
   | MemoryClearMessage
+  | MemoryRebuildMessage
   | AbortMessage
   | InjectMessage
   | ListPersonasMessage
@@ -720,6 +725,14 @@ export interface MemoryResultEntry {
   sessionId: string;
   similarity: number;
   createdAt: string;
+  sourcePath?: string;
+  sourceKind?: string;
+  chunkIndex?: number;
+  score?: number;
+  bm25Score?: number;
+  vectorScore?: number;
+  matchReason?: string;
+  embeddingStatus?: "ready" | "missing";
 }
 
 export interface MemoryResultsMessage {
@@ -736,6 +749,14 @@ export interface MemoryStatsResultMessage {
 export interface MemoryClearedMessage {
   type: "memory_cleared";
   deletedCount: number;
+}
+
+export interface MemoryRebuildResultMessage {
+  type: "memory_rebuild_result";
+  indexed: number;
+  embeddingReady?: number;
+  embeddingMissing?: number;
+  degraded?: boolean;
 }
 
 export interface AbortedMessage {
@@ -1001,6 +1022,7 @@ export type ServerMessage =
   | MemoryResultsMessage
   | MemoryStatsResultMessage
   | MemoryClearedMessage
+  | MemoryRebuildResultMessage
   | AbortedMessage
   | InjectedMessage
   | PersonasListMessage

@@ -22,6 +22,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private model: string;
   private maxInputTokens: number;
   private cache = new Map<string, number[]>();
+  private knownDimensions: number | null = null;
 
   constructor(
     apiKey: string,
@@ -40,7 +41,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   getSignature(): string {
-    return `openai-compatible:${this.client.baseURL}:${this.model}`;
+    return `openai-compatible:${this.client.baseURL}:${this.model}:maxChars=${this.maxInputTokens}:dimensions=${this.knownDimensions ?? "unknown"}:raw-v1`;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -49,7 +50,10 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
     const key = await hashText(truncated);
     const cached = this.cache.get(key);
-    if (cached) return cached;
+    if (cached) {
+      this.knownDimensions = cached.length;
+      return cached;
+    }
 
     const response = await this.client.embeddings.create({
       model: this.model,
@@ -59,6 +63,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
     const entry = response.data[0];
     if (!entry) throw new Error("Empty embedding response");
+    this.knownDimensions = entry.embedding.length;
     this.cache.set(key, entry.embedding);
     return entry.embedding;
   }
@@ -78,7 +83,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
   private cache = new Map<string, number[]>();
 
   getSignature(): string {
-    return `local-hash:${LOCAL_VECTOR_DIM}`;
+    return `local-hash:${LOCAL_VECTOR_DIM}:l2-v1`;
   }
 
   async embed(text: string): Promise<number[]> {

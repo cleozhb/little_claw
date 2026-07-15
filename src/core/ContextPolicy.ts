@@ -1,5 +1,6 @@
 export type AgentRunMode = "chat" | "team_worker" | "coordinator" | "agent_dm";
 export type ContextMode = "auto" | "always" | "project" | "off";
+export type MemoryLoadMode = "none" | "full_budgeted" | "retrieved_only";
 
 export interface ContextPolicyInput {
   userMessage: string;
@@ -24,7 +25,15 @@ export interface ContextPolicy {
   skillFullLimit: number;
   skillSummaryLimit: number;
   reason: string;
+  memoryLoadMode: MemoryLoadMode;
+  memoryFileTokenBudget: number;
+  inboxTokenBudget: number;
 }
+
+type BaseContextPolicy = Omit<
+  ContextPolicy,
+  "memoryLoadMode" | "memoryFileTokenBudget" | "inboxTokenBudget"
+>;
 
 const CONTEXT_INTENT_PATTERNS = [
   /context[-\s_]?hub/i,
@@ -46,6 +55,30 @@ const CONTEXT_INTENT_PATTERNS = [
   /资料库/,
 ];
 
+const CONTEXT_HUB_INTENT_PATTERNS = [
+  /context[-\s_]?hub/i,
+  /\bproject(s)?\b/i,
+  /上下文/,
+  /项目/,
+  /资料库/,
+  /知识库/,
+];
+
+const MEMORY_RECALL_INTENT_PATTERNS = [
+  /\bmemory\b/i,
+  /\binbox\b/i,
+  /\bprevious\b/i,
+  /\bearlier\b/i,
+  /\bremember\b/i,
+  /\brecall\b/i,
+  /记忆/,
+  /收件箱/,
+  /之前/,
+  /上次/,
+  /记得/,
+  /回忆/,
+];
+
 const LIGHTWEIGHT_KNOWLEDGE_PATTERNS = [
   /^假如你是/,
   /^如果你是/,
@@ -61,8 +94,25 @@ const LIGHTWEIGHT_KNOWLEDGE_PATTERNS = [
 ];
 
 export function buildContextPolicy(input: ContextPolicyInput): ContextPolicy {
+  const base = buildBaseContextPolicy(input);
+  if (input.contextMode === "off") {
+    return { ...base, memoryLoadMode: "none", memoryFileTokenBudget: 0, inboxTokenBudget: 0 };
+  }
+  const projectScoped = input.hasProjectContext || input.runMode === "team_worker" ||
+    input.contextMode === "project";
+  return {
+    ...base,
+    memoryLoadMode: projectScoped ? "retrieved_only" : "full_budgeted",
+    memoryFileTokenBudget: projectScoped ? 1_500 : 4_000,
+    inboxTokenBudget: base.loadInbox ? 1_000 : 0,
+  };
+}
+
+function buildBaseContextPolicy(input: ContextPolicyInput): BaseContextPolicy {
   const message = input.userMessage.trim();
   const hasContextIntent = CONTEXT_INTENT_PATTERNS.some((pattern) => pattern.test(message));
+  const hasContextHubIntent = CONTEXT_HUB_INTENT_PATTERNS.some((pattern) => pattern.test(message));
+  const hasMemoryRecallIntent = MEMORY_RECALL_INTENT_PATTERNS.some((pattern) => pattern.test(message));
   const looksLikeKnowledgeOrRoleplay = LIGHTWEIGHT_KNOWLEDGE_PATTERNS.some((pattern) => pattern.test(message));
 
   if (input.contextMode === "off") {
@@ -107,7 +157,7 @@ export function buildContextPolicy(input: ContextPolicyInput): ContextPolicy {
     return {
       runMode: input.runMode,
       contextMode: input.contextMode,
-      loadIdentity: false,
+      loadIdentity: input.hasProjectContext,
       loadInbox: false,
       loadContextMap: input.contextMode === "always",
       retrieveContextOverviews: false,
@@ -127,7 +177,7 @@ export function buildContextPolicy(input: ContextPolicyInput): ContextPolicy {
     return {
       runMode: input.runMode,
       contextMode: input.contextMode,
-      loadIdentity: false,
+      loadIdentity: input.hasProjectContext,
       loadInbox: false,
       loadContextMap: loadMap,
       retrieveContextOverviews: input.contextMode === "always" || hasContextIntent,
@@ -165,7 +215,7 @@ export function buildContextPolicy(input: ContextPolicyInput): ContextPolicy {
     return {
       runMode: input.runMode,
       contextMode: input.contextMode,
-      loadIdentity: false,
+      loadIdentity: true,
       loadInbox: false,
       loadContextMap: false,
       retrieveContextOverviews: false,
@@ -180,25 +230,26 @@ export function buildContextPolicy(input: ContextPolicyInput): ContextPolicy {
     };
   }
 
-  const loadPersonalContext = hasContextIntent;
-  const recallTopK = hasContextIntent ? 5 : looksLikeKnowledgeOrRoleplay ? 1 : 2;
+  const recallTopK = hasMemoryRecallIntent || hasContextHubIntent ? 5 : looksLikeKnowledgeOrRoleplay ? 1 : 2;
 
   return {
     runMode: input.runMode,
     contextMode: input.contextMode,
-    loadIdentity: loadPersonalContext,
-    loadInbox: loadPersonalContext,
-    loadContextMap: loadPersonalContext,
-    retrieveContextOverviews: loadPersonalContext,
-    loadProjectOverview: input.hasProjectContext && loadPersonalContext,
+    loadIdentity: true,
+    loadInbox: hasMemoryRecallIntent,
+    loadContextMap: hasContextHubIntent,
+    retrieveContextOverviews: hasContextHubIntent,
+    loadProjectOverview: input.hasProjectContext,
     retrieveLongTermMemory: recallTopK > 0,
-    useFullMemoryGuidance: loadPersonalContext,
+    useFullMemoryGuidance: hasMemoryRecallIntent || hasContextHubIntent,
     memoryRecallTopK: recallTopK,
-    contextOverviewTopK: loadPersonalContext ? 2 : 0,
+    contextOverviewTopK: hasContextHubIntent ? 2 : 0,
     skillFullLimit: input.hasConfiguredSkills ? Number.POSITIVE_INFINITY : 1,
     skillSummaryLimit: 0,
-    reason: loadPersonalContext
-      ? "context intent detected"
+    reason: hasContextHubIntent
+      ? "context hub intent detected"
+      : hasMemoryRecallIntent
+        ? "memory recall intent detected"
       : "auto mode kept context lightweight",
   };
 }

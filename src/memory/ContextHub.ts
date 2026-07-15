@@ -12,8 +12,6 @@ import { mkdirSync, existsSync } from "node:fs";
 //
 // 目录结构：
 //   context-hub/
-//   ├── 0-identity/    我是谁
-//   ├── 1-inbox/       临时想法、待办
 //   ├── 2-areas/       持续关注的大方向
 //   ├── 3-projects/    具体项目
 //   ├── 4-knowledge/   个人知识库
@@ -22,8 +20,6 @@ import { mkdirSync, existsSync } from "node:fs";
 
 /** 顶层目录定义 */
 const TOP_LEVEL_DIRS = [
-  "0-identity",
-  "1-inbox",
   "2-areas",
   "3-projects",
   "4-knowledge",
@@ -32,9 +28,7 @@ const TOP_LEVEL_DIRS = [
 
 /** 各顶层目录的默认 abstract 内容 */
 const DEFAULT_ABSTRACTS: Record<string, string> = {
-  "context-hub": "User's personal context hub",
-  "0-identity": "Who the user is — profile, preferences, background",
-  "1-inbox": "Capture zone — unsorted ideas, todos, fleeting thoughts",
+  "context-hub": "Project and knowledge context hub",
   "2-areas": "Ongoing life areas with no end date",
   "3-projects": "Active time-bound projects",
   "4-knowledge": "Personal knowledge base — SOPs, research, collections",
@@ -43,16 +37,6 @@ const DEFAULT_ABSTRACTS: Record<string, string> = {
 
 /** 默认 overview 内容 */
 const DEFAULT_ROOT_OVERVIEW = `# Context Hub Overview
-
-## 0-identity/
-Who the user is — profile, preferences, background.
-Key files:
-- profile.md — personal info, preferences, background
-
-## 1-inbox/
-Capture zone — unsorted ideas, todos, fleeting thoughts.
-Key files:
-- inbox.md — todos and ideas
 
 ## 2-areas/
 Ongoing life areas with no end date.
@@ -65,18 +49,6 @@ Personal knowledge base — SOPs, research, collections.
 
 ## 5-archive/
 Completed or deprecated items.
-`;
-
-const IDENTITY_OVERVIEW = `# Identity Overview
-
-## profile.md
-Personal information, preferences, and background.
-`;
-
-const INBOX_OVERVIEW = `# Inbox Overview
-
-## inbox.md
-Temporary ideas, todos, and fleeting thoughts.
 `;
 
 const AREAS_OVERVIEW = `# Areas Overview
@@ -107,16 +79,6 @@ Completed or deprecated items.
 ## Key directories
 `;
 
-const PROFILE_TEMPLATE = `# Profile
-
-Tell me about yourself and I'll remember.
-`;
-
-const INBOX_TEMPLATE = `# Inbox
-
-Capture ideas, todos, and fleeting thoughts here.
-`;
-
 export class ContextHub {
   private hubDir: string;
   private baseDir: string;
@@ -143,7 +105,6 @@ export class ContextHub {
   /**
    * 扫描所有 .abstract.md，拼成 L0 全局地图。
    * 格式：
-   *   context-hub/0-identity/ — Who the user is — profile, preferences, background
    *   context-hub/2-areas/content/ — YouTube and LinkedIn content strategy
    */
   async scanAbstracts(): Promise<string> {
@@ -261,26 +222,6 @@ export class ContextHub {
       }
     }
 
-    // 0-identity
-    await this.ensureFile(
-      join(this.hubDir, "0-identity", ".overview.md"),
-      IDENTITY_OVERVIEW,
-    );
-    await this.ensureFile(
-      join(this.hubDir, "0-identity", "profile.md"),
-      PROFILE_TEMPLATE,
-    );
-
-    // 1-inbox
-    await this.ensureFile(
-      join(this.hubDir, "1-inbox", ".overview.md"),
-      INBOX_OVERVIEW,
-    );
-    await this.ensureFile(
-      join(this.hubDir, "1-inbox", "inbox.md"),
-      INBOX_TEMPLATE,
-    );
-
     // Navigable L1 indexes for top-level sections that do not have seed files.
     await this.ensureFile(
       join(this.hubDir, "2-areas", ".overview.md"),
@@ -305,6 +246,8 @@ export class ContextHub {
   // ---------------------------------------------------------------------------
 
   private async collectAbstracts(dir: string, lines: string[]): Promise<void> {
+    if (this.isDeprecatedPath(dir)) return;
+
     const abstractPath = join(dir, ".abstract.md");
     const content = await this.readFileIfExists(abstractPath);
     if (content) {
@@ -318,7 +261,10 @@ export class ContextHub {
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          await this.collectAbstracts(join(dir, entry.name), lines);
+          const child = join(dir, entry.name);
+          if (!this.isDeprecatedPath(child)) {
+            await this.collectAbstracts(child, lines);
+          }
         }
       }
     } catch {
@@ -333,6 +279,7 @@ export class ContextHub {
       for (const entry of entries) {
         if (entry.isDirectory()) {
           const fullPath = join(dir, entry.name);
+          if (this.isDeprecatedPath(fullPath)) continue;
           const relPath = relative(this.baseDir, fullPath);
           result.push(relPath);
           await this.collectDirs(fullPath, result);
@@ -352,19 +299,21 @@ export class ContextHub {
    */
   private resolvePath(filePath: string): string {
     if (filePath.startsWith("/")) {
-      if (!filePath.startsWith(this.hubDir)) {
+      const absoluteRel = relative(this.hubDir, filePath);
+      if (absoluteRel.startsWith("..") || absoluteRel.startsWith("/") || absoluteRel === "") {
         throw new Error(
           `Path must be within ${this.hubDir}, got: ${filePath}`,
         );
       }
       return filePath;
     }
-    // 支持 "context-hub/xxx" 和 "0-identity/xxx" 两种写法
+    // 支持 "context-hub/xxx" 和 "2-areas/xxx" 两种写法
     const cleaned = filePath.startsWith("context-hub/")
       ? filePath.slice("context-hub/".length)
       : filePath;
     const resolved = join(this.hubDir, cleaned);
-    if (!resolved.startsWith(this.hubDir)) {
+    const rel = relative(this.hubDir, resolved);
+    if (rel.startsWith("..") || rel.startsWith("/") || rel === "") {
       throw new Error(`Path traversal detected: ${filePath}`);
     }
     return resolved;
@@ -380,5 +329,13 @@ export class ContextHub {
     if (!existsSync(path)) {
       await Bun.write(path, content);
     }
+  }
+
+  private isDeprecatedPath(path: string): boolean {
+    const relPath = relative(this.hubDir, path).replace(/\\/g, "/");
+    return relPath === "0-identity" ||
+      relPath.startsWith("0-identity/") ||
+      relPath === "1-inbox" ||
+      relPath.startsWith("1-inbox/");
   }
 }

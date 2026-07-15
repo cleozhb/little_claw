@@ -48,6 +48,7 @@ import type { TeamScheduleAdapter } from "../team/TeamScheduleAdapter.ts";
 import YAML from "yaml";
 import type { ContextHub } from "../memory/ContextHub.ts";
 import { handleMissionControlMemoryRequest } from "./MissionControlMemoryApi.ts";
+import { systemAppClock } from "../utils/AppClock.ts";
 
 // ============================================================
 // Types
@@ -109,6 +110,8 @@ export interface GatewayOptions {
   onChatApprovalResponse?: (connectionId: string, sessionId: string, approvalId: string, approved: boolean, reason?: string) => void;
   /** 获取活跃 session 数的回调 */
   getActiveSessionCount?: () => number;
+  /** 数据库删除后驱逐 SessionRouter 中的缓存实例 */
+  onSessionDelete?: (sessionId: string) => void;
 }
 
 interface ConnectionData {
@@ -130,6 +133,7 @@ export class GatewayServer {
   private onInject?: GatewayOptions["onInject"];
   private onChatApprovalResponse?: GatewayOptions["onChatApprovalResponse"];
   private getActiveSessionCount?: GatewayOptions["getActiveSessionCount"];
+  private onSessionDelete?: GatewayOptions["onSessionDelete"];
   private skillManager?: SkillManager;
   private mcpManager?: McpManager;
   private cronScheduler?: CronScheduler;
@@ -176,6 +180,7 @@ export class GatewayServer {
     this.onInject = options.onInject;
     this.onChatApprovalResponse = options.onChatApprovalResponse;
     this.getActiveSessionCount = options.getActiveSessionCount;
+    this.onSessionDelete = options.onSessionDelete;
     this.skillManager = options.skillManager;
     this.mcpManager = options.mcpManager;
     this.cronScheduler = options.cronScheduler;
@@ -477,7 +482,8 @@ export class GatewayServer {
       case "list_sessions":
         return this.handleListSessions(connectionId);
       case "delete_session":
-        return this.handleDeleteSession(connectionId, msg.sessionId);
+        void this.handleDeleteSession(connectionId, msg.sessionId);
+        return;
       case "rename_session":
         return this.handleRenameSession(connectionId, msg.sessionId, msg.title);
       case "get_status":
@@ -508,6 +514,8 @@ export class GatewayServer {
         return this.handleMemoryStats(connectionId);
       case "memory_clear":
         return this.handleMemoryClear(connectionId);
+      case "memory_rebuild":
+        return this.handleMemoryRebuild(connectionId);
       case "list_personas":
         return this.handleListPersonas(connectionId);
       case "list_scenarios":
@@ -718,6 +726,7 @@ export class GatewayServer {
 
   private listSessionInfos(): SessionInfo[] {
     return this.db.listSessions()
+      .filter((s) => s.mode === "chat")
       .filter((s) => s.title !== null || this.db.getMessageCount(s.id) > 0)
       .map((s) => ({
         id: s.id,
@@ -739,7 +748,7 @@ export class GatewayServer {
     }
   }
 
-  private handleDeleteSession(connectionId: string, sessionId: string): void {
+  private async handleDeleteSession(connectionId: string, sessionId: string): Promise<void> {
     try {
       const session = this.db.getSession(sessionId);
       if (!session) {
@@ -750,7 +759,9 @@ export class GatewayServer {
         });
         return;
       }
+      await this.memoryManager?.flushSession(sessionId, { reason: "session_switch", force: true });
       this.db.deleteSession(sessionId);
+      this.onSessionDelete?.(sessionId);
       if (this.connectionSessions.get(connectionId) === sessionId) {
         this.connectionSessions.delete(connectionId);
       }
@@ -1513,19 +1524,27 @@ export class GatewayServer {
   // ----------------------------------------------------------
 
   private handleMemorySearch(connectionId: string, query: string): void {
-    if (!this.memoryManager) {
+    const retriever = this.memoryManager?.getMemoryRetriever();
+    if (!retriever) {
       this.sendToConnection(connectionId, { type: "memory_results", results: [] });
       return;
     }
 
-    const vs = this.memoryManager.getVectorStore();
-    vs.search(query, 5)
+    retriever.retrieve(query, 5)
       .then((results) => {
         const entries: MemoryResultEntry[] = results.map((r) => ({
           content: r.content,
-          sessionId: r.sessionId,
-          similarity: r.similarity,
-          createdAt: (r.metadata.createdAt as string) ?? "unknown",
+          sessionId: r.sourcePath,
+          similarity: r.score,
+          createdAt: r.updatedAt,
+          sourcePath: r.sourcePath,
+          sourceKind: r.sourceKind,
+          chunkIndex: r.chunkIndex,
+          score: r.score,
+          bm25Score: r.bm25Score,
+          vectorScore: r.vectorScore,
+          matchReason: r.matchReason,
+          embeddingStatus: r.embeddingStatus,
         }));
         this.sendToConnection(connectionId, { type: "memory_results", results: entries });
       })
@@ -1547,11 +1566,15 @@ export class GatewayServer {
       return;
     }
 
-    const vs = this.memoryManager.getVectorStore();
+    const rows = this.db.getAllMemoryIndex();
+    const bySource = new Map<string, number>();
+    for (const row of rows) {
+      bySource.set(row.source_path, (bySource.get(row.source_path) ?? 0) + 1);
+    }
     this.sendToConnection(connectionId, {
       type: "memory_stats_result",
-      totalCount: vs.getCount(),
-      bySession: vs.getCountBySession(),
+      totalCount: rows.length,
+      bySession: [...bySource.entries()].map(([sessionId, count]) => ({ sessionId, count })),
     });
   }
 
@@ -1561,10 +1584,40 @@ export class GatewayServer {
       return;
     }
 
-    const vs = this.memoryManager.getVectorStore();
-    const count = vs.getCount();
-    vs.deleteAll();
+    const count = this.db.getMemoryIndexCount();
+    this.db.clearMemoryIndex();
     this.sendToConnection(connectionId, { type: "memory_cleared", deletedCount: count });
+  }
+
+  private handleMemoryRebuild(connectionId: string): void {
+    const indexer = this.memoryManager?.getMemoryIndexer();
+    if (!indexer) {
+      this.sendToConnection(connectionId, {
+        type: "memory_rebuild_result",
+        indexed: 0,
+      });
+      return;
+    }
+    indexer
+      .rebuildAll()
+      .then((result) => {
+        const rows = this.db.getAllMemoryIndex();
+        const embeddingReady = rows.filter((row) => row.embedding_status === "ready").length;
+        const embeddingMissing = rows.length - embeddingReady;
+        this.sendToConnection(connectionId, {
+          type: "memory_rebuild_result",
+          indexed: rows.length,
+          embeddingReady,
+          embeddingMissing,
+          degraded: result.providerFailed || embeddingMissing > 0,
+        });
+      })
+      .catch((err) => {
+        this.sendToConnection(connectionId, {
+          type: "error",
+          message: `Memory rebuild failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
   }
 
   // ----------------------------------------------------------
@@ -1649,6 +1702,7 @@ export class GatewayServer {
             bm25Score: s.bm25Score,
             vectorScore: s.vectorScore,
             matchReason: s.matchReason,
+            embeddingStatus: s.embeddingStatus,
             overviewPreview:
               s.overviewContent.length > 200
                 ? s.overviewContent.slice(0, 200) + "..."
@@ -1682,12 +1736,18 @@ export class GatewayServer {
         const r = await generator.scanAndGenerate();
         generated = r.generated;
       }
-      await indexer.indexAll();
-      const indexed = db.getAllContextIndex().length;
+      const result = await indexer.rebuildAll();
+      const rows = db.getAllContextIndex();
+      const indexed = rows.length;
+      const embeddingReady = rows.filter((row) => row.embedding_status === "ready").length;
+      const embeddingMissing = indexed - embeddingReady;
       this.sendToConnection(connectionId, {
         type: "context_rebuild_result",
         generated,
         indexed,
+        embeddingReady,
+        embeddingMissing,
+        degraded: result.providerFailed || embeddingMissing > 0,
       });
     })().catch((err) => {
       this.sendToConnection(connectionId, {
@@ -1726,15 +1786,17 @@ export class GatewayServer {
       return;
     }
     const trimmed = content.trim();
-    const date = new Date().toISOString().slice(0, 10);
+    const date = systemAppClock.formatDate(systemAppClock.now());
     const looksLikeTodo = /^(todo|todo:|\[ \]|- \[ \])/i.test(trimmed);
     const line = looksLikeTodo
       ? `- [ ] ${trimmed.replace(/^(todo:?\s*|- \[ \]\s*|\[ \]\s*)/i, "")} (${date})`
       : `- ${trimmed} (${date})`;
     fileMemory
-      .getContextHub()
-      .writeFile("1-inbox/inbox.md", line, "append")
-      .then(() => {
+      .appendToFile("memory/inbox.md", line)
+      .then(async (changed) => {
+        if (changed) {
+          await this.memoryManager?.getMemoryIndexer()?.reindexFile("inbox.md");
+        }
         this.sendToConnection(connectionId, { type: "inbox_appended", line });
       })
       .catch((err) => {

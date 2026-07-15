@@ -67,6 +67,28 @@ export async function generateSummary(
   );
 }
 
+export type SummaryGenerationResult =
+  | { status: "generated"; summary: string }
+  | { status: "no_content" }
+  | { status: "failed"; error: string };
+
+/** Generate a summary without collapsing provider failures into empty content. */
+export async function generateSummaryResult(
+  llmProvider: LLMProvider,
+  messages: Message[],
+  maxMessages: number = DEFAULT_MAX_MESSAGES,
+): Promise<SummaryGenerationResult> {
+  if (messages.length === 0) return { status: "no_content" };
+  try {
+    const summary = await generateSummary(llmProvider, messages, maxMessages);
+    return summary.trim()
+      ? { status: "generated", summary: summary.trim() }
+      : { status: "no_content" };
+  } catch (err) {
+    return { status: "failed", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /**
  * Generate an incremental summary by merging a previous summary with new messages.
  * Avoids re-summarising the entire conversation from scratch.

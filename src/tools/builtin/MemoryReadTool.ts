@@ -2,7 +2,7 @@ import type { Tool, ToolResult } from "../types.ts";
 import type { FileMemoryManager } from "../../memory/FileMemoryManager.ts";
 
 // ---------------------------------------------------------------------------
-// memory_read — Agent 主动读取记忆文件
+// memory_read — Agent 主动读取 memory/ 文件
 // ---------------------------------------------------------------------------
 
 export function createMemoryReadTool(
@@ -11,26 +11,19 @@ export function createMemoryReadTool(
   return {
     name: "memory_read",
     description:
-      "Read a persistent memory or context-hub file. Use this to check existing content before writing new entries.\n\n" +
+      "Read a persistent memory file. Use this to check existing content before writing new memory entries.\n\n" +
       "Memory files:\n" +
-      "- memory/YYYY-MM-DD.md (agent-written daily notes)\n" +
-      "- memory/YYYY-MM-DD.jsonl (conversation/task event logs, when present)\n\n" +
-      "Context Hub (three-layer system, navigate L0 → L1 → L2):\n" +
-      "- context-hub/.overview.md — global context-hub overview\n" +
-      '- context-hub/{path}/.overview.md — L1 directory index, "WHERE to look + WHAT each file contains"\n' +
-      "- context-hub/0-identity/profile.md — user profile (always preloaded)\n" +
-      "- context-hub/1-inbox/inbox.md — todos / fleeting ideas (always preloaded)\n" +
-      "- context-hub/2-areas/{area}/{file} — ongoing focus areas\n" +
-      "- context-hub/3-projects/{project}/{file} — active projects\n" +
-      "- context-hub/4-knowledge/{file} — reusable knowledge / SOPs\n" +
-      "- context-hub/5-archive/{...} — archived items (read-only via this tool)",
+      "- memory/MEMORY.md — durable personal memory and collaboration preferences\n" +
+      "- memory/inbox.md — unsorted memory candidates\n" +
+      "- memory/daily/YYYY-MM-DD.md — daily work notes\n\n" +
+      "Use context_read for context-hub paths.",
     parameters: {
       type: "object",
       properties: {
         file: {
           type: "string",
           description:
-            'The file to read. Examples: "memory/2026-04-04.md", "memory/2026-04-04.jsonl", "context-hub/.overview.md", "context-hub/3-projects/little-claw/.overview.md", "context-hub/4-knowledge/sops/deployment.md".',
+            'The memory file to read. Examples: "memory/MEMORY.md", "memory/inbox.md", "memory/daily/2026-07-11.md".',
         },
       },
       required: ["file"],

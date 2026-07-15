@@ -18,9 +18,16 @@ import type { ContextRetriever, ScoredContext } from "../memory/ContextRetriever
 import { SkillPromptBuilder, SKILL_GUIDE } from "../skills/SkillPromptBuilder.ts";
 import { filterSkillCandidates } from "../skills/SkillFilter.ts";
 import { generateTitle } from "./TitleGenerator.ts";
-import { allocateBudget, estimateTokens, formatLongTermMemory } from "../memory/TokenBudget.ts";
+import {
+  allocateBudget,
+  estimateTokens,
+  formatLongTermMemory,
+  limitStringsToTokenBudget,
+  truncateToTokenBudget,
+} from "../memory/TokenBudget.ts";
 import { ContentStore } from "../memory/ContentStore.ts";
 import { createLogger } from "../utils/logger.ts";
+import { APP_TIME_ZONE } from "../utils/AppClock.ts";
 import {
   buildContextPolicy,
   type AgentRunMode,
@@ -61,23 +68,23 @@ Do not use shell, crontab, launchd, Reminders, Calendar, or OS-level schedulers 
 
 const NO_SCHEDULER_TOOL_GUIDANCE = `Scheduled-task tools are not available in this run. If asked to create recurring reminders, periodic work, or future-time tasks, do not implement them with shell, crontab, launchd, Reminders, Calendar, or other OS-level schedulers. Explain that the coordinator must create an internal team schedule.`;
 
-const MEMORY_GUIDANCE = `You have a persistent memory system with two layers:
+const MEMORY_GUIDANCE = `You have persistent Memory and Context Hub tools with separate responsibilities:
 
-## File Memory (daily logs)
-- Important decisions, project facts → write to memory/YYYY-MM-DD.md (use today's date) via memory_write tool
-- You can read past memories using memory_read. At the start of conversations, relevant memories are automatically loaded.
+## Memory (personal long-term memory and daily notes)
+- Durable user preferences and collaboration facts → memory_write path="memory/MEMORY.md" (read it first before overwriting)
+- Unsorted memory candidates or reminders → memory_write path="memory/inbox.md"
+- Daily decisions, completed work, problems, and searchable work notes → memory_write path="memory/daily/YYYY-MM-DD.md"
+- Read memory files with memory_read.
 
-## Context Hub (structured user context)
-Save structured information to the user's context-hub using the context_write tool.
+## Context Hub (projects, areas, and reusable knowledge)
+Save project, area, and knowledge material to context-hub using context_write.
 context_write paths are RELATIVE to context-hub/ — do NOT include the "context-hub/" prefix:
-- User preferences → context_write path="0-identity/profile.md"
-- Temporary ideas, todos → context_write path="1-inbox/inbox.md"
 - Area updates → context_write path="2-areas/{area}/{file}"
 - Project updates → context_write path="3-projects/{project}/{file}"
 - Reusable knowledge → context_write path="4-knowledge/{file}"
-When you learn something about the user, save it to the appropriate location immediately.
+- Do not write 0-identity/ or 1-inbox/; those paths are deprecated.
 
-memory_read accepts the FULL "context-hub/..." path (it can read both memory/ and context-hub/ trees).
+Read context-hub files with context_read. memory_read is only for memory/ files.
 
 ## How to navigate context-hub
 You have access to the user's context-hub through a three-layer system.
@@ -89,12 +96,12 @@ L0 — .abstract.md (one line per folder)
 
 L1 — .overview.md (structure + status + file index)
   Automatically retrieved based on your conversation.
-  Also visible via: memory_read("context-hub/{path}/.overview.md")
+  Also visible via: context_read("context-hub/{path}/.overview.md")
   Use this to know WHERE to look and WHAT each file contains.
 
 L2 — Full files (actual content)
   Only load when you are actually working with that content.
-  Command: memory_read("context-hub/{path}/{file}")
+  Command: context_read("context-hub/{path}/{file}")
 
 Your workflow for any user request:
 1. Check L0 abstracts (already in your context) — which area is relevant?
@@ -108,16 +115,16 @@ Always go L0 → L1 → L2 in order.
 ## Archiving suggestions
 When you notice an entry has gone stale, suggest archiving it (do not move it yourself):
 - A 3-projects/{project}/ has been completed, abandoned, or untouched for 3+ months.
-- A 1-inbox/ todo references a date that has clearly passed and the task is no longer relevant.
+- A memory/inbox.md todo references a date that has clearly passed and the task is no longer relevant.
 - A 4-knowledge/ note describes a tool/process the user has explicitly stopped using.
 
 When you spot one of these, mention it briefly in your reply:
 "Heads up: 3-projects/old-thing looks stale (last updated 2026-01). Want me to suggest archiving it?"
 NEVER write to 5-archive/ yourself — the user moves items there manually.`;
 
-const SHORT_MEMORY_GUIDANCE = `You have persistent memory and context-hub tools. Use them only when the user asks you to remember, recall, or work with saved context. Load specific files on demand instead of browsing broad memory areas.`;
+const SHORT_MEMORY_GUIDANCE = `You have persistent memory and context-hub tools. Use memory_read/write for memory/ files and context_read/write for context-hub files. Load specific files on demand.`;
 
-const PROJECT_MEMORY_GUIDANCE = `You have persistent memory and context-hub tools. For project work, use the project workspace named in the task context, and read or write only specific files that are relevant to the task. Use memory_read for exact context-hub paths and context_write for updates relative to context-hub/. Do not assume the global context map is loaded.`;
+const PROJECT_MEMORY_GUIDANCE = `You have persistent memory and context-hub tools. For project work, use the project workspace named in the task context, and read or write only specific files that are relevant to the task. Use context_read for exact context-hub paths and context_write for updates relative to context-hub/. Use memory_read/write only for memory/ files. Do not assume the global context map is loaded.`;
 
 export class AgentLoop {
   private client: LLMProvider;
@@ -152,10 +159,6 @@ export class AgentLoop {
   /** 当前轮次检索命中的 skill 列表（由 runInner 设置，getEffectiveLLMInput 使用） */
   private selectedSkills: ParsedSkill[] = [];
 
-  /** 对话轮次计数器，每完成一次 run() 计数 +1 */
-  private roundCount = 0;
-  /** 多少轮触发一次自动摘要 */
-  private static readonly SUMMARY_INTERVAL = 5;
   /** 已写入每日日志的消息数量，用于增量追加 */
   private lastWrittenMsgCount = 0;
 
@@ -332,7 +335,7 @@ export class AgentLoop {
         const [fileMemoryCtx, memories] = await Promise.all([
           this.memoryManager.loadFileMemoryContext({
             contextMap: contextPolicy.loadContextMap,
-            identity: contextPolicy.loadIdentity,
+            identity: contextPolicy.loadIdentity && contextPolicy.memoryLoadMode === "full_budgeted",
             inbox: contextPolicy.loadInbox,
           }),
           contextPolicy.retrieveLongTermMemory && contextPolicy.memoryRecallTopK > 0
@@ -718,15 +721,10 @@ export class AgentLoop {
           }
         }
 
-        // 轮次计数 +1，每 N 轮异步触发摘要保存（fire-and-forget，不阻塞对话）
-        this.roundCount++;
-        if (
-          this.memoryManager &&
-          this.roundCount % AgentLoop.SUMMARY_INTERVAL === 0
-        ) {
+        // 每轮都通知 flush coordinator；是否达到五个新增 assistant 回合由持久化 cursor 判断。
+        if (this.memoryManager) {
           const sid = this.conversation.getSessionId();
-          const msgs = this.conversation.getMessages();
-          this.memoryManager.saveSummary(sid, msgs, this.channelId).catch((err) => {
+          if (sid !== "ephemeral") this.memoryManager.flushSession(sid, { reason: "interval" })?.catch((err) => {
             if (process.env.DEBUG) {
               console.error(`[debug] Auto memory save failed:`, err);
             }
@@ -1204,7 +1202,7 @@ export class AgentLoop {
       coreSystemParts.push(toolLimitGuidance);
     }
     coreSystemParts.push(memoryGuidance);
-    coreSystemParts.push(`Current time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`);
+    coreSystemParts.push(`Current time: ${new Date().toLocaleString("zh-CN", { timeZone: APP_TIME_ZONE, hour12: false })}`);
     const coreSystemPrompt = coreSystemParts.join("\n\n");
 
     // 获取当前对话中最后一条用户消息（用于 skill 相关性匹配和预算分配）
@@ -1252,12 +1250,18 @@ export class AgentLoop {
       }
     }
 
-    // 三层上下文系统：identity + inbox + contextMap
-    const identityPrompt = this.cachedFileMemory.identity
-      ? `<user_identity>\n${this.cachedFileMemory.identity}\n</user_identity>`
+    // Memory + Context Hub: MEMORY.md + inbox.md + context map
+    const budgetedIdentity = this.cachedFileMemory.identity
+      ? truncateToTokenBudget(this.cachedFileMemory.identity, policy.memoryFileTokenBudget)
       : "";
-    const inboxPrompt = this.cachedFileMemory.inbox
-      ? `<inbox>\n${this.cachedFileMemory.inbox}\n</inbox>`
+    const budgetedInbox = this.cachedFileMemory.inbox
+      ? truncateToTokenBudget(this.cachedFileMemory.inbox, policy.inboxTokenBudget)
+      : "";
+    const identityPrompt = budgetedIdentity
+      ? `<memory_file path="memory/MEMORY.md">\n${budgetedIdentity}\n</memory_file>`
+      : "";
+    const inboxPrompt = budgetedInbox
+      ? `<memory_file path="memory/inbox.md">\n${budgetedInbox}\n</memory_file>`
       : "";
     const contextMapPrompt = this.cachedFileMemory.contextMap
       ? `<context_map>\nThe following is the user's context hub directory map (L0 abstracts):\n${this.cachedFileMemory.contextMap}\n</context_map>`
@@ -1283,7 +1287,10 @@ export class AgentLoop {
       systemPrompt: coreSystemPrompt,
       userMessage: userMessageText,
       conversationHistory: messages,
-      longTermMemory: this.cachedMemories,
+      longTermMemory: limitStringsToTokenBudget(
+        dedupeInjectedMemories(this.cachedMemories, budgetedIdentity),
+        policy.memoryLoadMode === "retrieved_only" ? policy.memoryFileTokenBudget : 2_000,
+      ),
       skillPrompt,
       identity: identityPrompt,
       inbox: inboxPrompt,
@@ -1500,4 +1507,21 @@ function truncateHeadTail(text: string, maxChars: number, suffix: string): strin
   const head = Math.ceil(budget * 0.65);
   const tail = Math.max(0, budget - head);
   return `${text.slice(0, head)}\n\n...[middle truncated]...\n\n${tail > 0 ? text.slice(-tail) : ""}${suffix}`;
+}
+
+function dedupeInjectedMemories(memories: string[], injectedMemory: string): string[] {
+  if (!injectedMemory) return [...new Set(memories)];
+  const normalizedIdentity = normalizeMemoryText(injectedMemory);
+  const seen = new Set<string>();
+  return memories.filter((memory) => {
+    const content = memory.replace(/^\[[^\]]+\]\s*/, "");
+    const normalized = normalizeMemoryText(content);
+    if (!normalized || seen.has(normalized) || normalizedIdentity.includes(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
+
+function normalizeMemoryText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
 }

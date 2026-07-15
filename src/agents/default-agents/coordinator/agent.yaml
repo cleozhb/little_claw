@@ -16,6 +16,7 @@ tools:
   - search_content_ref
   - write_file
   - shell
+  - context_read
   - create_task
   - create_task_dag
   - list_tasks

@@ -269,6 +269,7 @@ timeout_minutes: 30
       "web_search",
       "memory_read",
       "memory_write",
+      "context_read",
       "context_write",
     ]);
     expect(job?.key).toBe("nightly-tinker-spark");

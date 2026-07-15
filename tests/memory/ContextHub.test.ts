@@ -20,30 +20,29 @@ afterEach(() => {
 describe("ContextHub.initialize", () => {
   test("creates the standard top-level directories", async () => {
     await hub.initialize();
-    for (const dir of ["0-identity", "1-inbox", "2-areas", "3-projects", "4-knowledge", "5-archive"]) {
+    for (const dir of ["2-areas", "3-projects", "4-knowledge", "5-archive"]) {
       expect(existsSync(join(TMP, "context-hub", dir))).toBe(true);
     }
+    expect(existsSync(join(TMP, "context-hub", "0-identity"))).toBe(false);
+    expect(existsSync(join(TMP, "context-hub", "1-inbox"))).toBe(false);
   });
 
   test("creates default abstracts and overviews", async () => {
     await hub.initialize();
     expect(existsSync(join(TMP, "context-hub", ".abstract.md"))).toBe(true);
-    expect(existsSync(join(TMP, "context-hub", "0-identity", ".abstract.md"))).toBe(true);
     expect(existsSync(join(TMP, "context-hub", "2-areas", ".overview.md"))).toBe(true);
     expect(existsSync(join(TMP, "context-hub", "3-projects", ".overview.md"))).toBe(true);
     expect(existsSync(join(TMP, "context-hub", "4-knowledge", ".overview.md"))).toBe(true);
     expect(existsSync(join(TMP, "context-hub", "5-archive", ".overview.md"))).toBe(true);
-    expect(existsSync(join(TMP, "context-hub", "0-identity", "profile.md"))).toBe(true);
-    expect(existsSync(join(TMP, "context-hub", "1-inbox", "inbox.md"))).toBe(true);
   });
 
   test("preserves user edits across re-initialize", async () => {
     await hub.initialize();
-    const profilePath = join(TMP, "context-hub", "0-identity", "profile.md");
-    writeFileSync(profilePath, "# My Profile\n\nimportant stuff\n");
+    const notePath = join(TMP, "context-hub", "4-knowledge", "note.md");
+    writeFileSync(notePath, "# Note\n\nimportant stuff\n");
 
     await hub.initialize();
-    expect(readFileSync(profilePath, "utf8")).toContain("important stuff");
+    expect(readFileSync(notePath, "utf8")).toContain("important stuff");
   });
 
   test("does not migrate legacy USER.md or memory/MEMORY.md", async () => {
@@ -57,8 +56,7 @@ describe("ContextHub.initialize", () => {
     expect(existsSync(join(TMP, "memory", "MEMORY.md"))).toBe(true);
     expect(existsSync(join(TMP, "memory", "MEMORY.md.bak"))).toBe(false);
 
-    const profile = readFileSync(join(TMP, "context-hub", "0-identity", "profile.md"), "utf8");
-    expect(profile).not.toContain("Likes pizza");
+    expect(existsSync(join(TMP, "context-hub", "0-identity", "profile.md"))).toBe(false);
     expect(existsSync(join(TMP, "context-hub", "4-knowledge", "memory-archive.md"))).toBe(false);
   });
 });
@@ -91,9 +89,9 @@ describe("ContextHub.scanAbstracts", () => {
     await hub.initialize();
     const map = await hub.scanAbstracts();
     const lines = map.split("\n").filter(Boolean);
-    expect(lines.length).toBeGreaterThanOrEqual(6);
-    expect(map).toContain("context-hub/0-identity/");
-    expect(map).toContain("context-hub/1-inbox/");
+    expect(lines.length).toBeGreaterThanOrEqual(5);
+    expect(map).not.toContain("context-hub/0-identity/");
+    expect(map).not.toContain("context-hub/1-inbox/");
     expect(map).toContain("context-hub/5-archive/");
   });
 

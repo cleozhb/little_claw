@@ -1,8 +1,9 @@
 import { readdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-type MemoryKind = "daily" | "identity";
+type MemoryKind = "memory" | "daily" | "logs";
 
 interface MemoryFile {
   name: string;
@@ -12,8 +13,9 @@ interface MemoryFile {
 }
 
 const roots = {
-  daily: path.join(homedir(), ".little_claw", "memory"),
-  identity: path.join(homedir(), ".little_claw", "context-hub", "0-identity"),
+  memory: path.join(homedir(), ".little_claw", "memory"),
+  daily: path.join(homedir(), ".little_claw", "memory", "daily"),
+  logs: path.join(homedir(), ".little_claw", "logs", "conversations"),
 } satisfies Record<MemoryKind, string>;
 
 const jsonHeaders = {
@@ -66,14 +68,14 @@ export async function handleMissionControlMemoryRequest(request: Request): Promi
 }
 
 function parseKind(value: string | null): MemoryKind | null {
-  if (value === "daily" || value === "identity") return value;
+  if (value === "memory" || value === "daily" || value === "logs") return value;
   return null;
 }
 
 async function listFiles(kind: MemoryKind): Promise<MemoryFile[]> {
   const root = roots[kind];
   const files = await walkFiles(root);
-  const filtered = kind === "daily" ? files.filter((file) => file.endsWith(".jsonl")) : files;
+  const filtered = files.filter((file) => isAllowedFile(kind, file));
   const details = await Promise.all(
     filtered.map(async (filePath) => {
       const info = await stat(filePath);
@@ -87,13 +89,18 @@ async function listFiles(kind: MemoryKind): Promise<MemoryFile[]> {
   );
 
   return details.sort((a, b) => {
-    if (kind === "daily") return b.name.localeCompare(a.name);
+    if (kind === "daily" || kind === "logs") return b.name.localeCompare(a.name);
     return a.path.localeCompare(b.path);
   });
 }
 
 async function walkFiles(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
   const files = await Promise.all(
     entries.map(async (entry) => {
       const fullPath = path.join(dir, entry.name);
@@ -112,10 +119,17 @@ function resolveAllowedPath(kind: MemoryKind, relativePath: string) {
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("File is outside allowed memory root.");
   }
-  if (kind === "daily" && !resolved.endsWith(".jsonl")) {
-    throw new Error("Daily logs must be .jsonl files.");
+  if (!isAllowedFile(kind, resolved)) {
+    throw new Error(`File is not allowed for ${kind}.`);
   }
   return resolved;
+}
+
+function isAllowedFile(kind: MemoryKind, filePath: string): boolean {
+  const name = path.basename(filePath);
+  if (kind === "memory") return name === "MEMORY.md" || name === "inbox.md";
+  if (kind === "daily") return /^\d{4}-\d{2}-\d{2}\.md$/.test(name);
+  return /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name);
 }
 
 function toRelativePath(kind: MemoryKind, filePath: string) {

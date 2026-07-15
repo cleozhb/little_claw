@@ -1,7 +1,7 @@
 import { test, expect, beforeEach, afterEach, describe } from "bun:test";
 import { rmSync, mkdirSync } from "node:fs";
-import { ContextHub } from "../../src/memory/ContextHub";
-import { IdentityExtractor } from "../../src/memory/IdentityExtractor";
+import { MemoryStore } from "../../src/memory/MemoryStore";
+import { LongTermMemoryExtractor } from "../../src/memory/LongTermMemoryExtractor";
 import type { LLMProvider } from "../../src/llm/types";
 import type { Message, StreamEvent } from "../../src/types/message";
 
@@ -32,13 +32,13 @@ class ThrowingLLM implements LLMProvider {
   }
 }
 
-let hub: ContextHub;
+let memoryStore: MemoryStore;
 
 beforeEach(async () => {
   rmSync(TMP, { recursive: true, force: true });
   mkdirSync(TMP, { recursive: true });
-  hub = new ContextHub(TMP);
-  await hub.initialize();
+  memoryStore = new MemoryStore(TMP);
+  await memoryStore.initialize();
 });
 
 afterEach(() => {
@@ -49,76 +49,76 @@ function userMsg(text: string): Message {
   return { role: "user", content: text };
 }
 
-describe("IdentityExtractor.extractAndUpdate", () => {
-  test("writes merged profile from new conversation", async () => {
+describe("LongTermMemoryExtractor.extractAndUpdate", () => {
+  test("writes merged MEMORY.md from new conversation", async () => {
     const llm = new MockLLM(["## 基本信息\n- 姓名：张三 (2026-06-12)"]);
-    const extractor = new IdentityExtractor(hub, llm);
+    const extractor = new LongTermMemoryExtractor(memoryStore, llm);
 
     const result = await extractor.extractAndUpdate([userMsg("我叫张三")]);
 
-    expect(result.updated).toBe(true);
-    const profile = await hub.readFile("0-identity/profile.md");
-    expect(profile).toContain("张三");
+    expect(result.status).toBe("updated");
+    const memory = await memoryStore.readMemory("MEMORY.md");
+    expect(memory).toContain("张三");
   });
 
   test("conflicting info replaces old value (new wins)", async () => {
-    await hub.writeFile("0-identity/profile.md", "## 工作与兴趣\n- 在学钢琴 (2026-06-01)", "overwrite");
+    await memoryStore.writeMemory("MEMORY.md", "## 工作与兴趣\n- 在学钢琴 (2026-06-01)", "overwrite");
 
     const llm = new MockLLM(["## 工作与兴趣\n- 在学吉他 (2026-06-12)"]);
-    const extractor = new IdentityExtractor(hub, llm);
+    const extractor = new LongTermMemoryExtractor(memoryStore, llm);
 
     await extractor.extractAndUpdate([userMsg("钢琴不学了，改学吉他")]);
 
-    const profile = await hub.readFile("0-identity/profile.md");
-    expect(profile).toContain("吉他");
-    expect(profile).not.toContain("钢琴");
+    const memory = await memoryStore.readMemory("MEMORY.md");
+    expect(memory).toContain("吉他");
+    expect(memory).not.toContain("钢琴");
   });
 
   test("NONE response leaves file untouched", async () => {
-    await hub.writeFile("0-identity/profile.md", "## 基本信息\n- 姓名：李四", "overwrite");
+    await memoryStore.writeMemory("MEMORY.md", "## 基本信息\n- 姓名：李四", "overwrite");
 
     const llm = new MockLLM(["NONE"]);
-    const extractor = new IdentityExtractor(hub, llm);
+    const extractor = new LongTermMemoryExtractor(memoryStore, llm);
 
     const result = await extractor.extractAndUpdate([userMsg("今天天气不错")]);
 
-    expect(result.updated).toBe(false);
-    const profile = await hub.readFile("0-identity/profile.md");
-    expect(profile).toBe("## 基本信息\n- 姓名：李四");
+    expect(result.status).toBe("no_candidate");
+    const memory = await memoryStore.readMemory("MEMORY.md");
+    expect(memory).toBe("## 基本信息\n- 姓名：李四");
   });
 
   test("LLM error preserves original file", async () => {
-    await hub.writeFile("0-identity/profile.md", "## 基本信息\n- 姓名：王五", "overwrite");
+    await memoryStore.writeMemory("MEMORY.md", "## 基本信息\n- 姓名：王五", "overwrite");
 
-    const extractor = new IdentityExtractor(hub, new ThrowingLLM());
+    const extractor = new LongTermMemoryExtractor(memoryStore, new ThrowingLLM());
     const result = await extractor.extractAndUpdate([userMsg("我喜欢爬山")]);
 
-    expect(result.updated).toBe(false);
-    const profile = await hub.readFile("0-identity/profile.md");
-    expect(profile).toBe("## 基本信息\n- 姓名：王五");
+    expect(result.status).toBe("failed");
+    const memory = await memoryStore.readMemory("MEMORY.md");
+    expect(memory).toBe("## 基本信息\n- 姓名：王五");
   });
 
   test("suspiciously short output is rejected to avoid data loss", async () => {
     const original = "## 基本信息\n- 姓名：赵六\n## 工作与兴趣\n- 软件工程师\n- 喜欢摄影和登山\n## 健康\n- 对花生过敏";
-    await hub.writeFile("0-identity/profile.md", original, "overwrite");
+    await memoryStore.writeMemory("MEMORY.md", original, "overwrite");
 
     const llm = new MockLLM(["x"]); // 明显过短
-    const extractor = new IdentityExtractor(hub, llm);
+    const extractor = new LongTermMemoryExtractor(memoryStore, llm);
 
     const result = await extractor.extractAndUpdate([userMsg("随便说点什么")]);
 
-    expect(result.updated).toBe(false);
-    const profile = await hub.readFile("0-identity/profile.md");
-    expect(profile).toBe(original);
+    expect(result.status).toBe("failed");
+    const memory = await memoryStore.readMemory("MEMORY.md");
+    expect(memory).toBe(original);
   });
 
   test("no user messages skips LLM entirely", async () => {
     const llm = new MockLLM(["should not be used"]);
-    const extractor = new IdentityExtractor(hub, llm);
+    const extractor = new LongTermMemoryExtractor(memoryStore, llm);
 
     const result = await extractor.extractAndUpdate([]);
 
-    expect(result.updated).toBe(false);
+    expect(result.status).toBe("no_candidate");
     expect(llm.calls.length).toBe(0);
   });
 });

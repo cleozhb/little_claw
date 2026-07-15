@@ -2,6 +2,16 @@ import { join, resolve } from "node:path";
 
 export const PROJECT_CONTEXT_PREFIX = "context-hub/3-projects/";
 
+export interface ProjectExecutionContext {
+  project: string;
+  channelId?: string;
+  projectContextPath: string;
+}
+
+export interface ProjectChannelLookup {
+  getChannel(idOrSlug: string): { contextPath?: string } | null;
+}
+
 export type ScopedToolInput =
   | { ok: true; input: Record<string, unknown>; note?: string }
   | { ok: false; error: string };
@@ -9,9 +19,36 @@ export type ScopedToolInput =
 export function normalizeProjectContextPath(projectContextPath: string | undefined): string | null {
   if (!projectContextPath) return null;
   const trimmed = projectContextPath.trim().replace(/\\/g, "/").replace(/\/+$/, "");
-  if (trimmed.startsWith(PROJECT_CONTEXT_PREFIX)) return trimmed;
-  if (trimmed.startsWith("3-projects/")) return `context-hub/${trimmed}`;
+  const normalized = trimmed.startsWith("3-projects/") ? `context-hub/${trimmed}` : trimmed;
+  const segments = normalized.split("/");
+  if (segments.some((segment) => segment === ".." || segment === "." || segment === "")) return null;
+  if (normalized.startsWith(PROJECT_CONTEXT_PREFIX)) return normalized;
   return null;
+}
+
+export function resolveProjectExecutionContext(input: {
+  project?: string;
+  channelId?: string;
+  projectChannels?: ProjectChannelLookup;
+}): ProjectExecutionContext | null {
+  const project = input.project?.trim();
+  if (!project) return null;
+
+  const channel = input.projectChannels?.getChannel(input.channelId ?? project);
+  const explicitPath = channel?.contextPath?.trim();
+  const candidate = explicitPath || `${PROJECT_CONTEXT_PREFIX}${project}`;
+  const projectContextPath = normalizeProjectContextPath(candidate);
+  if (!projectContextPath) {
+    throw new Error(
+      `Project context path must be under ${PROJECT_CONTEXT_PREFIX}, got: ${candidate}`,
+    );
+  }
+
+  return {
+    project,
+    channelId: input.channelId,
+    projectContextPath,
+  };
 }
 
 export function projectWorkspaceRoot(baseDir: string | undefined, projectContextPath: string | undefined): string | null {

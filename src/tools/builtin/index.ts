@@ -18,6 +18,7 @@ import type { EmbeddingProvider } from "../../memory/EmbeddingProvider.ts";
 export { createReadFileTool, createWriteFileTool, createShellTool, createCronTool, createWatcherTool, createWebSearchTool, createWebFetchTool, createReadContentRefTool, createSearchContentRefTool };
 export { createMemoryWriteTool } from "./MemoryWriteTool.ts";
 export { createMemoryReadTool } from "./MemoryReadTool.ts";
+export { createContextReadTool } from "./ContextReadTool.ts";
 export { createContextWriteTool } from "./ContextWriteTool.ts";
 export type { CronToolContext, WatcherToolContext };
 

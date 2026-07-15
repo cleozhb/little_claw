@@ -13,9 +13,12 @@ describe("ContextPolicy", () => {
 
     expect(policy.loadContextMap).toBe(false);
     expect(policy.retrieveContextOverviews).toBe(false);
+    expect(policy.loadIdentity).toBe(true);
     expect(policy.loadInbox).toBe(false);
     expect(policy.memoryRecallTopK).toBe(1);
     expect(policy.skillFullLimit).toBe(1);
+    expect(policy.memoryLoadMode).toBe("full_budgeted");
+    expect(policy.memoryFileTokenBudget).toBe(4_000);
   });
 
   test("loads personal context when context intent is explicit", () => {
@@ -43,8 +46,24 @@ describe("ContextPolicy", () => {
     });
 
     expect(policy.loadProjectOverview).toBe(true);
+    expect(policy.loadIdentity).toBe(true);
     expect(policy.loadContextMap).toBe(false);
     expect(policy.retrieveContextOverviews).toBe(false);
+    expect(policy.memoryLoadMode).toBe("retrieved_only");
+    expect(policy.memoryFileTokenBudget).toBe(1_500);
+  });
+
+  test("disables memory loading and retrieval when context mode is off", () => {
+    const policy = buildContextPolicy({
+      userMessage: "remember this",
+      runMode: "chat",
+      contextMode: "off",
+      hasProjectContext: false,
+      hasConfiguredSkills: false,
+    });
+    expect(policy.memoryLoadMode).toBe("none");
+    expect(policy.memoryFileTokenBudget).toBe(0);
+    expect(policy.retrieveLongTermMemory).toBe(false);
   });
 
   test("projectless team worker can use broad context", () => {

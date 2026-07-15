@@ -12,15 +12,54 @@ export function estimateTokens(text: string): number {
   return Math.ceil(nonChineseCount / 4 + chineseCount * 1.5);
 }
 
+export function truncateToTokenBudget(text: string, maxTokens: number): string {
+  if (maxTokens <= 0) return "";
+  if (estimateTokens(text) <= maxTokens) return text;
+  const suffix = "\n\n[Memory truncated to context budget]";
+  const suffixTokens = estimateTokens(suffix);
+  if (suffixTokens >= maxTokens) {
+    return truncateRawToTokenBudget(suffix, maxTokens);
+  }
+  const contentBudget = maxTokens - suffixTokens;
+  return `${truncateRawToTokenBudget(text, contentBudget).trimEnd()}${suffix}`;
+}
+
+function truncateRawToTokenBudget(text: string, maxTokens: number): string {
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokens(text.slice(0, mid)) <= maxTokens) low = mid;
+    else high = mid - 1;
+  }
+  return text.slice(0, low);
+}
+
+export function limitStringsToTokenBudget(values: string[], maxTokens: number): string[] {
+  const result: string[] = [];
+  let remaining = maxTokens;
+  for (const value of values) {
+    const tokens = estimateTokens(value);
+    if (tokens <= remaining) {
+      result.push(value);
+      remaining -= tokens;
+      continue;
+    }
+    if (remaining > 0) result.push(truncateToTokenBudget(value, remaining));
+    break;
+  }
+  return result;
+}
+
 export interface BudgetAllocation {
   systemPrompt: string;
   userMessage: string;
   conversationHistory: Message[];
   longTermMemory: string[];
   skillPrompt: string;
-  /** 三层上下文：用户身份（0-identity/profile.md） */
+  /** Memory: 长期个人记忆（memory/MEMORY.md） */
   identity: string;
-  /** 三层上下文：收件箱（1-inbox/inbox.md） */
+  /** Memory: 收件箱（memory/inbox.md） */
   inbox: string;
   /** 三层上下文：L0 全局地图（所有 .abstract.md 拼接） */
   contextMap: string;
@@ -38,9 +77,9 @@ export interface BudgetInput {
   modelMaxTokens?: number;
   /** 留给 context 的比例（默认 0.5，即一半留给对话） */
   contextRatio?: number;
-  /** 三层上下文：用户身份（0-identity/profile.md） */
+  /** Memory: 长期个人记忆（memory/MEMORY.md） */
   identity?: string;
-  /** 三层上下文：收件箱（1-inbox/inbox.md） */
+  /** Memory: 收件箱（memory/inbox.md） */
   inbox?: string;
   /** 三层上下文：L0 全局地图（所有 .abstract.md 拼接） */
   contextMap?: string;

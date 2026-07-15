@@ -464,7 +464,7 @@ export class SessionRouter {
       if (now - entry.lastActiveAt > this.idleTimeoutMs) {
         log.info(`Cleaning up idle session ${sessionId}, idle for ${Math.round((now - entry.lastActiveAt) / 1000)}s`);
         // 移除前触发记忆保存（fire-and-forget）
-        this.saveSessionMemory(sessionId, entry);
+        this.saveSessionMemory(sessionId, "idle");
         this.sessions.delete(sessionId);
       }
     }
@@ -475,23 +475,19 @@ export class SessionRouter {
    * 由 server shutdown 时调用，返回 Promise 等待全部完成。
    */
   async saveAllMemories(): Promise<void> {
-    const tasks: Promise<void>[] = [];
-    for (const [sessionId, entry] of this.sessions) {
-      tasks.push(this.saveSessionMemory(sessionId, entry));
-    }
-    await Promise.allSettled(tasks);
+    const sessionIds = new Set(this.sessions.keys());
+    for (const session of this.db.listAllSessions()) sessionIds.add(session.id);
+    await this.memoryManager?.flushAll([...sessionIds]);
   }
 
   /** 对单个 session 触发记忆保存 */
   private async saveSessionMemory(
     sessionId: string,
-    entry: SessionEntry,
+    reason: "session_switch" | "idle",
   ): Promise<void> {
     if (!this.memoryManager) return;
-    const messages = entry.conversation.getMessages();
-    if (messages.length === 0) return;
     try {
-      await this.memoryManager.saveSummary(sessionId, messages);
+      await this.memoryManager.flushSession(sessionId, { reason, force: true });
     } catch (err) {
       log.error(`Memory save for session ${sessionId} failed`, err instanceof Error ? err.message : String(err));
     }
@@ -505,6 +501,11 @@ export class SessionRouter {
     const entry = this.sessions.get(sessionId);
     if (!entry) return;
     // fire-and-forget，不阻塞切换
-    this.saveSessionMemory(sessionId, entry).catch(() => {});
+    this.saveSessionMemory(sessionId, "session_switch").catch(() => {});
+  }
+
+  evictSession(sessionId: string): void {
+    this.sessions.get(sessionId)?.agentLoop.abort();
+    this.sessions.delete(sessionId);
   }
 }
